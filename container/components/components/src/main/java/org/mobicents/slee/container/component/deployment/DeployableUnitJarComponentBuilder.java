@@ -122,6 +122,30 @@ public class DeployableUnitJarComponentBuilder {
 		InputStream componentDescriptorInputStream = null;
 		List<AbstractSleeComponent> components = new ArrayList<AbstractSleeComponent>();
 
+		// Pre-check: does this jar have any SLEE deployment descriptor?
+		// If not, skip it as a plain library jar (avoids failure when DUs bundle transitive deps).
+		boolean hasDescriptor =
+				componentJarFile.getJarEntry("META-INF/sbb-jar.xml") != null ||
+				componentJarFile.getJarEntry("META-INF/profile-spec-jar.xml") != null ||
+				componentJarFile.getJarEntry("META-INF/library-jar.xml") != null ||
+				componentJarFile.getJarEntry("META-INF/event-jar.xml") != null ||
+				componentJarFile.getJarEntry("META-INF/resource-adaptor-type-jar.xml") != null ||
+				componentJarFile.getJarEntry("META-INF/resource-adaptor-jar.xml") != null;
+
+		if (!hasDescriptor) {
+			logger.warn("No Deployment Descriptor found in " + componentJarFileName
+					+ ", skipping as plain library jar.");
+			try {
+				componentJarFile.close();
+			} catch (IOException e) {
+				logger.error("failed to close component jar file", e);
+			}
+			if (!extractedFile.delete()) {
+				logger.warn("failed to delete " + extractedFile);
+			}
+			return components;
+		}
+
 		try {
 			// now extract the jar file to a new dir
 			File componentJarDeploymentDir = new File(deploymentDir,

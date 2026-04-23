@@ -247,6 +247,13 @@ public class SleeContainerService implements Service<SleeContainer> {
 				getPropertyBoolean("EventRouterConfiguration", "collectStats", true));
 		eventRouterConfiguration.setConfirmSbbEntityAttachement(
 				getPropertyBoolean("EventRouterConfiguration", "confirmSbbEntityAttachement", true));
+		// WildFly 10: Enable Disruptor by default for high performance
+		eventRouterConfiguration.setProperty("useDisruptor",
+				getPropertyString("EventRouterConfiguration", "useDisruptor", "true"));
+		eventRouterConfiguration.setProperty("ringsize",
+				getPropertyString("EventRouterConfiguration", "ringsize", "262144"));
+		eventRouterConfiguration.setProperty("waitstrategy",
+				getPropertyString("EventRouterConfiguration", "waitstrategy", "busyspin"));
 		try {
 			eventRouterConfiguration.setExecutorMapperClassName(
 					getPropertyString("EventRouterConfiguration", "executorMapperClassName",
@@ -258,7 +265,10 @@ public class SleeContainerService implements Service<SleeContainer> {
 
 
 		final TimerFacilityConfiguration timerFacilityConfiguration = new TimerFacilityConfiguration();
-		timerFacilityConfiguration.setTimerThreads(4);
+		// Support system property: -Djainslee.timer.threads=4
+		// Default to 4 threads optimized for modern hardware with plenty of CPU cores
+		timerFacilityConfiguration.setTimerThreads(
+				getPropertyInt("jainslee.timer.threads", "timerThreads", 4));
 		timerFacilityConfiguration.setPurgePeriod(0);
 		timerFacilityConfiguration
 				.setTaskExecutionWaitsForTxCommitConfirmation(true);
@@ -444,8 +454,29 @@ public class SleeContainerService implements Service<SleeContainer> {
 		MobicentsCache sleeCache = null;
 
 		try {
-			InputStream cacheConfigStream =
-					new ByteArrayInputStream(this.cacheConfig.getBytes("UTF-8"));
+			InputStream cacheConfigStream;
+			String cfg = this.cacheConfig.trim();
+			if (cfg.startsWith("<")) {
+				// Inline XML content
+				cacheConfigStream = new ByteArrayInputStream(cfg.getBytes("UTF-8"));
+			} else {
+				// File path - try classpath first, then config dir, then absolute path
+				URL url = classLoader.getResource(cfg);
+				if (url != null) {
+					cacheConfigStream = url.openStream();
+					log.info("Loaded cache config from classpath: " + url);
+				} else {
+					File configFile = new File(System.getProperty(CONFIG_DIR), cfg);
+					if (configFile.exists()) {
+						cacheConfigStream = new FileInputStream(configFile);
+						log.info("Loaded cache config from config dir: " + configFile.getAbsolutePath());
+					} else {
+						configFile = new File(cfg);
+						cacheConfigStream = new FileInputStream(configFile);
+						log.info("Loaded cache config from absolute path: " + configFile.getAbsolutePath());
+					}
+				}
+			}
 
 			ClassLoader currentClassLoader = Thread.currentThread().getContextClassLoader();
 			Thread.currentThread().setContextClassLoader(classLoader);
@@ -476,7 +507,8 @@ public class SleeContainerService implements Service<SleeContainer> {
 			}
 
 			Thread.currentThread().setContextClassLoader(currentClassLoader);
-		} catch (UnsupportedEncodingException e2) {
+		} catch (IOException e2) {
+			log.warn("Failed to load cache config: " + this.cacheConfig, e2);
 		}
 
 		return sleeCache;

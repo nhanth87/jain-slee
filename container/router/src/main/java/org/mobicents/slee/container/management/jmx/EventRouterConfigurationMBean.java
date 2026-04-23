@@ -88,4 +88,18 @@ public interface EventRouterConfigurationMBean {
 	 */
 	public void setConfirmSbbEntityAttachement(boolean value);
 	
+	/**
+	 * Sets a generic property for the event router (e.g., Disruptor config).
+	 * @param key
+	 * @param value
+	 */
+	public void setProperty(String key, String value);
+	
+	/**
+	 * Gets a generic property for the event router.
+	 * @param key
+	 * @return
+	 */
+	public String getProperty(String key);
+	
 }

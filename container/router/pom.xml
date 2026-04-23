@@ -1,28 +1,34 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
-	<modelVersion>4.0.0</modelVersion>
-	
-	<parent>
-		<groupId>org.mobicents.servers.jainslee.core</groupId>
-		<artifactId>restcomm-slee-core-container</artifactId>
-		<version>7.0.0-SNAPSHOT</version>
-	</parent>
-
-	<artifactId>router</artifactId>
-			
-	<dependencies>				
-		
-		<dependency>
-			<groupId>${pom.groupId}</groupId>
-			<artifactId>common</artifactId>
-			<version>${pom.version}</version>
-		</dependency>
-
-		<dependency>
-			<groupId>org.restcomm.cluster</groupId>
-			<artifactId>core</artifactId>
-			<scope>provided</scope>
-		</dependency>
-					
-	</dependencies>
-	
+    <modelVersion>4.0.0</modelVersion>
+    
+    <parent>
+        <groupId>org.mobicents.servers.jainslee.core</groupId>
+        <artifactId>restcomm-slee-core-container</artifactId>
+        <version>8.0.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>router</artifactId>
+            
+    <dependencies>                
+    
+        <dependency>
+            <groupId>${pom.groupId}</groupId>
+            <artifactId>common</artifactId>
+            <version>${pom.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.restcomm.cluster</groupId>
+            <artifactId>core</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        
+        <!-- LMAX Disruptor for High Performance Event Processing -->
+        <!-- Optimized for modern hardware with 16-32 CPU cores -->
+        <dependency>
+            <groupId>com.lmax</groupId>
+            <artifactId>disruptor</artifactId>
+            <version>3.4.4</version>
+        </dependency>
+                
+    </dependencies>
+    
 </project>

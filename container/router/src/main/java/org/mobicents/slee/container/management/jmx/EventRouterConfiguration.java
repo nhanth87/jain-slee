@@ -25,6 +25,9 @@
  */
 package org.mobicents.slee.container.management.jmx;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import org.apache.log4j.Logger;
 
 /**
@@ -41,6 +44,7 @@ public class EventRouterConfiguration implements
 	private String executorMapperClassName;
 	private Boolean collectStats;
 	private boolean confirmSbbEntityAttachement;
+	private Map<String, String> properties = new HashMap<String, String>();
 	
 	@Override
 	public boolean isConfirmSbbEntityAttachement() {
@@ -111,6 +115,22 @@ public class EventRouterConfiguration implements
 		}
 		this.executorMapperClassName = className;
 				
+	}
+	
+	@Override
+	public void setProperty(String key, String value) {
+		if (key != null) {
+			if (this.properties.containsKey(key)) {
+				logger.warn("Setting event router property '" + key + "' to '" + value
+					+ "'. If called with server running a stop and start is needed to apply changes.");
+			}
+			this.properties.put(key, value);
+		}
+	}
+	
+	@Override
+	public String getProperty(String key) {
+		return this.properties.get(key);
 	}
 	
 	/* (non-Javadoc)

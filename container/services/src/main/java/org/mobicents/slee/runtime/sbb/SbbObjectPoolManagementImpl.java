@@ -57,19 +57,47 @@ public class SbbObjectPoolManagementImpl implements SbbObjectPoolManagementImplM
 
 	public SbbObjectPoolManagementImpl(SleeContainer sleeContainer) {
 		this.sleeContainer = sleeContainer;
-		// create pool config mbean with default pool configuration
+		
+		// create pool config mbean with optimized pool configuration for modern hardware
+		// Supports system properties for runtime tuning:
+		// -Djainslee.sbb.pool.min=1000
+		// -Djainslee.sbb.pool.max=20000
+		// -Djainslee.sbb.pool.keepAlive=120
 		config = new GenericObjectPool.Config();
-		config.maxActive = -1;
-		config.maxIdle = 50;
-		config.maxWait = -1;
-		config.minEvictableIdleTimeMillis = 60000;
-		config.minIdle = 1;
-		config.numTestsPerEvictionRun = -1;
-		config.testOnBorrow = true;
-		config.testOnReturn = true;
-		config.testWhileIdle = false;
-		config.timeBetweenEvictionRunsMillis = 300000;
+		
+		// Maximum number of active SBB instances per pool (optimized for 100K+ concurrent entities)
+		config.maxActive = Integer.getInteger("jainslee.sbb.pool.max", 100000);
+		
+		// Maximum number of idle SBB instances to retain (close to maxActive for performance)
+		config.maxIdle = Integer.getInteger("jainslee.sbb.pool.maxIdle", 80000);
+		
+		// Maximum time to wait for an SBB instance (-1 = indefinite)
+		config.maxWait = Integer.getInteger("jainslee.sbb.pool.maxWait", -1);
+		
+		// Minimum time an instance can be idle before being evicted
+		config.minEvictableIdleTimeMillis = Long.getLong("jainslee.sbb.pool.minEvictableIdleTime", 300000);
+		
+		// Minimum number of idle SBB instances to maintain
+		config.minIdle = Integer.getInteger("jainslee.sbb.pool.min", 1000);
+		
+		// Number of instances to test per eviction run
+		config.numTestsPerEvictionRun = Integer.getInteger("jainslee.sbb.pool.numTestsPerEviction", 100);
+		
+		// Test on borrow for data integrity
+		config.testOnBorrow = Boolean.getBoolean("jainslee.sbb.pool.testOnBorrow");
+		
+		// Test on return for resource cleanup
+		config.testOnReturn = Boolean.getBoolean("jainslee.sbb.pool.testOnReturn");
+		
+		// Test while idle for maintenance
+		config.testWhileIdle = Boolean.getBoolean("jainslee.sbb.pool.testWhileIdle");
+		
+		// Time between eviction runs (milliseconds)
+		config.timeBetweenEvictionRunsMillis = Long.getLong("jainslee.sbb.pool.timeBetweenEviction", 60000);
+		
+		// Action when pool is exhausted
 		config.whenExhaustedAction = GenericObjectPool.WHEN_EXHAUSTED_FAIL;
+		
 		// create pools map
 		pools = new ConcurrentHashMap<ObjectPoolMapKey, SbbObjectPoolImpl>();
 	}

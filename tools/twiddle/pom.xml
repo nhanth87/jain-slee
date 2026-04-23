@@ -6,13 +6,13 @@
 	<parent>
 		<groupId>org.mobicents.servers.jainslee.core</groupId>
 		<artifactId>restcomm-slee-core</artifactId>
-		<version>7.0.0-SNAPSHOT</version>
+		<version>8</version>
 		<relativePath>../..</relativePath>
 	</parent>
 
 	<groupId>org.mobicents.servers.jainslee.tools.twiddle</groupId>
 	<artifactId>cli-twiddle-parent</artifactId>
-	<version>7.0.0-SNAPSHOT</version>
+	<version>8</version>
 
 	<modules>
 		<module>cli</module>
@@ -165,14 +165,14 @@
 		<profile>
 			<id>maven-release</id>
 			<modules>
-				<module>docs</module>
+				<!--<module>docs</module>-->
 				<module>release</module>
 			</modules>			
 		</profile>
 		<profile>
 			<id>release</id>
 			<modules>
-				<module>docs</module>
+				<!--<module>docs</module>-->
 				<module>release</module>
 			</modules>
 		</profile>

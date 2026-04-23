@@ -143,6 +143,16 @@ public class ExternalDeployerImpl implements ExternalDeployer {
 
 	private void callSubDeployer(URL deployableUnitURL, DeploymentUnitRecord record) throws Exception {
 		String deployableUnitName = record.deploymentUnit != null ? record.deploymentUnit.getName() : "";
+
+		// FIX: Set TCCL to SLEE container classloader so DU classloader domains
+		// can resolve javax.slee.* classes provided by the container module
+		ClassLoader oldTCCL = Thread.currentThread().getContextClassLoader();
+		try {
+			if (internalDeployer != null) {
+				ClassLoader sleeClassLoader = internalDeployer.getClass().getClassLoader();
+				Thread.currentThread().setContextClassLoader(sleeClassLoader);
+			}
+
 		internalDeployer.accepts(deployableUnitURL, deployableUnitName);
 		internalDeployer.init(deployableUnitURL, deployableUnitName);
 
@@ -184,6 +194,9 @@ public class ExternalDeployerImpl implements ExternalDeployer {
 			}
 		}
 		internalDeployer.start(deployableUnitURL, deployableUnitName);
+		} finally {
+			Thread.currentThread().setContextClassLoader(oldTCCL);
+		}
 	}
 
 	public void undeploy(DeploymentUnit deploymentUnit, URL deployableUnitURL, SleeDeploymentMetaData deploymentMetaData) {

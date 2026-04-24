@@ -91,7 +91,7 @@ public class EnvEntryType {
      *     
      */
     public String getvalue() {
-        return value;
+        return value != null ? value.trim() : null;
     }
 
     /**

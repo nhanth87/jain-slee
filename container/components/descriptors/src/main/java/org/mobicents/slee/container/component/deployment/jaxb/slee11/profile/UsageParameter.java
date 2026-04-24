@@ -150,7 +150,7 @@ public class UsageParameter {
      *     
      */
     public String getvalue() {
-        return value;
+        return value != null ? value.trim() : null;
     }
 
     /**

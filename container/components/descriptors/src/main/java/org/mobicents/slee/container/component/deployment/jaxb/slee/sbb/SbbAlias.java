@@ -91,7 +91,7 @@ public class SbbAlias {
      *     
      */
     public String getvalue() {
-        return value;
+        return value != null ? value.trim() : null;
     }
 
     /**

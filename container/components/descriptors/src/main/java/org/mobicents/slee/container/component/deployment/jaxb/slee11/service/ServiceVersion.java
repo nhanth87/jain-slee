@@ -91,7 +91,7 @@ public class ServiceVersion {
      *     
      */
     public String getvalue() {
-        return value;
+        return value != null ? value.trim() : null;
     }
 
     /**

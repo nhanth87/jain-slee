@@ -104,16 +104,30 @@ public class DeployableUnitWrapper {
     URL retURL = null;
 
     try {
-      retURL = new URL(this.url + "/" + path);
-
-      try {
-        retURL.openStream().close();
-      }
-      catch ( IOException e ) {
-        retURL = null;
+      // If this wrapper points to a plain jar file (not a VFS directory),
+      // we must use jar: URL or JarFile to check entries inside the jar.
+      if (this.fileName.endsWith(".jar")) {
+        java.util.jar.JarFile jarFile = new java.util.jar.JarFile(this.fullPath);
+        try {
+          if (jarFile.getJarEntry(path) != null) {
+            // Reconstruct jar: URL since gatherInfoFromURL strips the jar: prefix
+            String jarUrl = this.url.toString().replaceFirst("/$", "");
+            retURL = new URL("jar:" + jarUrl + "!/" + path);
+          }
+        } finally {
+          jarFile.close();
+        }
+      } else {
+        retURL = new URL(this.url + "/" + path);
+        try {
+          retURL.openStream().close();
+        }
+        catch ( IOException e ) {
+          retURL = null;
+        }
       }
     }
-    catch ( MalformedURLException e ) {
+    catch ( Exception e ) {
       logger.error(e.getLocalizedMessage(), e);
     }
 

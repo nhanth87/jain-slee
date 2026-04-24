@@ -91,7 +91,7 @@ public class ActivityContextInterfaceFactoryInterfaceName {
      *     
      */
     public String getvalue() {
-        return value;
+        return value != null ? value.trim() : null;
     }
 
     /**

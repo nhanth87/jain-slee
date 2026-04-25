@@ -31,6 +31,7 @@ import javax.slee.management.DependencyException;
 import javax.slee.management.DeploymentException;
 import java.io.IOException;
 import java.net.URL;
+import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.jar.JarEntry;
@@ -56,7 +57,8 @@ public class SLEESubDeployer implements
 	// Attributes ----------------------------------------------------
 
 	// The DIs to be accepted by this deployer.
-	private ConcurrentHashMap<String, DeployableUnitWrapper> toAccept = new ConcurrentHashMap<String, DeployableUnitWrapper>();
+	// Changed to multimap to support multiple DUs referencing the same nested JAR
+	private ConcurrentHashMap<String, CopyOnWriteArrayList<DeployableUnitWrapper>> toAccept = new ConcurrentHashMap<String, CopyOnWriteArrayList<DeployableUnitWrapper>>();
 
 	// Deployable Units present.
 	private ConcurrentHashMap<String, DeployableUnit> deployableUnits = new ConcurrentHashMap<String, DeployableUnit>();
@@ -148,23 +150,28 @@ public class SLEESubDeployer implements
 		String fileName = du.getFileName();
 
 		try {
-			DeployableUnitWrapper duWrapper = null;
-
 			// If we're able to remove it from toAccept was because it was
 			// there!
-			if ((duWrapper = toAccept.remove(fileName)) != null) {
-				// Create a new Deployable Component from this DI.
-				DeployableComponent dc = new DeployableComponent(du, url,
-						fileName, sleeContainerDeployer);
+			CopyOnWriteArrayList<DeployableUnitWrapper> duWrappers = toAccept.remove(fileName);
+			if (duWrappers != null) {
+				for (DeployableUnitWrapper duWrapper : duWrappers) {
+					logger.info("Processing nested JAR from toAccept: " + fileName + " for DU " + duWrapper.getFileName());
+					// Create a new Deployable Component from this DI.
+					DeployableComponent dc = new DeployableComponent(du, url,
+							fileName, sleeContainerDeployer);
 
-				// Also get the deployable unit for this (it exists, we've
-				// checked!)
-				DeployableUnit deployerDU = deployableUnits.get(duWrapper
-						.getFileName());
+					// Also get the deployable unit for this (it exists, we've
+					// checked!)
+					DeployableUnit deployerDU = deployableUnits.get(duWrapper
+							.getFileName());
 
-				for (DeployableComponent subDC : dc.getSubComponents()) {
-					// Add the sub-component to the DU object.
-					deployerDU.addComponent(subDC);
+					Collection<DeployableComponent> subComponents = dc.getSubComponents();
+					logger.info("Nested JAR " + fileName + " produced " + (subComponents == null ? "null" : subComponents.size()) + " sub-components for DU " + duWrapper.getFileName());
+					for (DeployableComponent subDC : subComponents) {
+						// Add the sub-component to the DU object.
+						logger.info("Adding sub-component " + subDC.getComponentKey() + " to DU " + duWrapper.getFileName());
+						deployerDU.addComponent(subDC);
+					}
 				}
 			}
 			// If the DU for this component doesn't exists.. it's a new DU!
@@ -200,6 +207,8 @@ public class SLEESubDeployer implements
 						// Add it to the deployable units map.
 						deployableUnits.put(fileName, deployerDU);
 
+						logger.info("Populated toAccept for DU " + fileName + " with " + duDesc.getJarEntries().size() + " jar entries");
+
 						// Go through each jar entry in the DU descriptor
 						for (String componentJarName : duDesc.getJarEntries()) {
 							// Might have path... strip it!
@@ -215,7 +224,7 @@ public class SLEESubDeployer implements
 									beginIndex, componentJarName.length());
 
 							// Put it in the accept list.
-							toAccept.put(componentJarName, du);
+							toAccept.computeIfAbsent(componentJarName, k -> new CopyOnWriteArrayList<DeployableUnitWrapper>()).add(du);
 						}
 
 						// Do the same as above... but for services
@@ -233,7 +242,7 @@ public class SLEESubDeployer implements
 									beginIndex, serviceXMLName.length());
 
 							// Add it to the accept list.
-							toAccept.put(serviceXMLName, du);
+							toAccept.computeIfAbsent(serviceXMLName, k -> new CopyOnWriteArrayList<DeployableUnitWrapper>()).add(du);
 						}
 					}
 				} finally {
@@ -250,7 +259,10 @@ public class SLEESubDeployer implements
 			}
 		} catch (Exception e) {
 			// Something went wrong...
-			logger.error("Deployment of " + fileName + " failed. ", e);
+			java.io.StringWriter sw = new java.io.StringWriter();
+			java.io.PrintWriter pw = new java.io.PrintWriter(sw);
+			e.printStackTrace(pw);
+			logger.error("Deployment of " + fileName + " failed: " + e.getMessage() + "\n" + sw.toString());
 
 			return;
 		}
@@ -278,7 +290,10 @@ public class SLEESubDeployer implements
 				sleeContainerDeployer.getDeploymentManager().installDeployableUnit(realDU);
 			}
 		} catch (Exception e) {
-			logger.error("", e);
+			java.io.StringWriter sw = new java.io.StringWriter();
+			java.io.PrintWriter pw = new java.io.PrintWriter(sw);
+			e.printStackTrace(pw);
+			logger.error("start() failed for " + du.getFileName() + ": " + e.getMessage() + "\n" + sw.toString());
 		}
 	}
 

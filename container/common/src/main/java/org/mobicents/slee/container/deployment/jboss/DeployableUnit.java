@@ -188,14 +188,10 @@ public class DeployableUnit {
     // Some remaining?
     if (!externalDependencies.isEmpty()) {
       if (showMissing) {
-        // List them to the user...
-        String missingDepList = "";
-
-        for (String missingDep : externalDependencies)
-          missingDepList += "\r\n +-- " + missingDep;
-
-        logger.info("Missing dependencies for " + this.diShortName
-            + ":" + missingDepList);
+        logger.info("Missing dependencies for " + this.diShortName + " (count=" + externalDependencies.size() + ")");
+        for (String missingDep : externalDependencies) {
+          logger.info(" +-- missing: [" + missingDep + "]");
+        }
       }
 
       // Return dependencies not satified.
@@ -217,7 +213,10 @@ public class DeployableUnit {
     for (String componentId : componentIDs) {
       // Check if it is already deployed
       if (sleeContainerDeployer.getDeploymentManager().getDeployedComponents().contains(componentId)) {
-        duplicates.add(componentId);
+        // If this component is also a dependency, it's provided by another DU - not a real duplicate
+        if (!dependencies.contains(componentId)) {
+          duplicates.add(componentId);
+        }
       }
     }
 
@@ -241,8 +240,9 @@ public class DeployableUnit {
    * @return true if all the pre-reqs are met.
    */
   public boolean isReadyToInstall(boolean showMissing) {
-    // Check if the deps are satisfied and there are no dups.
-    return hasDependenciesSatisfied(showMissing) && !hasDuplicates();
+    // Check if the deps are satisfied. Ignore duplicates since components
+    // may already be deployed by other DUs (e.g., shared libraries/RATypes).
+    return hasDependenciesSatisfied(showMissing);
   }
 
   /**
@@ -257,7 +257,10 @@ public class DeployableUnit {
 	  // thus should be executed first
 	  if (!postInstallActions.values().isEmpty()) {
 		  for (String componentId : postInstallActions.keySet()) {
-			  iActions.addAll(postInstallActions.get(componentId));
+			  Collection<ManagementAction> actions = postInstallActions.get(componentId);
+			  if (actions != null) {
+				  iActions.addAll(actions);
+			  }
 		  }
 	  }
 

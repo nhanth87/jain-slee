@@ -33,12 +33,14 @@ import java.util.concurrent.LinkedBlockingDeque;
 import javax.slee.ComponentID;
 import javax.slee.InvalidStateException;
 import javax.slee.management.DependencyException;
+import javax.slee.management.LinkNameAlreadyBoundException;
 import javax.slee.management.ResourceAdaptorEntityAlreadyExistsException;
 import javax.slee.management.UnrecognizedLinkNameException;
 
 import org.jboss.logging.Logger;
 import org.mobicents.slee.container.component.ComponentRepository;
 import org.mobicents.slee.container.deployment.jboss.action.ActivateResourceAdaptorEntityAction;
+import org.mobicents.slee.container.deployment.jboss.action.BindLinkNameAction;
 import org.mobicents.slee.container.deployment.jboss.action.CreateResourceAdaptorEntityAction;
 import org.mobicents.slee.container.deployment.jboss.action.DeactivateResourceAdaptorEntityAction;
 import org.mobicents.slee.container.deployment.jboss.action.DeactivateServiceAction;
@@ -170,13 +172,16 @@ public class DeploymentManager {
       updateDeployedComponents();
 
       // Go through the remaining DUs waiting for installation
+      logger.info("Retrying " + waitingForInstallDUs.size() + " waiting DUs after installing " + du.getDeploymentInfoShortName());
       Iterator<DeployableUnit> duIt = waitingForInstallDUs.iterator();
 
       while (duIt.hasNext()) {
         DeployableUnit waitingDU = duIt.next();
+        logger.info("Checking waiting DU: " + waitingDU.getDeploymentInfoShortName());
 
         // If it is ready for installation, follow the same procedure
         if (waitingDU.isReadyToInstall(false)) {
+          logger.info("Waiting DU is ready: " + waitingDU.getDeploymentInfoShortName());
           // Get and Run the actions needed for installing this DU
           sciAction(waitingDU.getInstallActions(), waitingDU);
 
@@ -194,6 +199,8 @@ public class DeploymentManager {
 
           // Let's start all over.. :)
           duIt = waitingForInstallDUs.iterator();
+        } else {
+          logger.info("Waiting DU NOT ready: " + waitingDU.getDeploymentInfoShortName());
         }
       }
     }
@@ -324,7 +331,7 @@ public class DeploymentManager {
       }
       catch (Exception e) {
         // We might expect some exceptions...
-        if (e.getCause() instanceof ResourceAdaptorEntityAlreadyExistsException || (e.getCause() instanceof InvalidStateException 
+        if (e instanceof ResourceAdaptorEntityAlreadyExistsException || e.getCause() instanceof ResourceAdaptorEntityAlreadyExistsException || ((e instanceof InvalidStateException || e.getCause() instanceof InvalidStateException) 
             && action instanceof ActivateResourceAdaptorEntityAction)) {
           Class<? extends ManagementAction> actionToAvoid = null;
 
@@ -351,15 +358,27 @@ public class DeploymentManager {
             actionsToAvoid.add(actionToAvoid);
           }
 
-          logger.warn(e.getCause().getMessage());
+          logger.warn(e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
         }
-        else if (e.getCause() instanceof InvalidStateException && action instanceof DeactivateServiceAction) {
+        else if ((e instanceof InvalidStateException || e.getCause() instanceof InvalidStateException) && action instanceof DeactivateServiceAction) {
           logger.info("Delaying uninstall due to service deactivation not complete.");
         }
-        else if (e.getCause() instanceof InvalidStateException && action instanceof DeactivateResourceAdaptorEntityAction) {
+        else if ((e instanceof InvalidStateException || e.getCause() instanceof InvalidStateException) && action instanceof DeactivateResourceAdaptorEntityAction) {
           // ignore this... someone has already deactivated the link.
         }
-        else if (e.getCause() instanceof UnrecognizedLinkNameException && action instanceof UnbindLinkNameAction) {
+        else if ((e instanceof LinkNameAlreadyBoundException || e.getCause() instanceof LinkNameAlreadyBoundException) && action instanceof BindLinkNameAction) {
+          Collection<Class<? extends ManagementAction>> actionsToAvoid;
+          if ((actionsToAvoid = actionsToAvoidByDU.get(du)) == null) {
+            actionsToAvoid = new ArrayList<Class<? extends ManagementAction>>();
+            actionsToAvoid.add(UnbindLinkNameAction.class);
+            actionsToAvoidByDU.put(du, actionsToAvoid);
+          }
+          else {
+            actionsToAvoid.add(UnbindLinkNameAction.class);
+          }
+          logger.warn(e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+        }
+        else if ((e instanceof UnrecognizedLinkNameException || e.getCause() instanceof UnrecognizedLinkNameException) && action instanceof UnbindLinkNameAction) {
           // ignore this... someone has already removed the link.
         }
         else if (action.getType() == ManagementAction.Type.DEPLOY_MANAGEMENT) {

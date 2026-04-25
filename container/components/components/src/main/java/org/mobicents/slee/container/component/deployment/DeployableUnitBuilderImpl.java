@@ -184,13 +184,14 @@ public class DeployableUnitBuilderImpl implements DeployableUnitBuilder {
 				for (SleeComponent sleeComponent : duComponentBuilder
 						.buildComponents(jarFileName, deployableUnitJar,
 								deployableUnit.getDeploymentDir())) {
-					sleeComponent.setDeployableUnit(deployableUnit);
 					if (componentRepository.isInstalled(sleeComponent
 							.getComponentID())) {
-						throw new AlreadyDeployedException("Component "
+						logger.warn("Component "
 								+ sleeComponent.getComponentID()
-								+ " already deployed");
+								+ " already deployed, skipping");
+						continue;
 					}
+					sleeComponent.setDeployableUnit(deployableUnit);
 					sleeComponent.setDeploymentUnitSource(jarFileName);
 				}
 			}
@@ -201,14 +202,14 @@ public class DeployableUnitBuilderImpl implements DeployableUnitBuilder {
 				for (ServiceComponentImpl serviceComponent : duServiceComponentBuilder
 						.buildComponents(serviceDescriptorFileName,
 								deployableUnitJar)) {
-					serviceComponent.setDeployableUnit(deployableUnit);
 					if (componentRepository.isInstalled(serviceComponent
 							.getComponentID())) {
-						throw new AlreadyDeployedException("Component "
+						logger.warn("Component "
 								+ serviceComponent.getComponentID()
-								+ " already deployed");
+								+ " already deployed, skipping");
+						continue;
 					}
-					// set the direct reference to the sbb component
+					serviceComponent.setDeployableUnit(deployableUnit);
 					serviceComponent.setRootSbbComponent(deployableUnit
 							.getDeployableUnitRepository().getComponentByID(
 									serviceComponent.getDescriptor()

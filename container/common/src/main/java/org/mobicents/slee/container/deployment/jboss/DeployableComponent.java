@@ -171,6 +171,36 @@ public class DeployableComponent {
 	}
 
 	/**
+	 * Helper to find a descriptor entry. Tries duWrapper first (for main DU),
+	 * then falls back to diURL (for nested JAR components).
+	 */
+	private URL getDescriptorEntry(String path) {
+		URL result = duWrapper.getEntry(path);
+		if (result == null) {
+			try {
+				String urlStr = diURL.toString();
+				if (urlStr.endsWith(".jar")) {
+					if (urlStr.startsWith("jar:")) {
+						result = new URL(urlStr + "!/" + path);
+					} else {
+						result = new URL("jar:" + urlStr + "!/" + path);
+					}
+				} else {
+					result = new URL(diURL + "/" + path);
+				}
+				result.openStream().close();
+				logger.info("getDescriptorEntry fallback SUCCESS for " + diShortName + " path=" + path + " url=" + result);
+			} catch (Exception e) {
+				logger.info("getDescriptorEntry fallback FAILED for " + diShortName + " path=" + path + " error=" + e.getMessage());
+				result = null;
+			}
+		} else {
+			logger.info("getDescriptorEntry duWrapper SUCCESS for " + diShortName + " path=" + path + " url=" + result);
+		}
+		return result;
+	}
+
+	/**
 	 * Parser for the deployment descriptor. Minimal version obtained from
 	 * Container.
 	 * 
@@ -268,7 +298,7 @@ public class DeployableComponent {
 
 			// Determine whether the type of this instance is an sbb, event, RA
 			// type, etc.
-			if ((descriptorXML = duWrapper.getEntry("META-INF/sbb-jar.xml")) != null) {
+			if ((descriptorXML = getDescriptorEntry("META-INF/sbb-jar.xml")) != null) {
 				if (logger.isTraceEnabled()) {
 					logger.trace("Parsing SBB Descriptor.");
 				}
@@ -358,8 +388,7 @@ public class DeployableComponent {
 						}
 					}
 				}
-			} else if ((descriptorXML = duWrapper
-					.getEntry("META-INF/profile-spec-jar.xml")) != null) {
+			} else if ((descriptorXML = getDescriptorEntry("META-INF/profile-spec-jar.xml")) != null) {
 				if (logger.isTraceEnabled()) {
 					logger.trace("Parsing Profile Specification Descriptor.");
 				}
@@ -437,8 +466,7 @@ public class DeployableComponent {
 						}
 					}
 				}
-			} else if ((descriptorXML = duWrapper
-					.getEntry("META-INF/event-jar.xml")) != null) {
+			} else if ((descriptorXML = getDescriptorEntry("META-INF/event-jar.xml")) != null) {
 				if (logger.isTraceEnabled()) {
 					logger.trace("Parsing Event Definition Descriptor.");
 				}
@@ -513,8 +541,7 @@ public class DeployableComponent {
 						}
 					}
 				}
-			} else if ((descriptorXML = duWrapper
-					.getEntry("META-INF/resource-adaptor-type-jar.xml")) != null) {
+			} else if ((descriptorXML = getDescriptorEntry("META-INF/resource-adaptor-type-jar.xml")) != null) {
 				if (logger.isTraceEnabled()) {
 					logger.trace("Parsing Resource Adaptor Type Descriptor.");
 				}
@@ -590,8 +617,7 @@ public class DeployableComponent {
 						}
 					}
 				}
-			} else if ((descriptorXML = duWrapper
-					.getEntry("META-INF/resource-adaptor-jar.xml")) != null) {
+			} else if ((descriptorXML = getDescriptorEntry("META-INF/resource-adaptor-jar.xml")) != null) {
 				if (logger.isTraceEnabled()) {
 					logger.trace("Parsing Resource Adaptor Descriptor.");
 				}
@@ -673,8 +699,7 @@ public class DeployableComponent {
 						}
 					}
 				}
-			} else if ((descriptorXML = duWrapper
-					.getEntry("META-INF/library-jar.xml")) != null) {
+			} else if ((descriptorXML = getDescriptorEntry("META-INF/library-jar.xml")) != null) {
 				if (logger.isTraceEnabled()) {
 					logger.trace("Parsing Library Descriptor.");
 				}

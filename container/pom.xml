@@ -34,7 +34,8 @@
 		<version.jboss.msc>1.2.6.Final</version.jboss.msc>
 
 		<!--<version.javassist>3.15.0-GA</version.javassist>-->
-		<version.javassist>3.18.1-GA</version.javassist>
+		<!--<version.javassist>3.18.1-GA</version.javassist>-->
+		<version.javassist>3.31.0-GA</version.javassist>
 		<!--<version.hibernate>4.2.0.CR1</version.hibernate>-->
 		<version.hibernate>5.0.10.Final</version.hibernate>
 

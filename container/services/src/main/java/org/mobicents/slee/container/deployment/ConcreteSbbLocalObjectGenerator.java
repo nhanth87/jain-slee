@@ -33,13 +33,14 @@ import javassist.CtNewMethod;
 import javassist.NotFoundException;
 
 import org.apache.log4j.Logger;
-import javax.slee.SbbLocalObjectExt;
-import javax.slee.management.DeploymentException;
+import org.mobicents.slee.SbbLocalObjectExt;
 import org.mobicents.slee.container.component.ClassPool;
 import org.mobicents.slee.container.deployment.JavassistDeployTimeCodegen;
 import org.mobicents.slee.runtime.sbb.SbbConcrete;
 import org.mobicents.slee.runtime.sbb.SbbLocalObjectConcrete;
 import org.mobicents.slee.runtime.sbb.SbbLocalObjectImpl;
+
+import javax.slee.management.DeploymentException;
 
 /**
  * Class generating the concrete Sbb local object class

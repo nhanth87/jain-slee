@@ -33,8 +33,10 @@ import javassist.CtNewMethod;
 import javassist.NotFoundException;
 
 import org.apache.log4j.Logger;
-import org.mobicents.slee.SbbLocalObjectExt;
+import javax.slee.SbbLocalObjectExt;
+import javax.slee.management.DeploymentException;
 import org.mobicents.slee.container.component.ClassPool;
+import org.mobicents.slee.container.deployment.JavassistDeployTimeCodegen;
 import org.mobicents.slee.runtime.sbb.SbbConcrete;
 import org.mobicents.slee.runtime.sbb.SbbLocalObjectConcrete;
 import org.mobicents.slee.runtime.sbb.SbbLocalObjectImpl;
@@ -146,33 +148,20 @@ public class ConcreteSbbLocalObjectGenerator {
             generateConcreteMethods(interfaceMethods, sbbAbstractClassName);           
 
             try {
-            	concreteSbbLocalObject.writeFile(deployPath);
+            	Class<?> loaded = JavassistDeployTimeCodegen.persistAndLoad(concreteSbbLocalObject, deployPath);
             	if (logger.isDebugEnabled()) {
                     logger
                         .debug("Concrete Class "
                                 + concreteSbbLocalObject.getName()
                                 + " generated in the following path "
                                 + deployPath);
-                }            
-            } catch (CannotCompileException e) {
-
+                }
+            	return loaded;
+            } catch (DeploymentException e) {
                 String s = " Unexpected exception ! ";
                 logger.fatal(s, e);
                 throw new RuntimeException(s, e);
-
-            } catch (IOException e) {
-                String s = "IO Exception!";
-                logger.error(s, e);
-                return null;
-
             }
-            //load the class
-            try {
-				return Thread.currentThread().getContextClassLoader().loadClass(concreteSbbLocalObject.getName());
-			} catch (ClassNotFoundException e) {
-				logger.error("unable to load sbb local object impl class", e);
-				return null;
-			}
             
         } finally {
             if (this.concreteSbbLocalObject != null)

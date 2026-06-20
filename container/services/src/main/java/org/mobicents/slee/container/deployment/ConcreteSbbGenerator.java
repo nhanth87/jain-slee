@@ -428,26 +428,10 @@ public class ConcreteSbbGenerator {
 					throw new DeploymentException(e.getMessage(), e);
 				}
 			}
-			try {
-				sbbConcreteClass.writeFile(deployDir);
-				// @@2.4+ -> 3.4+
-				// pool.writeFile(sbbConcreteClassName, deployPath);
-				if (logger.isDebugEnabled()) {
-					logger.debug("Concrete Class " + sbbConcreteClassName
-							+ " generated in the following path " + deployDir);
-				}
-			} catch (Exception e) {
-				String s = "Error generating concrete class";
-				throw new DeploymentException(s, e);
-			}
-
-			Class<?> clazz = null;
-			try {
-				clazz = Thread.currentThread().getContextClassLoader()
-						.loadClass(sbbConcreteClassName);
-			} catch (ClassNotFoundException e1) {
-				String s = "What the heck?! Could not find generated class. Is it under the chair?";
-				throw new DeploymentException(s, e1);
+			Class<?> clazz = JavassistDeployTimeCodegen.persistAndLoad(sbbConcreteClass, deployDir);
+			if (logger.isDebugEnabled()) {
+				logger.debug("Concrete Class " + sbbConcreteClassName
+						+ " generated in the following path " + deployDir);
 			}
 			// set the concrete class in the descriptor
 			sbbComponent.setConcreteSbbClass(clazz);

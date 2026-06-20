@@ -34,12 +34,11 @@ import org.mobicents.slee.util.concurrent.SleeThreadFactory;
 /**
  * HIGH PERFORMANCE Event Router using LMAX Disruptor.
  * Optimized for modern hardware with 16-32 CPU cores and 16-64GB RAM.
- * 
- * Configuration via system properties:
- * - Djainslee.eventrouter.threads=8 (default: CPU cores)
- * - Djainslee.eventrouter.ringsize=32768 (default: 32768)
- * - Djainslee.eventrouter.waitstrategy=busyspin (default: busyspin)
- * 
+ *
+ * Parallelism model: N Disruptor executors (one per CPU pipeline), each with
+ * a single worker thread. Activities are pinned to an executor via
+ * ActivityHashingEventRouterExecutorMapper at creation time.
+ *
  * @author Performance Optimization Team
  * @author Original: Eduardo Martins
  */
@@ -47,147 +46,153 @@ public class EventRouterImpl extends AbstractSleeContainerModule implements Even
 
     private static final Logger logger = Logger.getLogger(EventRouter.class);
 
-    // Configuration system properties for modern hardware
-    private static final int EVENT_ROUTER_THREADS = Integer.getInteger(
-        "jainslee.eventrouter.threads", 
-        Math.max(4, Runtime.getRuntime().availableProcessors()));
-    private static final int RING_SIZE = Integer.getInteger(
-        "jainslee.eventrouter.ringsize", 32768);
-    private static final boolean USE_DISRUPTOR = Boolean.getBoolean("jainslee.eventrouter.useDisruptor");
+    private static final int DEFAULT_RING_SIZE = 262144;
+    private static final String DEFAULT_WAIT_STRATEGY = "blocking";
 
-    /**
-     * The array of {@link EventRouterExecutor}s that are used to route events
-     */
     private EventRouterExecutor[] executors;
-        
-    /**
-     * Maps executors to activities.
-     */
     private EventRouterExecutorMapper executorMapper;
-    
-    /**
-     * Provides performance and load statistics of the event router.
-     */
     private EventRouterStatistics statistics;
-    
     private final EventRouterConfiguration configuration;
-    
-    /**
-     * Creates a new EventRouterImpl with default configuration.
-     * @param configuration the event router configuration
-     */
+
+    private boolean useDisruptor;
+    private int eventRouterThreads;
+    private int ringSize;
+    private String waitStrategy;
+    private boolean multiProducer;
+
     public EventRouterImpl(EventRouterConfiguration configuration) {
         this.configuration = configuration;
     }
-    
+
+    private void resolveConfiguration() {
+        final String jvmDisruptor = System.getProperty("jainslee.eventrouter.useDisruptor");
+        if (jvmDisruptor != null) {
+            useDisruptor = Boolean.parseBoolean(jvmDisruptor);
+        } else {
+            final String configDisruptor = configuration.getProperty("useDisruptor");
+            useDisruptor = configDisruptor == null || Boolean.parseBoolean(configDisruptor);
+        }
+
+        eventRouterThreads = configuration.getEventRouterThreads();
+        if (eventRouterThreads <= 0) {
+            eventRouterThreads = Integer.getInteger(
+                    "jainslee.eventrouter.threads",
+                    Math.max(4, Runtime.getRuntime().availableProcessors()));
+        }
+
+        final String configRingSize = configuration.getProperty("ringsize");
+        if (configRingSize != null) {
+            ringSize = Integer.parseInt(configRingSize);
+        } else {
+            ringSize = Integer.getInteger("jainslee.eventrouter.ringsize", DEFAULT_RING_SIZE);
+        }
+
+        final String jvmWaitStrategy = System.getProperty("jainslee.eventrouter.waitstrategy");
+        if (jvmWaitStrategy != null) {
+            waitStrategy = jvmWaitStrategy;
+        } else {
+            final String configWaitStrategy = configuration.getProperty("waitstrategy");
+            waitStrategy = configWaitStrategy != null ? configWaitStrategy : DEFAULT_WAIT_STRATEGY;
+        }
+
+        final String jvmMultiProducer = System.getProperty("jainslee.eventrouter.multi.producer");
+        if (jvmMultiProducer != null) {
+            multiProducer = Boolean.parseBoolean(jvmMultiProducer);
+        } else {
+            final String configMultiProducer = configuration.getProperty("multi.producer");
+            multiProducer = configMultiProducer == null || Boolean.parseBoolean(configMultiProducer);
+        }
+    }
+
     @Override
     public void sleeInitialization() {
-        logger.info("Mobicents JAIN SLEE Event Router initialized. Using " + 
-            (USE_DISRUPTOR ? "LMAX Disruptor" : "standard ThreadPool") + 
-            " with " + EVENT_ROUTER_THREADS + " threads and ring size " + RING_SIZE);
+        resolveConfiguration();
+        logger.info("Mobicents JAIN SLEE Event Router initialized. Using "
+                + (useDisruptor ? "LMAX Disruptor" : "standard ThreadPool")
+                + " with " + eventRouterThreads + " executors, ring size "
+                + ringSize + ", wait strategy " + waitStrategy
+                + ", multiProducer=" + multiProducer);
     }
-    
+
     @Override
     public void sleeStarting() {
-        // get ridden of old executors, if any
+        resolveConfiguration();
+
         if (this.executors != null) {
             for (EventRouterExecutor executor : this.executors) {
                 executor.shutdown();
             }
         }
 
-        // Use Disruptor for event routing if enabled (default true for performance)
-        if (USE_DISRUPTOR) {
+        if (useDisruptor) {
             createDisruptorExecutors();
         } else {
             createStandardExecutors();
         }
-        
-        // create mapper
+
         try {
             Class<?> executorMapperClass = Class.forName(configuration.getExecutorMapperClassName());
             executorMapper = (EventRouterExecutorMapper) executorMapperClass.newInstance();
             executorMapper.setExecutors(executors);
         } catch (Throwable e) {
-            throw new IllegalStateException("Unable to create event router executor mapper class instance",e);
-        }       
-        
-        // create stats
+            throw new IllegalStateException("Unable to create event router executor mapper class instance", e);
+        }
+
         statistics = new EventRouterStatisticsImpl(this);
     }
 
-    /**
-     * Creates Disruptor-based executors for high performance
-     */
     private void createDisruptorExecutors() {
-        logger.info("Creating " + EVENT_ROUTER_THREADS + " Disruptor-based event router executors");
-        
-        this.executors = new EventRouterExecutor[EVENT_ROUTER_THREADS];
-        SleeThreadFactory threadFactory = new SleeThreadFactory("SLEE-Disruptor-ER-");
-        
-        for (int i = 0; i < EVENT_ROUTER_THREADS; i++) {
+        logger.info("Creating " + eventRouterThreads + " Disruptor-based event router executors");
+
+        this.executors = new EventRouterExecutor[eventRouterThreads];
+
+        for (int i = 0; i < eventRouterThreads; i++) {
+            SleeThreadFactory threadFactory = new SleeThreadFactory("SLEE-Disruptor-ER-" + i + "-");
             this.executors[i] = new DisruptorEventRouterExecutorImpl(
-                configuration.isCollectStats(), 
-                threadFactory, 
-                sleeContainer,
-                RING_SIZE,
-                1  // 1 worker per executor, multiple executors provide parallelism
-            );
-            // Start the disruptor
-            ((DisruptorEventRouterExecutorImpl)this.executors[i]).onStart();
+                    configuration.isCollectStats(),
+                    threadFactory,
+                    sleeContainer,
+                    ringSize,
+                    1,
+                    waitStrategy,
+                    multiProducer,
+                    i);
+            ((DisruptorEventRouterExecutorImpl) this.executors[i]).onStart();
         }
-        
+
         logger.info("Disruptor-based event router executors created successfully");
     }
 
-    /**
-     * Creates standard ThreadPoolExecutor-based executors (fallback)
-     */
     private void createStandardExecutors() {
-        // Use configuration.getEventRouterThreads() for backwards compatibility
-        int threadCount = configuration.getEventRouterThreads();
-        if (threadCount <= 0) {
-            threadCount = EVENT_ROUTER_THREADS;
-        }
-        
-        logger.info("Creating " + threadCount + " standard event router executors");
-        
-        this.executors = new EventRouterExecutor[threadCount];
-        for (int i = 0; i < threadCount; i++) {
+        logger.info("Creating " + eventRouterThreads + " standard event router executors");
+
+        this.executors = new EventRouterExecutor[eventRouterThreads];
+        for (int i = 0; i < eventRouterThreads; i++) {
             this.executors[i] = new EventRouterExecutorImpl(
-                configuration.isCollectStats(), 
-                new SleeThreadFactory("SLEE-EventRouterExecutor-"+i), 
-                sleeContainer
-            );
+                    configuration.isCollectStats(),
+                    new SleeThreadFactory("SLEE-EventRouterExecutor-" + i),
+                    sleeContainer);
         }
     }
-    
+
     @Override
     public String toString() {
         return "EventRouter: "
-            + "\n+-- Executors: " + executors.length
-            + "\n+-- Type: " + (USE_DISRUPTOR ? "LMAX Disruptor" : "ThreadPool")
-            + "\n+-- Threads: " + EVENT_ROUTER_THREADS
-            + "\n+-- Ring Size: " + RING_SIZE;
+                + "\n+-- Executors: " + (executors != null ? executors.length : 0)
+                + "\n+-- Type: " + (useDisruptor ? "LMAX Disruptor" : "ThreadPool")
+                + "\n+-- Threads: " + eventRouterThreads
+                + "\n+-- Ring Size: " + ringSize
+                + "\n+-- Wait Strategy: " + waitStrategy;
     }
-    
-    /* (non-Javadoc)
-     * @see org.mobicents.slee.runtime.eventrouter.EventRouter#getEventRouterStatistics()
-     */
+
     public EventRouterStatistics getEventRouterStatistics() {
         return statistics;
     }
-    
-    /* (non-Javadoc)
-     * @see org.mobicents.slee.runtime.eventrouter.EventRouter#getExecutors()
-     */
+
     public EventRouterExecutor[] getExecutors() {
         return executors;
     }
-    
-    /* (non-Javadoc)
-     * @see org.mobicents.slee.runtime.eventrouter.EventRouter#getEventRouterExecutorMapper()
-     */
+
     public EventRouterExecutorMapper getEventRouterExecutorMapper() {
         return executorMapper;
     }

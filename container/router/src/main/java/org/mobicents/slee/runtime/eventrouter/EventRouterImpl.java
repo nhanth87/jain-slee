@@ -100,8 +100,18 @@ public class EventRouterImpl extends AbstractSleeContainerModule implements Even
             multiProducer = Boolean.parseBoolean(jvmMultiProducer);
         } else {
             final String configMultiProducer = configuration.getProperty("multi.producer");
-            multiProducer = configMultiProducer == null || Boolean.parseBoolean(configMultiProducer);
+            multiProducer = configMultiProducer != null && Boolean.parseBoolean(configMultiProducer);
         }
+    }
+
+    /**
+     * Approximate ring-buffer memory footprint: executors × ringSize × ~64 bytes per slot.
+     */
+    public long estimateRingBufferMemoryBytes() {
+        if (!useDisruptor || executors == null) {
+            return 0L;
+        }
+        return (long) executors.length * (long) ringSize * 64L;
     }
 
     @Override
@@ -111,7 +121,8 @@ public class EventRouterImpl extends AbstractSleeContainerModule implements Even
                 + (useDisruptor ? "LMAX Disruptor" : "standard ThreadPool")
                 + " with " + eventRouterThreads + " executors, ring size "
                 + ringSize + ", wait strategy " + waitStrategy
-                + ", multiProducer=" + multiProducer);
+                + ", multiProducer=" + multiProducer
+                + (useDisruptor ? ", estRingMemBytes=" + ((long) eventRouterThreads * ringSize * 64L) : ""));
     }
 
     @Override

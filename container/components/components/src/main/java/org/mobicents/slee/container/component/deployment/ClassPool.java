@@ -140,6 +140,15 @@ public class ClassPool implements org.mobicents.slee.container.component.ClassPo
 		}
 	}
 
+	/**
+	 * Solution A entry point: persist bytecode under the deployment directory and load it.
+	 */
+	public Class<?> persistAndLoad(CtClass ctClass, String deployDir, ClassLoader classLoader)
+			throws javax.slee.management.DeploymentException {
+		return org.mobicents.slee.container.deployment.JavassistDeployTimeCodegen.persistAndLoad(
+				ctClass, deployDir, classLoader);
+	}
+
 	
   public javassist.ClassPool getClassPool()
   {

@@ -48,7 +48,7 @@ import javax.slee.management.DeploymentException;
 
 import org.apache.log4j.Logger;
 import org.mobicents.slee.container.component.SbbComponentImpl;
-import org.mobicents.slee.container.component.deployment.ClassPool;
+import org.mobicents.slee.container.deployment.JavassistDeployTimeCodegen;
 
 /**
  * Class decorating the sbb abstract class. The byte code is modified IF
@@ -127,7 +127,7 @@ public class SbbAbstractClassDecorator {
         if (isAbstractSbbClassDecorated) {
         	try {
         		String deployDir = component.getDeploymentDir().getAbsolutePath();
-        		sbbAbstractClass.writeFile(deployDir);
+        		JavassistDeployTimeCodegen.persist(sbbAbstractClass, deployDir);
         		sbbAbstractClass.detach();
         		// the file on disk is now in sync with the latest in-memory version
         		if (logger.isDebugEnabled()) {

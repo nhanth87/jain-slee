@@ -137,33 +137,19 @@ public class ConcreteActivityContextInterfaceGenerator {
 		String sbbDeploymentPathStr = deployDir;
 
 		try {
-			concreteActivityContextInterface.writeFile(sbbDeploymentPathStr);
+			Class clazz = JavassistDeployTimeCodegen.persistAndLoad(concreteActivityContextInterface,
+					sbbDeploymentPathStr);
 			if (logger.isDebugEnabled()) {
 				logger.debug("Concrete Class " + tmpClassName
 						+ " generated in the following path "
 						+ sbbDeploymentPathStr);
 			}
-		} catch (Exception e) {
-
+			this.concreteActivityContextInterface.defrost();
+			return clazz;
+		} catch (DeploymentException e) {
 			logger.error("problem generating concrete class", e);
-			throw new DeploymentException(
-					"problem generating concrete class! ", e);
+			throw e;
 		}
-
-		// load the class
-		Class clazz = null;
-		try {
-			clazz = Thread.currentThread().getContextClassLoader().loadClass(
-					tmpClassName);
-		} catch (Exception e1) {
-			logger.error("problem loading generated class", e1);
-			throw new DeploymentException(
-					"problem loading the generated class! ", e1);
-		}
-
-		this.concreteActivityContextInterface.defrost();
-
-		return clazz;
 
 	}
 

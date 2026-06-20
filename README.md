@@ -8,9 +8,11 @@
 
 | Component | Before | After | Status |
 | --- | --- | --- | --- |
-| **Event Router** | Single ThreadPoolExecutor | **LMAX Disruptor** | ✅ 10x throughput |
-| **SBB Pool** | min=1, max=-1 | **min=5000, max=100000** | ✅ 100K+ entities |
-| **Ring Buffer** | LinkedBlockingQueue | **262144 slots** | ✅ Lock-free |
+| **Event Router** | Single ThreadPoolExecutor | **N × LMAX Disruptor (1 worker/ring)** | Enabled via WildFly config |
+| **SBB Pool** | min=1, max=-1 | **min=500, max=50000** (tunable) | High concurrency |
+| **Ring Buffer** | LinkedBlockingQueue | **262144 slots per executor** | Lock-free |
+| **Parallelism** | Single thread fallback | **N = CPU cores executors, Activity hash pin** | Per-session |
+| **Stale guard** | — | **confirmSbbEntityAttachement=true** | Issue 2313 |
 | **Timer Threads** | Default | **4 threads** | ✅ Parallel |
 | **WildFly 10** | AS7 modules | **Full WF10 integration** | ✅ Complete |
 
@@ -101,15 +103,19 @@ javax.cache (optional)
 
 ### High-Performance Event Routing
 
-- LMAX Disruptor with configurable ring buffer size
-- Multiple worker threads for parallel event processing
-- BusySpinWaitStrategy for lowest latency
-- Statistics collection without lock contention
+- **N Disruptor executors** (default: one per CPU core), each with **1 worker thread** and its own ring buffer
+- Activities (USSD sessions) are **pinned** to an executor via `ActivityHashingEventRouterExecutorMapper` at creation
+- Events on the same activity are processed **serially** on one thread (JAIN SLEE ordering guarantee)
+- Many concurrent sessions run **in parallel** across N executor threads
+- `confirmSbbEntityAttachement=true` prevents stale SBB delivery (Issue 2313)
+- Disruptor enabled by default through `EventRouterConfiguration` (WildFly subsystem)
+- Blocking wait strategy by default for CPU efficiency at high TPS
+- Optional JVM override: `-Djainslee.eventrouter.useDisruptor=true`
 
 ### Optimized SBB Pool
 
-- Pre-warmed pool with 1000 minimum instances
-- Scale up to 20,000 concurrent SBB instances
+- Default pre-warm: 500 minimum idle instances per SBB type
+- Default max: 50,000 active instances (tune via `-Djainslee.sbb.pool.max` based on RAM)
 - Adaptive eviction with configurable intervals
 - Test-on-borrow for data integrity
 
@@ -125,20 +131,17 @@ javax.cache (optional)
 ### JVM System Properties
 
 ```bash
-# SBB Pool Configuration - Supports 100K+ concurrent entities
--Djainslee.sbb.pool.min=5000                     # Minimum idle SBB instances (pre-warmed)
--Djainslee.sbb.pool.max=100000                    # Maximum active SBB instances
--Djainslee.sbb.pool.maxIdle=80000                # Maximum idle instances to retain
--Djainslee.sbb.pool.keepAlive=120                 # Keep-alive time in seconds
--Djainslee.sbb.pool.minEvictableIdleTime=300000   # Min idle time before eviction (ms)
--Djainslee.sbb.pool.testOnBorrow=true             # Test instance on borrow
--Djainslee.sbb.pool.testWhileIdle=false           # Test instance while idle
+# SBB Pool Configuration
+-Djainslee.sbb.pool.min=500                       # Minimum idle SBB instances (pre-warmed)
+-Djainslee.sbb.pool.max=50000                     # Maximum active SBB instances
+-Djainslee.sbb.pool.maxIdle=10000                 # Maximum idle instances to retain
 
-# Event Router Configuration
--Djainslee.eventrouter.threads=8                 # Number of worker threads
--Djainslee.eventrouter.ringsize=262144            # Disruptor ring buffer size (256K)
--Djainslee.eventrouter.waitstrategy=busyspin      # Wait strategy: busyspin, yield, sleep
--Djainslee.eventrouter.useDisruptor=true         # Enable Disruptor (default: true)
+# Event Router Configuration (defaults set in WildFly subsystem; JVM overrides optional)
+-Djainslee.eventrouter.threads=<CPU cores>        # Number of Disruptor executors
+-Djainslee.eventrouter.ringsize=262144             # Ring buffer size per executor
+-Djainslee.eventrouter.waitstrategy=blocking       # blocking or busyspin
+-Djainslee.eventrouter.useDisruptor=true           # Override only if needed
+-Djainslee.eventrouter.multi.producer=true         # Multi-producer ring buffers
 
 # Timer Facility Configuration
 -Djainslee.timer.threads=4                        # Number of timer threads

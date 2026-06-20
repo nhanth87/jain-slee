@@ -187,9 +187,8 @@ public class EventRoutingTaskImpl implements EventRoutingTask {
 				else {
 					if (debugLogging)
 						logger.debug("\n\n\nResuming the routing for"+eventContext);
-					// needed to ensure tests/events/eventcontext/Test1108039Test.xml passes
-					// the test must be fixed
-					Thread.sleep(10);
+					// Ordering is guaranteed by single-thread executor per activity;
+					// no artificial delay needed (removed Thread.sleep workaround).
 				}
 			}
 			

@@ -27,6 +27,7 @@ import org.mobicents.slee.container.eventrouter.EventRouterExecutor;
 import org.mobicents.slee.container.eventrouter.EventRoutingTask;
 import org.mobicents.slee.container.eventrouter.stats.EventRouterExecutorStatistics;
 import org.mobicents.slee.runtime.eventrouter.routingtask.EventRoutingTaskImpl;
+import org.mobicents.slee.runtime.eventrouter.routingtask.EventRoutingTaskPool;
 import org.mobicents.slee.runtime.eventrouter.stats.EventRouterExecutorStatisticsImpl;
 
 import java.util.Collections;
@@ -69,7 +70,13 @@ public class EventRouterExecutorImpl implements EventRouterExecutor {
 		 */
 		public void run() {
 			final long startTime = System.nanoTime();
-			eventRoutingTask.run();
+			try {
+				eventRoutingTask.run();
+			} finally {
+				if (eventRoutingTask instanceof EventRoutingTaskImpl) {
+					((EventRoutingTaskImpl) eventRoutingTask).resetAfterRun();
+				}
+			}
 			stats.eventRouted(eventRoutingTask.getEventContext().getEventTypeId(), System
 					.nanoTime()
 					- startTime);
@@ -182,13 +189,23 @@ public class EventRouterExecutorImpl implements EventRouterExecutor {
 	/* (non-Javadoc)
 	 * @see org.mobicents.slee.runtime.eventrouter.EventRouterExecutor#routeEvent(org.mobicents.slee.core.event.SleeEvent)
 	 */
-	public void routeEvent(EventContext event) {
-		final EventRoutingTaskImpl eventRoutingTask = new EventRoutingTaskImpl(event,sleeContainer);
+	public void routeEvent(final EventContext event) {
 		if (stats == null) {
-			executor.execute(eventRoutingTask);
+			executor.execute(new Runnable() {
+				@Override
+				public void run() {
+					EventRoutingTaskPool.route(event, sleeContainer);
+				}
+			});
 		} else {
-			executor.execute(new EventRoutingTaskStatsCollector(
-					eventRoutingTask));
+			executor.execute(new Runnable() {
+				@Override
+				public void run() {
+					final long startTime = System.nanoTime();
+					EventRoutingTaskPool.route(event, sleeContainer);
+					stats.eventRouted(event.getEventTypeId(), System.nanoTime() - startTime);
+				}
+			});
 		}
 	}
 

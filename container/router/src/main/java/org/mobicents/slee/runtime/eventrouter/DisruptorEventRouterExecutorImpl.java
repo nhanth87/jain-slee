@@ -30,15 +30,17 @@ import org.mobicents.slee.container.activity.ActivityContextHandle;
 import org.mobicents.slee.container.event.EventContext;
 import org.mobicents.slee.container.eventrouter.EventRouterExecutor;
 import org.mobicents.slee.container.eventrouter.stats.EventRouterExecutorStatistics;
-import org.mobicents.slee.runtime.eventrouter.routingtask.EventRoutingTaskImpl;
+import org.mobicents.slee.runtime.eventrouter.routingtask.EventRoutingTaskPool;
 import org.mobicents.slee.runtime.eventrouter.stats.EventRouterExecutorStatisticsImpl;
 
 import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.BusySpinWaitStrategy;
 import com.lmax.disruptor.EventFactory;
+import com.lmax.disruptor.EventHandler;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.WaitStrategy;
 import com.lmax.disruptor.WorkHandler;
+import com.lmax.disruptor.YieldingWaitStrategy;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
 
@@ -73,7 +75,7 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
             this.eventContext = eventContext;
             this.sleeContainer = sleeContainer;
             this.miscTask = null;
-            this.timestamp = System.nanoTime();
+            this.timestamp = stats != null ? System.nanoTime() : 0L;
             this.stats = stats;
             this.completionLatch = completionLatch;
             return this;
@@ -84,7 +86,7 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
             this.eventContext = null;
             this.sleeContainer = null;
             this.miscTask = miscTask;
-            this.timestamp = System.nanoTime();
+            this.timestamp = stats != null ? System.nanoTime() : 0L;
             this.stats = stats;
             this.completionLatch = completionLatch;
             return this;
@@ -98,7 +100,7 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
             this.completionLatch = null;
         }
 
-        public void process() {
+        public void process(boolean endOfBatch) {
             try {
                 if (miscTask != null) {
                     if (stats != null) {
@@ -109,8 +111,7 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
                         miscTask.run();
                     }
                 } else if (eventContext != null) {
-                    EventRoutingTaskImpl task = new EventRoutingTaskImpl(eventContext, sleeContainer);
-                    task.run();
+                    EventRoutingTaskPool.route(eventContext, sleeContainer);
                     if (stats != null) {
                         stats.eventRouted(eventContext.getEventTypeId(), System.nanoTime() - timestamp);
                     }
@@ -118,6 +119,9 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
             } finally {
                 if (completionLatch != null) {
                     completionLatch.countDown();
+                }
+                if (endOfBatch) {
+                    EventRouterBatchHooks.onEndOfBatch();
                 }
             }
         }
@@ -137,6 +141,7 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
     private final int workerCount;
     private final int executorIndex;
     private final String waitStrategyName;
+    private final int ringSize;
     private final CountDownLatch shutdownLatch = new CountDownLatch(1);
 
     public DisruptorEventRouterExecutorImpl(boolean collectStats,
@@ -161,14 +166,9 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
         if (ringSize < 0) {
             ringSize = DEFAULT_RING_SIZE;
         }
+        this.ringSize = ringSize;
 
         final WaitStrategy waitStrategyImpl = selectWaitStrategy(this.waitStrategyName);
-
-        @SuppressWarnings("unchecked")
-        WorkHandler<Event>[] workHandlers = new WorkHandler[workerCount];
-        for (int i = 0; i < workerCount; i++) {
-            workHandlers[i] = new EventWorkHandler();
-        }
 
         this.disruptor = new Disruptor<Event>(
                 EVENT_FACTORY,
@@ -176,12 +176,33 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
                 threadFactory,
                 multiProducer ? ProducerType.MULTI : ProducerType.SINGLE,
                 waitStrategyImpl);
-        this.disruptor.handleEventsWithWorkerPool(workHandlers);
+
+        if (workerCount == 1) {
+            this.disruptor.handleEventsWith(new EventHandler<Event>() {
+                @Override
+                public void onEvent(Event event, long sequence, boolean endOfBatch) {
+                    try {
+                        event.process(endOfBatch);
+                    } catch (Exception e) {
+                        logger.error("Error processing event on executor " + executorIndex, e);
+                    } finally {
+                        event.reset();
+                    }
+                }
+            });
+        } else {
+            @SuppressWarnings("unchecked")
+            WorkHandler<Event>[] workHandlers = new WorkHandler[workerCount];
+            for (int i = 0; i < workerCount; i++) {
+                workHandlers[i] = new EventWorkHandler();
+            }
+            this.disruptor.handleEventsWithWorkerPool(workHandlers);
+        }
         this.ringBuffer = this.disruptor.getRingBuffer();
 
-        logger.info(String.format(
-                "DisruptorEventRouterExecutor[%d] initialized: ringSize=%d, workers=%d, strategy=%s, multiProducer=%s",
-                executorIndex, ringSize, workerCount, this.waitStrategyName, multiProducer));
+        logger.info("DisruptorEventRouterExecutor[" + executorIndex + "] initialized: ringSize="
+                + ringSize + ", workers=" + workerCount + ", strategy=" + this.waitStrategyName
+                + ", multiProducer=" + multiProducer);
     }
 
     /**
@@ -194,7 +215,7 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
                 Integer.getInteger("jainslee.eventrouter.ringsize", DEFAULT_RING_SIZE),
                 1,
                 System.getProperty("jainslee.eventrouter.waitstrategy", "blocking"),
-                Boolean.getBoolean("jainslee.eventrouter.multi.producer"),
+                resolveMultiProducer(),
                 0);
     }
 
@@ -208,13 +229,24 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
             int workerCount) {
         this(collectStats, threadFactory, sleeContainer, ringSize, workerCount,
                 System.getProperty("jainslee.eventrouter.waitstrategy", "blocking"),
-                Boolean.getBoolean("jainslee.eventrouter.multi.producer"),
+                resolveMultiProducer(),
                 0);
+    }
+
+    static boolean resolveMultiProducer() {
+        final String jvm = System.getProperty("jainslee.eventrouter.multi.producer");
+        if (jvm != null) {
+            return Boolean.parseBoolean(jvm);
+        }
+        return false;
     }
 
     private static WaitStrategy selectWaitStrategy(String strategy) {
         if ("busyspin".equalsIgnoreCase(strategy)) {
             return new BusySpinWaitStrategy();
+        }
+        if ("yielding".equalsIgnoreCase(strategy)) {
+            return new YieldingWaitStrategy();
         }
         if ("blocking".equalsIgnoreCase(strategy)) {
             return new BlockingWaitStrategy();
@@ -308,11 +340,15 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
         return (fillLevel * 100.0) / getRingBufferSize();
     }
 
+    public int getConfiguredRingSize() {
+        return ringSize;
+    }
+
     private class EventWorkHandler implements WorkHandler<Event> {
         @Override
         public void onEvent(Event event) throws Exception {
             try {
-                event.process();
+                event.process(false);
             } catch (Exception e) {
                 logger.error("Error processing event on executor " + executorIndex, e);
             } finally {
@@ -323,7 +359,7 @@ public class DisruptorEventRouterExecutorImpl implements EventRouterExecutor {
 
     @Override
     public String toString() {
-        return String.format("DisruptorEventRouterExecutor[%d, ringSize=%d, workers=%d, fillLevel=%d]",
-                executorIndex, getRingBufferSize(), workerCount, getRingBufferFillLevel());
+        return "DisruptorEventRouterExecutor[" + executorIndex + ", ringSize=" + getRingBufferSize()
+                + ", workers=" + workerCount + ", fillLevel=" + getRingBufferFillLevel() + "]";
     }
 }

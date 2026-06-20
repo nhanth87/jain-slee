@@ -54,7 +54,7 @@ public class EventRoutingTaskImpl implements EventRoutingTask {
 
 	private final static Logger logger = Logger.getLogger(EventRoutingTaskImpl.class);
 	
-	private final SleeContainer container;
+	private SleeContainer container;
 	
 	/**
 	 * 
@@ -86,7 +86,7 @@ public class EventRoutingTaskImpl implements EventRoutingTask {
 	/**
 	 * 
 	 */
-	private final EventContext eventContext;
+	private EventContext eventContext;
 	
 	/**
 	 * indicates which phase we are in routing of event
@@ -94,12 +94,33 @@ public class EventRoutingTaskImpl implements EventRoutingTask {
 	private RoutingPhase routingPhase = RoutingPhase.DELIVERING;
 	
 	/**
+	 * Default constructor for {@link EventRoutingTaskPool} reuse.
+	 */
+	public EventRoutingTaskImpl() {
+	}
+
+	/**
 	 * 
 	 * @param eventContext
 	 */
 	public EventRoutingTaskImpl(EventContext eventContext, SleeContainer sleeContainer) {
+		init(eventContext, sleeContainer);
+	}
+
+	/**
+	 * Rebind this reusable task to a new event (called from {@link EventRoutingTaskPool}).
+	 */
+	public void init(EventContext eventContext, SleeContainer sleeContainer) {
 		this.eventContext = eventContext;
 		this.container = sleeContainer;
+		this.routingPhase = RoutingPhase.DELIVERING;
+	}
+
+	/**
+	 * Reset mutable routing state after {@link #run()} completes.
+	 */
+	public void resetAfterRun() {
+		this.routingPhase = RoutingPhase.DELIVERING;
 	}
 	
 	/* (non-Javadoc)

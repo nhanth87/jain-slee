@@ -242,18 +242,20 @@ public class SleeContainerService implements Service<SleeContainer> {
 
 		final EventRouterConfiguration eventRouterConfiguration = new EventRouterConfiguration();
 		eventRouterConfiguration.setEventRouterThreads(
-				getPropertyInt("EventRouterConfiguration", "eventRouterThreads", 8));
+				getPropertyInt("EventRouterConfiguration", "eventRouterThreads",
+						Runtime.getRuntime().availableProcessors()));
 		eventRouterConfiguration.setCollectStats(
-				getPropertyBoolean("EventRouterConfiguration", "collectStats", true));
+				getPropertyBoolean("EventRouterConfiguration", "collectStats", false));
 		eventRouterConfiguration.setConfirmSbbEntityAttachement(
 				getPropertyBoolean("EventRouterConfiguration", "confirmSbbEntityAttachement", true));
-		// WildFly 10: Enable Disruptor by default for high performance
 		eventRouterConfiguration.setProperty("useDisruptor",
 				getPropertyString("EventRouterConfiguration", "useDisruptor", "true"));
 		eventRouterConfiguration.setProperty("ringsize",
 				getPropertyString("EventRouterConfiguration", "ringsize", "262144"));
 		eventRouterConfiguration.setProperty("waitstrategy",
-				getPropertyString("EventRouterConfiguration", "waitstrategy", "busyspin"));
+				getPropertyString("EventRouterConfiguration", "waitstrategy", "blocking"));
+		eventRouterConfiguration.setProperty("multi.producer",
+				getPropertyString("EventRouterConfiguration", "multi.producer", "true"));
 		try {
 			eventRouterConfiguration.setExecutorMapperClassName(
 					getPropertyString("EventRouterConfiguration", "executorMapperClassName",

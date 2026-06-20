@@ -65,11 +65,11 @@ public class SbbObjectPoolManagementImpl implements SbbObjectPoolManagementImplM
 		// -Djainslee.sbb.pool.keepAlive=120
 		config = new GenericObjectPool.Config();
 		
-		// Maximum number of active SBB instances per pool (optimized for 100K+ concurrent entities)
-		config.maxActive = Integer.getInteger("jainslee.sbb.pool.max", 100000);
+		// Maximum number of active SBB instances per pool (tune via -Djainslee.sbb.pool.max)
+		config.maxActive = Integer.getInteger("jainslee.sbb.pool.max", 50000);
 		
-		// Maximum number of idle SBB instances to retain (close to maxActive for performance)
-		config.maxIdle = Integer.getInteger("jainslee.sbb.pool.maxIdle", 80000);
+		// Maximum number of idle SBB instances to retain
+		config.maxIdle = Integer.getInteger("jainslee.sbb.pool.maxIdle", 10000);
 		
 		// Maximum time to wait for an SBB instance (-1 = indefinite)
 		config.maxWait = Integer.getInteger("jainslee.sbb.pool.maxWait", -1);
@@ -77,8 +77,8 @@ public class SbbObjectPoolManagementImpl implements SbbObjectPoolManagementImplM
 		// Minimum time an instance can be idle before being evicted
 		config.minEvictableIdleTimeMillis = Long.getLong("jainslee.sbb.pool.minEvictableIdleTime", 300000);
 		
-		// Minimum number of idle SBB instances to maintain
-		config.minIdle = Integer.getInteger("jainslee.sbb.pool.min", 1000);
+		// Minimum number of idle SBB instances to maintain (tune via -Djainslee.sbb.pool.min)
+		config.minIdle = Integer.getInteger("jainslee.sbb.pool.min", 500);
 		
 		// Number of instances to test per eviction run
 		config.numTestsPerEvictionRun = Integer.getInteger("jainslee.sbb.pool.numTestsPerEviction", 100);

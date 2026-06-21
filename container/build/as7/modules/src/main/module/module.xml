@@ -32,6 +32,7 @@
         <resource-root path="core-${org.restcomm.cluster.core.version}.jar"/>
         <resource-root path="timers-${org.restcomm.cluster.timers.version}.jar"/>
         <resource-root path="infinispan-tree-${version.infinispan}.jar"/>
+        <resource-root path="disruptor-${com.lmax.disruptor.version}.jar"/>
     </resources>
 
     <dependencies>

@@ -26,6 +26,7 @@
 		<org.restcomm.cluster.core.version>${restcomm.cluster.version}</org.restcomm.cluster.core.version>
 		<org.restcomm.cluster.timers.version>${restcomm.cluster.version}</org.restcomm.cluster.timers.version>
 		<org.mobicents.servers.jainslee.api.jain-slee-11-ext.version>${jain-slee-11-ext.version}</org.mobicents.servers.jainslee.api.jain-slee-11-ext.version>
+		<com.lmax.disruptor.version>3.4.4</com.lmax.disruptor.version>
 	</properties>
 
 	<dependencies>
@@ -71,6 +72,12 @@
 		<dependency>
 			<groupId>org.mobicents.servers.jainslee.api</groupId>
 			<artifactId>jain-slee-11-ext</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>com.lmax</groupId>
+			<artifactId>disruptor</artifactId>
+			<version>${com.lmax.disruptor.version}</version>
 		</dependency>
 
 		<!-- SLEE CONTAINER MODULES - PLS KEEP A-Z ORDER -->

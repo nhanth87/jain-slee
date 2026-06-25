@@ -5,5 +5,12 @@ package com.microjainslee.api;
  * Provides timer facilities.
  */
 public interface TimerPort {
-    void setTimer(long timeout, SbbLocalObject sbbLocalObject);
+    /**
+     * Schedules a one-shot timer for the given SBB.
+     *
+     * @return opaque timer id for {@link #cancelTimer(long)}
+     */
+    long setTimer(long timeout, SbbLocalObject sbbLocalObject);
+
+    void cancelTimer(long timerID);
 }

@@ -68,7 +68,7 @@ import org.mobicents.slee.container.component.sbb.SbbComponent;
 import org.mobicents.slee.container.component.security.PermissionHolder;
 import org.mobicents.slee.container.component.security.PolicyFile;
 import org.mobicents.slee.container.component.service.ServiceComponent;
-import org.mobicents.slee.container.deployment.jboss.SleeContainerDeployerImpl;
+import org.mobicents.slee.container.deployment.micro.SleeContainerDeployerImpl;
 import org.mobicents.slee.container.management.ResourceManagement;
 import org.mobicents.slee.container.management.ServiceManagement;
 import org.mobicents.slee.container.transaction.SleeTransactionManager;

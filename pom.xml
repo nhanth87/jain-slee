@@ -1,126 +1,37 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
-	<modelVersion>4.0.0</modelVersion>
-	
-	<parent>
-		<groupId>org.restcomm</groupId>
-		<artifactId>restcomm-parent</artifactId>
-		<version>3.0.7</version>
-	</parent>
-	
-	<groupId>org.mobicents.servers.jainslee.core</groupId>
-	<artifactId>restcomm-slee-core</artifactId>
-	<version>8</version>
-			
-	<packaging>pom</packaging>
-	
-	<modules>
-		<module>api/extensions</module>
-		<module>container</module>			
-	</modules>
-		
-	<scm>
-		<connection>scm:git:https://github.com/RestComm/jain-slee.git</connection>
-		<developerConnection>scm:git:git@github.com:RestComm/jain-slee.git</developerConnection>
-		<url>https://github.com/RestComm/jain-slee</url>
-	</scm>
-	
-	<properties>
-		<restcomm.tools.mavenplugin.eclipse.version>1.0.1.FINAL</restcomm.tools.mavenplugin.eclipse.version>
-		<compile.source>1.8</compile.source>
-	</properties>
-	
-	<profiles>
-		<profile>
-			<id>maven-release</id>
-			<modules>
-				<module>tools/slee-management-console</module>
-				<module>tools/twiddle</module>
-				<module>tools/statistics</module>
-			</modules>
-			<build>
-				<plugins>
-					<plugin>
-						<groupId>org.apache.maven.plugins</groupId>
-						<artifactId>maven-release-plugin</artifactId>
-						<configuration>
-							<autoVersionSubmodules>true</autoVersionSubmodules>
-							<preparationGoals>clean install</preparationGoals>
-						</configuration>
-					</plugin>
-				</plugins>
-			</build>
-		</profile>
-		<profile>
-			<id>release</id>
-			<modules>
-				<module>tools/slee-management-console</module>
-				<module>tools/twiddle</module>
-				<module>tools/statistics</module>
-			</modules>
-		</profile>
-	</profiles>
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.microjainslee</groupId>
+    <artifactId>micro-jainslee</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
 
-	<!-- dupe info from parent, but it's only way to retrieve the parent without checkout -->
+    <modules>
+        <module>jainslee-api</module>
+        <module>jainslee-core</module>
+        <module>jainslee-apt</module>
+        <module>adapters/adapter-quarkus</module>
+        <module>ra-connectors</module>
+    </modules>
 
-	<repositories>
-		<repository>
-			<id>restcomm-public-repository-group</id>
-			<name>Restcomm Public Maven Repository Group</name>
-			<url>https://oss.sonatype.org/content/groups/public</url>
-			<layout>default</layout>
-			<releases>
-				<enabled>true</enabled>
-				<updatePolicy>never</updatePolicy>
-			</releases>
-			<snapshots>
-				<enabled>true</enabled>
-				<updatePolicy>never</updatePolicy>
-			</snapshots>
-		</repository>
-		<repository>
-			<id>java.net</id>
-			<url>http://download.java.net/maven/2/</url>
-		</repository>
-		<repository>
-			<id>jboss-public-repository-group</id>
-			<name>JBoss Public Maven Repository Group</name>
-			<url>http://repository.jboss.org/nexus/content/groups/public/</url>
-			<layout>default</layout>
-			<releases>
-				<enabled>true</enabled>
-				<updatePolicy>never</updatePolicy>
-			</releases>
-			<snapshots>
-				<enabled>true</enabled>
-				<updatePolicy>never</updatePolicy>
-			</snapshots>
-		</repository>
-	</repositories>
-	
-	<pluginRepositories>
-		<pluginRepository>
-			<id>restcomm-public-repository-group</id>
-			<name>Restcomm Public Maven Repository Group</name>
-			<url>https://oss.sonatype.org/content/groups/public</url>
-			<layout>default</layout>
-			<snapshots>
-				<enabled>false</enabled>
-			</snapshots>
-			<releases>
-				<updatePolicy>never</updatePolicy>
-			</releases>
-		</pluginRepository>
-		<pluginRepository>
-			<id>jboss-public-repository-group</id>
-			<name>JBoss Public Maven Repository Group</name>
-			<url>http://repository.jboss.org/nexus/content/groups/public/</url>
-			<layout>default</layout>
-			<snapshots>
-				<enabled>false</enabled>
-			</snapshots>
-			<releases>
-				<updatePolicy>never</updatePolicy>
-			</releases>
-		</pluginRepository>
-	</pluginRepositories>
+    <properties>
+        <maven.compiler.source>8</maven.compiler.source>
+        <maven.compiler.target>8</maven.compiler.target>
+    </properties>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.8.1</version>
+                <configuration>
+                    <source>8</source>
+                    <target>8</target>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

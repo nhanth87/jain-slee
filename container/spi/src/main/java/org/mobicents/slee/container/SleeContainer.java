@@ -23,7 +23,6 @@
 package org.mobicents.slee.container;
 
 import org.apache.log4j.Logger;
-import org.jboss.msc.service.ServiceController;
 import org.restcomm.cluster.MobicentsCluster;
 import org.mobicents.slee.connector.local.SleeConnectionService;
 import org.mobicents.slee.container.activity.ActivityContextFactory;
@@ -176,15 +175,13 @@ public class SleeContainer {
 	
 	private JndiManagement jndiManagement;
 
-	private ServiceController serviceController;
-
 	/**
 	 * Creates a new instance of SleeContainer -- This is called from the
 	 * SleeManagementMBean to get the whole thing running.
 	 * 
 	 */
 	public SleeContainer(
-			String deployPath, ServiceController serviceController, MBeanServer mBeanServer,
+			String deployPath, MBeanServer mBeanServer,
 			ComponentManagement componentManagement,
 			SbbManagement sbbManagement,
 			ServiceManagement serviceManagement,
@@ -207,8 +204,6 @@ public class SleeContainer {
 			SbbEntityFactory sbbEntityFactory, CongestionControl congestionControl,
 			SleeConnectionService sleeConnectionService, SleeContainerDeployer sleeContainerDeployer) throws Exception {
         this.deployPath = deployPath;
-
-		this.serviceController = serviceController;
 
         this.mbeanServer = mBeanServer;
 
@@ -306,10 +301,6 @@ public class SleeContainer {
 		this.jndiManagement = jndiManagement;
 	}
 
-	public ServiceController getServiceController() {
-		return this.serviceController;
-	}
-	
 	/**
 	 * dumps the container state as a string, useful for debug/profiling
 	 * 

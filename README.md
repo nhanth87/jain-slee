@@ -1,292 +1,159 @@
-# JAIN-SLEE Performance Enhanced Edition v8.0.0
+# micro-jainslee 1.1.0
 
-## Project Description
+Lightweight JAIN SLEE 1.1 runtime modules (`jainslee-api`, `jainslee-core`, `jainslee-apt`, adapters) plus the RestComm JAIN-SLEE container with LMAX Disruptor event routing and WildFly 10 integration.
 
-**JAIN-SLEE Performance Enhanced** là phiên bản tối ưu hiệu suất cao của RestComm JAIN-SLEE, được thiết kế cho hạ tầng viễn thông hiện đại với yêu cầu **100,000+ concurrent SBB entities** và **100K+ events/giây** trên các máy chủ có cấu hình mạnh (16-32 CPU cores, 16-64GB RAM).
-
-## Performance Improvements
-
-| Component | Before | After | Status |
-| --- | --- | --- | --- |
-| **Event Router** | Single ThreadPoolExecutor | **N × LMAX Disruptor (1 worker/ring)** | Enabled via WildFly config |
-| **SBB Pool** | min=1, max=-1 | **min=500, max=50000** (tunable) | High concurrency |
-| **Ring Buffer** | LinkedBlockingQueue | **262144 slots per executor** | Lock-free |
-| **Parallelism** | Single thread fallback | **N = CPU cores executors, Activity hash pin** | Per-session |
-| **Stale guard** | — | **confirmSbbEntityAttachement=true** | Issue 2313 |
-| **Timer Threads** | Default | **4 threads** | ✅ Parallel |
-| **WildFly 10** | AS7 modules | **Full WF10 integration** | ✅ Complete |
-
-## WildFly 10 Integration
-
-JAIN-SLEE Enhanced được tích hợp hoàn toàn với **WildFly 10**, tận dụng tất cả các tính năng mới:
-
-### Tính năng WildFly 10
-
-| Tính năng | Mô tả |
-| --- | --- |
-| **Modular Subsystem** | Native module system integration |
-| **Clustering API** | `org.wildfly.clustering.*` APIs |
-| **Infinispan 8** | Distributed caching mới |
-| **Transaction Client** | `org.wildfly.transaction.client` |
-| **Naming** | `org.wildfly.naming` LDAP integration |
-| **Security** | `org.wildfly.security.manager` |
-| **JCache/JSR-107** | Optional cache support |
-
-### Module Dependencies
-
-```
-org.wildfly.clustering.api
-org.wildfly.clustering.infinispan
-org.wildfly.clustering.server
-org.wildfly.naming
-org.wildfly.transaction.client
-org.wildfly.security.manager
-javax.cache (optional)
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     JAIN-SLEE Enhanced                        │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │              LMAX Disruptor Event Router                │   │
-│  │  ┌──────────┐    ┌──────────┐    ┌──────────────────┐  │   │
-│  │  │  Event   │───▶│RingBuffer│───▶│ Worker Threads   │  │   │
-│  │  │ Producer │    │ 256K slots│   │ (8 threads)     │  │   │
-│  │  └──────────┘    └──────────┘    └──────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │              Apache Commons Pool (SBB)                   │   │
-│  │  ┌──────────┐    ┌──────────┐    ┌──────────────────┐  │   │
-│  │  │  minIdle │    │  maxIdle │    │  keepAliveTime   │  │   │
-│  │  │  5000    │    │ 100000   │    │  120 seconds    │  │   │
-│  │  └──────────┘    └──────────┘    └──────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │              WildFly 10 Subsystem                         │   │
-│  │  ┌──────────┐    ┌──────────┐    ┌──────────────────┐  │   │
-│  │  │ MSC 1.2  │    │Controller│    │  Transaction     │  │   │
-│  │  │ Service  │    │  WF10    │    │  Client API     │  │   │
-│  │  └──────────┘    └──────────┘    └──────────────────┘  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Core Innovation: LMAX Disruptor Integration
-
-### Why Disruptor?
-
-- **Lock-free**: No mutex contention between producer and consumers
-- **Memory-efficient**: Pre-allocated ring buffer eliminates GC pressure
-- **Cache-friendly**: False-sharing protection with sequence-based coordination
-- **Ultra-low latency**: Single-threaded processing with batch optimization
-
-### Technical Details
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  Event Flow in Disruptor                   │
-├─────────────────────────────────────────────────────────────┤
-│  1. Event arrives → Claim next sequence in ring buffer     │
-│  2. Write event data to claimed slot (no locks)           │
-│  3. Publish sequence → Consumers notified immediately     │
-│  4. Worker threads process events in parallel             │
-│  5. Ring buffer wraps around when full                     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Features
-
-### High-Performance Event Routing
-
-- **N Disruptor executors** (default: one per CPU core), each with **1 worker thread** and its own ring buffer
-- Activities (USSD sessions) are **pinned** to an executor via `ActivityHashingEventRouterExecutorMapper` at creation
-- Events on the same activity are processed **serially** on one thread (JAIN SLEE ordering guarantee)
-- Many concurrent sessions run **in parallel** across N executor threads
-- `confirmSbbEntityAttachement=true` prevents stale SBB delivery (Issue 2313)
-- Disruptor enabled by default through `EventRouterConfiguration` (WildFly subsystem)
-- Blocking wait strategy by default for CPU efficiency at high TPS
-- Optional JVM override: `-Djainslee.eventrouter.useDisruptor=true`
-
-### Optimized SBB Pool
-
-- Default pre-warm: 500 minimum idle instances per SBB type
-- Default max: 50,000 active instances (tune via `-Djainslee.sbb.pool.max` based on RAM)
-- Adaptive eviction with configurable intervals
-- Test-on-borrow for data integrity
-
-### Timer Facility
-
-- 4 dedicated timer threads
-- Fault-tolerant scheduling with cluster awareness
-- Transaction-aware execution
-- Configurable purge period
-
-## Configuration
-
-### JVM System Properties
-
-```bash
-# SBB Pool Configuration
--Djainslee.sbb.pool.min=500                       # Minimum idle SBB instances (pre-warmed)
--Djainslee.sbb.pool.max=50000                     # Maximum active SBB instances
--Djainslee.sbb.pool.maxIdle=10000                 # Maximum idle instances to retain
-
-# Event Router Configuration (defaults set in WildFly subsystem; JVM overrides optional)
--Djainslee.eventrouter.threads=<CPU cores>        # Number of Disruptor executors
--Djainslee.eventrouter.ringsize=262144             # Ring buffer size per executor
--Djainslee.eventrouter.waitstrategy=blocking       # blocking or busyspin
--Djainslee.eventrouter.useDisruptor=true           # Override only if needed
--Djainslee.eventrouter.multi.producer=true         # Multi-producer ring buffers
-
-# Timer Facility Configuration
--Djainslee.timer.threads=4                        # Number of timer threads
-```
-
-### Recommended Hardware Configuration
-
-| Resource | Minimum | Recommended | Maximum |
-| --- | --- | --- | --- |
-| **CPU Cores** | 8 | 16-32 | 64 |
-| **RAM** | 8GB | 16-64GB | 128GB |
-| **Heap** | 4GB | 8-32GB | 64GB |
-| **Threads** | 16 | 32-64 | 128 |
-
-### Sample JVM Options
-
-```bash
-JAVA_OPTS="-Xms32g -Xmx64g \
-           -XX:+UseG1GC \
-           -XX:MaxGCPauseMillis=100 \
-           -Djainslee.sbb.pool.min=5000 \
-           -Djainslee.sbb.pool.max=100000 \
-           -Djainslee.sbb.pool.maxIdle=80000 \
-           -Djainslee.eventrouter.threads=8 \
-           -Djainslee.eventrouter.ringsize=262144 \
-           -Djainslee.timer.threads=4"
-```
-
-## Performance Benchmarks
-
-### Test Setup
-
-- **Hardware**: 32GB RAM, 16 CPU cores
-- **Java**: OpenJDK 11+
-- **Scenario**: SIP signaling with concurrent SBB entities
-
-### Results
-
-| Metric | Classic | Enhanced | Improvement |
-| --- | --- | --- | --- |
-| **Throughput** | ~10K events/s | **100K+ events/s** | 10x |
-| **99th Latency** | ~50ms | **<5ms** | 10x |
-| **GC Pauses** | 200ms/10s | **<10ms** | 20x |
-| **Heap Stability** | Variable | **Stable** | Predictable |
-
-## Installation
-
-### Maven Dependency
-
-```xml
-<dependency>
-    <groupId>org.mobicents.slee.diameter</groupId>
-    <artifactId>parent</artifactId>
-    <version>7.0.0</version>
-</dependency>
-```
-
-### Build
-
-```bash
-mvn clean install -DskipTests
-```
-
-### Quick Start
-
-```bash
-# Start with performance configuration
-./run.sh \
-  -Djainslee.sbb.pool.min=1000 \
-  -Djainslee.sbb.pool.max=20000 \
-  -Djainslee.eventrouter.threads=8 \
-  -Djainslee.timer.threads=4
-```
-
-## Technology Stack
-
-- **Event Processing**: LMAX Disruptor 3.4.4
-- **Object Pooling**: Apache Commons Pool 2.x
-- **Clustering**: Infinispan + JGroups
-- **Timer**: FaultTolerantScheduler
-- **Java**: 11+ (17+ recommended)
-
-## Clustering & Failover
-
-JAIN-SLEE Enhanced hỗ trợ clustering với state replication:
-
-- **ReplicatedData**: Đồng bộ state giữa các node
-- **FailOverListener**: Callback khi cluster failover
-- **Infinispan**: Distributed caching với consistent hash
-- **JGroups**: Group communication cho cluster membership
-
-### Failover Scenario
-
-```
-┌─────────────┐           ┌─────────────┐
-│  Server A   │           │  Server B   │
-│  (Primary)  │  ←─────▶  │ (Secondary) │
-│             │           │             │
-│ SBB Entity  │  Replicate│ SBB Entity  │
-│ Processing  │   State   │ Standby     │
-└─────────────┘           └─────────────┘
-       │                         ▲
-       │ Server Dies              │ Takeover
-       ▼                         │
-┌─────────────┐                  │
-│  Server B   │◄─────────────────┘
-│ (Primary)   │   SBB Entity resumes
-│             │   processing seamlessly
-└─────────────┘
-```
-
-## Use Cases
-
-- **VoLTE/IMS**: Xử lý SIP signaling với độ trễ thấp
-- **SMSC**: High-throughput SMS processing
-- **USSD**: Real-time USSD gateway
-- **Diameter**: AAA và policy control
-- **SS7/SSU**: MAP/CAP/TCAP signaling
-
-## License
-
-Dự án được phát triển dựa trên RestComm JAIN-SLEE với giấy phép:
-- **GNU Affero General Public License v3.0**
-
-## Changelog
-
-### v8.0.0 - "100K Scale" (Current)
-
-#### Major Performance Enhancements
-- ✅ **SBB Pool**: Increased to 100K max concurrent entities
-  - `minIdle` = 5000 (pre-warmed)
-  - `maxActive` = 100000
-  - `maxIdle` = 80000
-- ✅ **Ring Buffer**: Increased from 32K to 262144 (256K slots)
-- ✅ **LMAX Disruptor**: Lock-free event processing with 8 worker threads
-- ✅ **Timer Facility**: 4 dedicated threads with transaction awareness
-
-#### System Properties Support
-All configurations now support JVM system properties for runtime tuning:
-- `-Djainslee.sbb.pool.*` - SBB pool tuning
-- `-Djainslee.eventrouter.*` - Event router configuration
-- `-Djainslee.timer.threads` - Timer thread count
+[![Version](https://img.shields.io/badge/version-1.1.0-blue)](pom.xml)
+[![jSS7 Timer](https://img.shields.io/badge/jSS7%20scheduler-9.4.0-green)](jainslee-core/pom.xml)
 
 ---
 
-**Project**: JAIN-SLEE Performance Enhanced
-**Maintainer**: nhanth87
-**Based on**: RestComm/jain-slee
+## Timer Scheduler Integration
+
+micro-jainslee 1.1.0 replaces the in-process `HierarchicalTimingWheel` with **jSS7 `TimerScheduler`** via `SleeTimerSchedulerBridge`.
+
+| Component | Package | Role |
+|-----------|---------|------|
+| **`TimerPortImpl`** | `com.microjainslee.core` | JAIN SLEE 1.1 §9 timer façade |
+| **`SleeTimerSchedulerBridge`** | `com.microjainslee.core` | Schedules via jSS7; fires on `EventRouter` |
+| **`LocalTimerAdapter`** | `org.restcomm.protocols.ss7.scheduler.impl` | Netty `HashedWheelTimer` (10 ms tick) |
+| **`TimerFacilityBackendBridge`** | `org.mobicents.slee.runtime.facilities` | Mobicents container adapter sketch |
+
+**Design rule:** timer callbacks must **never** invoke SBB code on the hashed-wheel thread. `SleeTimerSchedulerBridge` posts `TimerFiredEvent` to `EventRouter`, preserving JAIN SLEE single-threaded event delivery per activity.
+
+Full cutover gate and TCK checklist: [`docs/TCK_TIMER_CUTOVER.md`](docs/TCK_TIMER_CUTOVER.md)
+
+**Timer flow (micro-jainslee):**
+
+```mermaid
+sequenceDiagram
+    participant SBB as SbbLocalObject
+    participant TP as TimerPortImpl
+    participant STB as SleeTimerSchedulerBridge
+    participant LTA as LocalTimerAdapter
+    participant Wheel as HashedWheelTimer
+    participant ER as EventRouter
+    participant ACI as ActivityContext
+
+    SBB->>TP: setTimer(delay, sbb)
+    TP->>STB: schedule(sbb, delay)
+    STB->>LTA: schedule(TimerRecord, delay, callback)
+    LTA->>Wheel: newTimeout(delay)
+    Wheel->>STB: onTimerFire(record)
+    Note over STB: NOT on SBB thread
+    STB->>ER: routeEvent(TimerFiredEvent, aci)
+    ER->>ACI: deliver to SBB on router thread
+
+    SBB->>TP: cancelTimer(timerId)
+    TP->>STB: cancel(timerId)
+    STB->>LTA: cancel(timerId)
+```
+
+> **Container note:** `TimerFacilityImpl` still defaults to `FaultTolerantScheduler`. Wiring the bridge into the Mobicents container requires TCK sign-off — see the cutover doc.
+
+---
+
+## Event Router (Disruptor)
+
+The RestComm container routes SBB events through **N × LMAX Disruptor** executors (one worker per ring buffer):
+
+- Activities are **pinned** to an executor via `ActivityHashingEventRouterExecutorMapper`
+- Events on the same activity are processed **serially** (JAIN SLEE ordering guarantee)
+- Default ring size: 262144 slots per executor; blocking wait strategy
+- Enabled via WildFly `EventRouterConfiguration`; override with `-Djainslee.eventrouter.useDisruptor=true`
+
+| Property | Default | Purpose |
+|----------|---------|---------|
+| `jainslee.eventrouter.threads` | CPU cores | Disruptor executor count |
+| `jainslee.eventrouter.ringsize` | 262144 | Ring buffer slots per executor |
+| `jainslee.eventrouter.waitstrategy` | blocking | `blocking` or `busyspin` |
+| `jainslee.sbb.pool.min` | 500 | Pre-warmed SBB instances |
+| `jainslee.sbb.pool.max` | 50000 | Max active SBB instances |
+
+---
+
+## WildFly 10
+
+Container modules integrate with WildFly 10 subsystem APIs:
+
+- `org.wildfly.clustering.*` — distributed state and failover
+- `org.wildfly.transaction.client` — JTA-aware timer and event delivery
+- `org.wildfly.naming` — JNDI for Infinispan timer containers
+- Infinispan 8 caches for replicated SBB state
+
+For jSS7 protocol timers in the same JVM, use a **separate** Infinispan container (`microjainslee`) — do not share `jss7-timers`.
+
+---
+
+## Modules
+
+| Module | Artifact | Description |
+|--------|----------|-------------|
+| `jainslee-api` | `com.microjainslee:jainslee-api` | SLEE 1.1 API surface (`TimerPort`, `TimerFiredEvent`) |
+| `jainslee-core` | `com.microjainslee:jainslee-core` | `EventRouter`, `SleeTimerSchedulerBridge`, `TimerPortImpl` |
+| `jainslee-apt` | `com.microjainslee:jainslee-apt` | Annotation processing |
+| `adapters/adapter-quarkus` | `com.microjainslee:adapter-quarkus` | Quarkus integration adapter |
+| `ra-connectors` | `com.microjainslee:ra-connectors` | Resource adaptor connectors |
+| `container/` | Mobicents modules | Full JAIN-SLEE container, timers, router, profiles |
+
+---
+
+## Build
+
+```bash
+# micro-jainslee modules only
+mvn -pl jainslee-core -am install -DskipTests
+
+# full tree (container + tools)
+mvn clean install -DskipTests
+```
+
+### Maven coordinates
+
+```xml
+<dependency>
+    <groupId>com.microjainslee</groupId>
+    <artifactId>jainslee-core</artifactId>
+    <version>1.1.0</version>
+</dependency>
+```
+
+jSS7 scheduler dependency (transitive via `jainslee-core`):
+
+```xml
+<dependency>
+    <groupId>org.restcomm.protocols.ss7.scheduler</groupId>
+    <artifactId>scheduler</artifactId>
+    <version>9.4.0</version>
+</dependency>
+```
+
+---
+
+## Documentation
+
+| Document | Content |
+|----------|---------|
+| [`docs/TCK_TIMER_CUTOVER.md`](docs/TCK_TIMER_CUTOVER.md) | Timer backend cutover checklist, TCK gate, rollback |
+| [`../docs/`](../docs/) | Container design notes (parent repo) |
+
+---
+
+## Changelog
+
+### 1.1.0
+- `SleeTimerSchedulerBridge` — jSS7 `TimerScheduler` integration with `EventRouter` handoff
+- `TimerPortImpl` replaces `HierarchicalTimingWheel`
+- `TimerFiredEvent` API; `TimerFacilityBackendBridge` container adapter sketch
+- TCK cutover documentation
+
+### 1.0.x
+- micro-jainslee Phase 1: `jainslee-api`, `jainslee-core`, `jainslee-apt`, RA mock
+- LMAX Disruptor event router; WildFly 10 container integration
+
+---
+
+## License
+
+GNU Affero General Public License v3.0 (RestComm JAIN-SLEE lineage)
+
+**Maintainer:** [nhanth87](https://github.com/nhanth87)

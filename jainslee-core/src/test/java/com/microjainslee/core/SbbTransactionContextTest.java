@@ -138,6 +138,7 @@ public class SbbTransactionContextTest {
     private static final class FakeLocalObject implements SbbLocalObject {
         private final SbbID id;
         private boolean removed;
+        private int priority;
 
         private FakeLocalObject(String id) {
             this.id = new SbbID(id);
@@ -159,7 +160,12 @@ public class SbbTransactionContextTest {
 
         @Override
         public int getPriority() {
-            return 0;
+            return priority;
+        }
+
+        @Override
+        public void setPriority(int priority) {
+            this.priority = priority;
         }
 
         @Override

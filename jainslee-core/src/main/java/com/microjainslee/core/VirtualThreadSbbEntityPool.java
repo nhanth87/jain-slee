@@ -240,6 +240,16 @@ public final class VirtualThreadSbbEntityPool {
     /** Returns the underlying executor (VT-backed when Java 21+ is available). */
     public ExecutorService getExecutor() { return executor; }
 
+    /**
+     * Returns {@code true} once {@link #shutdown()} has been invoked. Used by
+     * {@link MicroSleeContainer} to detect a dead pool after a stop and rebuild
+     * a fresh one when the container is restarted, so the stop/start round-trip
+     * leaves the pool usable.
+     */
+    public boolean isShutdown() {
+        return shuttingDown || executor.isShutdown();
+    }
+
     /** Drain queues, signal loops to exit, and shut the executor down. */
     public void shutdown() {
         shuttingDown = true;

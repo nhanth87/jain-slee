@@ -12,6 +12,10 @@ package com.example.ussddemo.smoke;
 
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.ChildRelation;
+import com.microjainslee.api.ProfileAbstractCmp;
+import com.microjainslee.api.ProfileFacility;
+import com.microjainslee.api.ProfileID;
+import com.microjainslee.api.ProfileLocalObject;
 import com.microjainslee.api.Sbb;
 import com.microjainslee.api.SbbLocalObject;
 import com.microjainslee.api.SleeEvent;
@@ -95,7 +99,8 @@ public class ExampleAppSmokeTest {
         int failed = 0;
         String[] scenarios = {
                 "cmpRoundTrip", "childSbbCreation", "timerFiresEvent",
-                "cascadeRemoveCleansChildren", "manyConcurrentSessions"
+                "cascadeRemoveCleansChildren", "manyConcurrentSessions",
+                "profileCmpRoundTrip"
         };
         for (String scenario : scenarios) {
             System.out.print("[smoke] " + scenario + " ... ");
@@ -106,6 +111,7 @@ public class ExampleAppSmokeTest {
                 else if ("cascadeRemoveCleansChildren".equals(scenario))
                                                               test.cascadeRemoveCleansChildren();
                 else if ("manyConcurrentSessions".equals(scenario)) test.manyConcurrentSessions();
+                else if ("profileCmpRoundTrip".equals(scenario))    test.profileCmpRoundTrip();
                 System.out.println("OK");
             } catch (Throwable t) {
                 System.out.println("FAIL -- " + t.getMessage());
@@ -242,6 +248,76 @@ public class ExampleAppSmokeTest {
         }
     }
 
+    /** Subscriber profile — exercises ProfileAbstractCmp. */
+    public abstract static class SubscriberProfile extends ProfileAbstractCmp {
+        public String getMsisdn() {
+            try {
+                Method g = SubscriberProfile.class.getMethod("getMsisdn");
+                return (String) profileGet(g);
+            } catch (Exception e) { throw new RuntimeException(e); }
+        }
+        public void setMsisdn(String v) {
+            try {
+                Method s = SubscriberProfile.class.getMethod("setMsisdn", String.class);
+                profileSet(s, v);
+            } catch (Exception e) { throw new RuntimeException(e); }
+        }
+        public int getBalance() {
+            try {
+                Method g = SubscriberProfile.class.getMethod("getBalance");
+                return ((Integer) profileGet(g)).intValue();
+            } catch (Exception e) { throw new RuntimeException(e); }
+        }
+        public void setBalance(int v) {
+            try {
+                Method s = SubscriberProfile.class.getMethod("setBalance", int.class);
+                profileSet(s, Integer.valueOf(v));
+            } catch (Exception e) { throw new RuntimeException(e); }
+        }
+    }
+
+    /** Concrete profile impl — local fields back the abstract accessors. */
+    public static class ConcreteSubscriberProfile extends SubscriberProfile {
+        private String msisdn;
+        private int balance;
+        public String getMsisdn() { return msisdn; }
+        public void setMsisdn(String v) { this.msisdn = v; }
+        public int getBalance() { return balance; }
+        public void setBalance(int v) { this.balance = v; }
+    }
+
+    /** Phase 6 — Profile facility: create profile, set CMP fields, read back. */
+    public void profileCmpRoundTrip() throws Exception {
+        MicroSleeContainer c = newContainer();
+        try {
+            ProfileFacility facility = c.getProfileFacility();
+            // Create the profile table and a profile row.
+            facility.createProfileTable("subscribers");
+            ConcreteSubscriberProfile template = new ConcreteSubscriberProfile();
+            template.setMsisdn("+84909000001");
+            template.setBalance(100);
+            ProfileLocalObject lo = facility.createProfile("subscribers",
+                    "sub-1", ConcreteSubscriberProfile.class);
+            assertNotNull(lo);
+            // Write through the new profile's CMP accessors.
+            ConcreteSubscriberProfile p = (ConcreteSubscriberProfile) lo.getProfile();
+            p.setMsisdn("+84909000001");
+            p.setBalance(100);
+            assertEquals("+84909000001", p.getMsisdn());
+            assertEquals(100, p.getBalance());
+            // Round-trip via the table — same row, fields persisted.
+            ProfileLocalObject fetched = facility.getProfile(
+                    new ProfileID("subscribers", "sub-1"));
+            assertNotNull(fetched);
+            assertEquals("+84909000001",
+                    ((ConcreteSubscriberProfile) fetched.getProfile()).getMsisdn());
+            assertEquals(100,
+                    ((ConcreteSubscriberProfile) fetched.getProfile()).getBalance());
+        } finally {
+            c.stop();
+        }
+    }
+
     private static void waitForActivation(SimpleSbbLocalObject lo, long timeoutMs)
             throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMs;
@@ -266,5 +342,9 @@ public class ExampleAppSmokeTest {
 
     private static void assertNotSame(Object a, Object b) {
         if (a == b) throw new AssertionError("expected different instances");
+    }
+
+    private static void assertNotNull(Object o) {
+        if (o == null) throw new AssertionError("expected non-null");
     }
 }

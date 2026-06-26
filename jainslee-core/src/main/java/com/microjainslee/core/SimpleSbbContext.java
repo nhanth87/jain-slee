@@ -11,6 +11,8 @@
 package com.microjainslee.core;
 
 import com.microjainslee.api.ActivityContextNamingFacility;
+import com.microjainslee.api.ProfileFacility;
+import com.microjainslee.api.ProfileTablePort;
 import com.microjainslee.api.SbbContext;
 import com.microjainslee.api.SbbID;
 import com.microjainslee.api.SbbLocalObject;
@@ -32,17 +34,31 @@ public final class SimpleSbbContext implements SbbContext {
     private final SbbID sbbID;
     private final TimerPort timerPort;
     private final ActivityContextNamingFacility namingFacility;
+    private final ProfileFacility profileFacility;
     private final UsagePort usagePort = new SimpleUsagePort();
     private volatile boolean rollbackOnly;
 
     public SimpleSbbContext(ServiceID serviceID, SbbLocalObject localObject, TimerPort timerPort,
             ActivityContextNamingFacility namingFacility) {
-        this(serviceID, localObject, null, timerPort, namingFacility);
+        this(serviceID, localObject, null, timerPort, namingFacility, null);
     }
 
     public SimpleSbbContext(ServiceID serviceID, SbbLocalObject localObject,
             SbbID sbbID, TimerPort timerPort,
             ActivityContextNamingFacility namingFacility) {
+        this(serviceID, localObject, sbbID, timerPort, namingFacility, null);
+    }
+
+    /**
+     * Full-arg constructor used by the container to thread every facility
+     * reference through in one shot. The {@code profileFacility} argument is
+     * exposed via {@link #getProfileFacility()}; pass {@code null} when
+     * profile support is not wired (legacy test fixtures).
+     */
+    public SimpleSbbContext(ServiceID serviceID, SbbLocalObject localObject,
+            SbbID sbbID, TimerPort timerPort,
+            ActivityContextNamingFacility namingFacility,
+            ProfileFacility profileFacility) {
         if (serviceID == null) {
             throw new IllegalArgumentException("serviceID is required");
         }
@@ -51,6 +67,7 @@ public final class SimpleSbbContext implements SbbContext {
         this.sbbID = sbbID;
         this.timerPort = timerPort;
         this.namingFacility = namingFacility;
+        this.profileFacility = profileFacility;
     }
 
     @Override
@@ -85,6 +102,32 @@ public final class SimpleSbbContext implements SbbContext {
     @Override
     public UsagePort getUsageFacility() {
         return usagePort;
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Returns the {@link ProfileFacility} threaded through by the
+     * container, or {@code null} when no profile backend was wired
+     * (e.g. legacy test fixtures). The return type is the deprecated
+     * {@link ProfileTablePort} marker that still extends
+     * {@link ProfileFacility} so existing call-sites keep compiling.
+     * The default in-memory facility implements {@link ProfileTablePort}
+     * directly; embedders supplying a pure {@code ProfileFacility}
+     * implementation would need to wrap it themselves.
+     */
+    @Override
+    public ProfileTablePort getProfileFacility() {
+        if (profileFacility == null) {
+            return null;
+        }
+        if (profileFacility instanceof ProfileTablePort) {
+            return (ProfileTablePort) profileFacility;
+        }
+        // Pure ProfileFacility impls (no legacy port) are not visible
+        // through this return type — return null to honour the legacy
+        // null-when-absent convention rather than ClassCast.
+        return null;
     }
 
     @Override

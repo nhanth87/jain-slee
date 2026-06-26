@@ -60,16 +60,15 @@ public interface SbbContext {
     /**
      * JAIN-SLEE 1.1 §10 — profile facility access.
      * <p>
-     * micro-jainslee exposes this as a default that throws
-     * {@link UnsupportedOperationException} because the underlying profile
-     * backend is pluggable; concrete contexts must override when a profile
-     * store is configured.
+     * micro-jainslee exposes this as a default that returns {@code null}
+     * because the underlying profile backend is pluggable; concrete
+     * contexts must override when a profile store is configured.
      *
-     * @return the profile facility port
+     * @return the profile facility port, or {@code null} when no profile
+     *         backend is installed
      */
     default ProfileTablePort getProfileFacility() {
-        throw new UnsupportedOperationException(
-                "ProfileFacility not available on this SbbContext");
+        return null;
     }
 
     /**

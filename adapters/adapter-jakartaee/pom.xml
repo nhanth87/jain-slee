@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>micro-jainslee</artifactId>
+        <version>1.1.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>adapter-jakartaee</artifactId>
+    <packaging>jar</packaging>
+
+    <name>micro-jainslee :: adapter-jakartaee</name>
+    <description>
+        Jakarta EE 9+ integration for the micro-jainslee embedded container.
+        Exposes MicroSleeContainer via @Startup @Singleton EJB + JNDI bindings at
+        java:global/microjainslee/* for WildFly 27+ / Payara 6+ / Open Liberty /
+        TomEE 9+ runtimes.
+        R&amp;D only — never for production packaging.
+    </description>
+
+    <properties>
+        <maven.compiler.source>8</maven.compiler.source>
+        <maven.compiler.target>8</maven.compiler.target>
+        <jakarta.ejb.api.version>4.0.0</jakarta.ejb.api.version>
+        <jakarta.annotation.api.version>2.1.1</jakarta.annotation.api.version>
+        <log4j.version>2.23.1</log4j.version>
+    </properties>
+
+    <dependencies>
+        <!-- The micro-jainslee embedded container -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Jakarta EE 9+ APIs (provided by the application server at runtime) -->
+        <dependency>
+            <groupId>jakarta.ejb</groupId>
+            <artifactId>jakarta.ejb-api</artifactId>
+            <version>${jakarta.ejb.api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.annotation</groupId>
+            <artifactId>jakarta.annotation-api</artifactId>
+            <version>${jakarta.annotation.api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Log4j2 API only — the application server provides the SLF4J/log4j core -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>${log4j.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Java 8 source/target is enforced by the parent, but restated here
+                 so the module is self-describing for IDEs and BOM tools. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>8</source>
+                    <target>8</target>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -76,7 +76,7 @@ jobs:
 
       - name: Stress test (virtual threads required)
         run: |
-          mvn -B -ntp -pl jainslee-core test \
+          mvn -B -ntp -pl jainslee-core -am test \
             -Dtest=SbbEntityPoolStressTest \
             -DargLine="-Xmx4g -XX:+UseZGC -XX:+ZGenerational"
 
@@ -130,6 +130,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+          cache: maven
+
+      - name: Install micro-jainslee API + APT
+        run: |
+          mvn -pl jainslee-apt -am install -DskipTests -B -ntp -Dmaven.compiler.proc=none
 
       - name: Set up fixture
         run: |

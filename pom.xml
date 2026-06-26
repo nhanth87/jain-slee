@@ -79,6 +79,50 @@
                     <target>8</target>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.10.0</version>
+                <configuration>
+                    <source>8</source>
+                    <doclint>none</doclint>
+                    <quiet>true</quiet>
+                    <failOnError>false</failOnError>
+                    <detectJavaApiLink>true</detectJavaApiLink>
+                    <bottom><![CDATA[Copyright &#169; 2026 Tran Nhan (nhanth87@gmail.com).
+Licensed under GPLv3 OR a separate Commercial License. See <a href="https://github.com/nhanth87/jain-slee/blob/micro-jainslee/LICENSE">LICENSE</a> for details.]]></bottom>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>aggregate-javadoc</id>
+                        <phase>site</phase>
+                        <goals>
+                            <goal>aggregate</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
+    <reporting>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.10.0</version>
+                <reportSets>
+                    <reportSet>
+                        <id>aggregate</id>
+                        <configuration>
+                            <destDir>target/site/apidocs</destDir>
+                            <reportAggregate>true</reportAggregate>
+                        </configuration>
+                        <reports>
+                            <report>aggregate</report>
+                        </reports>
+                    </reportSet>
+                </reportSets>
+            </plugin>
+        </plugins>
+    </reporting>
 </project>

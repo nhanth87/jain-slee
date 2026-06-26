@@ -1,0 +1,12 @@
+name: "Micro JAIN SLEE"
+description: "Embeddable JAIN SLEE 1.1 runtime for Quarkus applications"
+artifact: "com.microjainslee:adapter-quarkus:1.1.0"
+metadata:
+  keywords:
+    - jainslee
+    - sbb
+    - telecom
+  status: "experimental"
+  guide: "https://github.com/nhanth87/jain-slee/blob/micro-jainslee/README.md#example-application-quarkus--ussd-demo"
+  categories:
+    - "miscellaneous"

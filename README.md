@@ -26,11 +26,12 @@
 9. [Profile & ACNF](#profile--acnf)
 10. [Timer Facility](#timer-facility)
 11. [Stress test: 100K SBBs](#stress-test-100k-sbbs)
-12. [Build & test](#build--test)
-13. [micro-jainslee vs JBoss/Mobicents JAIN-SLEE](#micro-jainslee-vs-jbossmobicents-jain-slee-container)
-14. [Operational notes](#operational-notes)
-15. [Documentation](#documentation)
-16. [License](#license)
+12. [Example application (Quarkus + USSD demo)](#example-application-quarkus--ussd-demo)
+13. [Build & test](#build--test)
+14. [micro-jainslee vs JBoss/Mobicents JAIN-SLEE](#micro-jainslee-vs-jbossmobicents-jain-slee-container)
+15. [Operational notes](#operational-notes)
+16. [Documentation](#documentation)
+17. [License](#license)
 
 ---
 
@@ -634,6 +635,70 @@ runs entirely in user space.
 The stress test lives at
 `jainslee-core/src/test/java/com/microjainslee/core/SbbEntityPoolStressTest.java`
 (246 LOC, 3 test methods + 1 shared `runScenario(int scale)` helper).
+
+---
+
+## Example application (Quarkus + USSD demo)
+
+A complete runnable sample lives under [`example/`](example/). It demonstrates
+**Quarkus 3 + micro-jainslee** with two SBBs modelling a USSD gateway path:
+
+| Component | Role |
+|-----------|------|
+| `Ss7UssdIngressSbb` | Pretends to be the SS7/MAP USSD ingress leg |
+| `GrpcBackendSbb` | Pretends to call a gRPC menu backend and returns the response |
+| `ussdgw-simulator` | Standalone JAR CLI that fires USSD begin via HTTP (simulates the gateway) |
+
+### Event flow
+
+```mermaid
+sequenceDiagram
+    participant GW as ussdgw-simulator
+    participant REST as Quarkus REST
+    participant SLEE as micro-jainslee
+    participant SS7 as Ss7UssdIngressSbb
+    participant GRPC as GrpcBackendSbb
+
+    GW->>REST: POST /api/ussd/begin
+    REST->>SLEE: UssdBeginEvent
+    SLEE->>SS7: onEvent
+    SS7->>SLEE: GrpcBackendRequestEvent
+    SLEE->>GRPC: onEvent
+    GRPC->>SLEE: GrpcBackendResponseEvent
+    SLEE->>SS7: onEvent
+    SS7->>REST: session COMPLETED
+    GW->>REST: GET /api/ussd/sessions/{id}
+```
+
+### Quick run
+
+```bash
+# 1) Install micro-jainslee into ~/.m2 (once)
+cd jain-slee/jain-slee
+mvn -B -ntp install -DskipTests \
+  -pl jainslee-api,jainslee-scheduler,jainslee-core,jainslee-apt \
+  -am
+
+# 2) Start the Quarkus demo (terminal 1)
+cd example/ussd-quarkus-demo
+mvn quarkus:dev
+
+# 3) Fire a simulated SS7 USSD begin (terminal 2)
+cd example/ussdgw-simulator
+mvn -q package
+java -jar target/ussdgw-simulator-1.0.0-SNAPSHOT.jar
+```
+
+Or with curl:
+
+```bash
+curl -s -X POST http://localhost:8080/api/ussd/begin \
+  -H 'Content-Type: application/json' \
+  -d '{"msisdn":"251911000001","ussdString":"*123#"}'
+curl -s http://localhost:8080/api/ussd/sessions/<sessionId>
+```
+
+Full instructions, project layout, and test commands: [`example/README.md`](example/README.md).
 
 ---
 

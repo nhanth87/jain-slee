@@ -1,12 +1,13 @@
 # How to run the 10K / 50K / 100K SBB stress test
 
-> Audience: developers and QA engineers verifying that micro-jainslee
+> **Audience:** developers and QA engineers verifying that micro-jainslee
 > scales to 100K concurrent SBB entities. The test exercises the full
 > **create → pending → cancel** lifecycle at three scale points and
-> is the primary benchmark for the Java 25 virtual-thread pooling.
+> validates the `VirtualThreadSbbEntityPool` that powers Quarkus,
+> Spring Boot, and Jakarta EE embeddings.
 
-**Maintainer:** Tran Nhan ([nhanth87@gmail.com](mailto:nhanth87@gmail.com))
-**Last updated:** 2026-06-26
+**Maintainer:** Tran Nhan ([nhanth87@gmail.com](mailto:nhanth87@gmail.com))  
+**Last updated:** 2026-06-26  
 **Source file:** [`jainslee-core/src/test/java/com/microjainslee/core/SbbEntityPoolStressTest.java`](../../jainslee-core/src/test/java/com/microjainslee/core/SbbEntityPoolStressTest.java)
 
 ---
@@ -14,13 +15,15 @@
 ## Table of contents
 
 1. [What the test verifies](#1-what-the-test-verifies)
-2. [Prerequisites](#2-prerequisites)
-3. [Quick start (single command)](#3-quick-start-single-command)
-4. [Per-scenario commands](#4-per-scenario-commands)
-5. [Reading the output](#5-reading-the-output)
-6. [Tuning for your hardware](#6-tuning-for-your-hardware)
-7. [Adding a new scale point](#7-adding-a-new-scale-point)
-8. [Troubleshooting](#8-troubleshooting)
+2. [Test flow diagram](#2-test-flow-diagram)
+3. [Function call flow](#3-function-call-flow)
+4. [Prerequisites](#4-prerequisites)
+5. [Quick start (single command)](#5-quick-start-single-command)
+6. [Per-scenario commands](#6-per-scenario-commands)
+7. [Reading the output](#7-reading-the-output)
+8. [Tuning for your hardware](#8-tuning-for-your-hardware)
+9. [Adding a new scale point](#9-adding-a-new-scale-point)
+10. [Troubleshooting](#10-troubleshooting)
 
 ---
 
@@ -363,10 +366,8 @@ Common causes:
 
 - [`microjainslee-design.md`](microjainslee-design.md) — overall
   architecture, including the `VirtualThreadSbbEntityPool` design
-- [`../README.md`](../README.md) — quickstart, integration guides, full
+- [`../README.md`](../README.md) — quickstart, Quarkus integration, full
   build matrix
-- [`TCK_TIMER_CUTOVER.md`](TCK_TIMER_CUTOVER.md) — companion
-  cutover checklist for the timer backend
 
 ---
 

@@ -1,3 +1,13 @@
+/*
+ * micro-jainslee 1.1.0
+ *
+ * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
+ * See the LICENSE file at the root of this repository for the full text.
+ *
+ * Copyright (c) 2026 Tran Nhan (nhanth87). All rights reserved.
+ * Contact: nhanth87@gmail.com
+ */
+
 package com.microjainslee.core;
 
 import com.microjainslee.api.*;
@@ -16,12 +26,17 @@ public class EventRouter {
     private final Disruptor<EventWrapper> disruptor;
     private final ExecutorService executor;
     private final RingBuffer<EventWrapper> ringBuffer;
+    private volatile VirtualThreadSbbEntityPool sbbEntityPool;
 
     public EventRouter(int bufferSize) {
-        this(bufferSize, false);
+        this(bufferSize, false, false);
     }
 
     public EventRouter(int bufferSize, boolean preferVirtualThreads) {
+        this(bufferSize, preferVirtualThreads, false);
+    }
+
+    public EventRouter(int bufferSize, boolean preferVirtualThreads, boolean perVirtualThread) {
         this.executor = MicroSleeExecutors.newEventExecutor(preferVirtualThreads);
         this.disruptor = new Disruptor<EventWrapper>(
                 new EventFactory<EventWrapper>() {
@@ -45,6 +60,16 @@ public class EventRouter {
             }
         });
         this.ringBuffer = disruptor.start();
+        // perVirtualThread is wired up later via bindSbbEntityPool() so the
+        // router does not need a circular reference to MicroSleeContainer.
+    }
+
+    /**
+     * Bind the per-SBB virtual-thread entity pool so dispatch() routes each
+     * event onto the owning SBB thread rather than the EventRouter's worker.
+     */
+    public void bindSbbEntityPool(VirtualThreadSbbEntityPool pool) {
+        this.sbbEntityPool = pool;
     }
 
     public void routeEvent(SleeEvent event, ActivityContextInterface aci) {
@@ -72,17 +97,49 @@ public class EventRouter {
         }
 
         List<SbbLocalObject> attached = ((InMemoryActivityContext) aci).getAttachedSbbs();
-        for (SbbLocalObject localObject : attached) {
-            Sbb sbb = localObject.getSbb();
+        for (final SbbLocalObject localObject : attached) {
+            final Sbb sbb = localObject.getSbb();
             if (!(sbb instanceof SleeEventHandler)) {
                 continue;
             }
+            final SleeEventHandler handler = (SleeEventHandler) sbb;
+            final VirtualThreadSbbEntityPool pool = this.sbbEntityPool;
+            // If the entity pool is bound and knows about this SBB ID,
+            // deliver the event on the SBB's owning virtual thread so the
+            // SBB sees single-threaded ordering per JAIN-SLEE §6.
+            if (pool != null) {
+                VirtualThreadSbbEntityPool.SbbEntity entity =
+                        findEntity(pool, localObject.getSbbID().getId(), localObject);
+                if (entity != null) {
+                    entity.submit(new Runnable() {
+                        @Override public void run() {
+                            try {
+                                handler.onEvent(event, aci);
+                            } catch (Exception e) {
+                                sbb.sbbExceptionThrown(e, event, aci);
+                            }
+                        }
+                    });
+                    continue;
+                }
+            }
+            // Fallback: dispatch inline on the EventRouter worker thread.
             try {
-                ((SleeEventHandler) sbb).onEvent(event, aci);
+                handler.onEvent(event, aci);
             } catch (Exception e) {
                 sbb.sbbExceptionThrown(e, event, aci);
             }
         }
+    }
+
+    private static VirtualThreadSbbEntityPool.SbbEntity findEntity(
+            VirtualThreadSbbEntityPool pool, String sbbId, SbbLocalObject localObject) {
+        // The SbbEntity is keyed by SBB ID. We cannot expose ConcurrentHashMap
+        // directly without a public accessor, so look it up via the pool's
+        // public size()-and-future-based matching: the entity's Future is not
+        // accessible, but we can probe the map via reflection-free accessor.
+        // To keep the API tight, we add a small lookup helper to the pool.
+        return pool.findEntity(sbbId);
     }
 
     private static class EventWrapper {

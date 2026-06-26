@@ -83,7 +83,7 @@ jobs:
 
       - name: Generate JavaDoc
         if: github.ref == 'refs/heads/micro-jainslee'
-        run: mvn -B -ntp -pl jainslee-api,jainslee-core javadoc:aggregate -DskipTests
+        run: mvn -B -ntp -pl jainslee-api,jainslee-core -am javadoc:aggregate -DskipTests
 
       - name: Publish JavaDoc to GitHub Pages
         if: github.ref == 'refs/heads/micro-jainslee'

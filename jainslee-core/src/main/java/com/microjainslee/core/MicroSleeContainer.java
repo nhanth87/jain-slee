@@ -11,6 +11,7 @@
 package com.microjainslee.core;
 
 import com.microjainslee.api.ActivityContextInterface;
+import com.microjainslee.api.CreateException;
 import com.microjainslee.api.InitialEventSelector;
 import com.microjainslee.api.ResourceAdaptor;
 import com.microjainslee.api.Sbb;
@@ -28,6 +29,7 @@ import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -45,8 +47,10 @@ public final class MicroSleeContainer {
     private final InMemoryActivityContextNamingFacility activityContextNamingFacility;
     private final EventRouter eventRouter;
     private final TimerPortImpl timerPort;
-    private final VirtualThreadSbbEntityPool sbbEntityPool;
+    private VirtualThreadSbbEntityPool sbbEntityPool;
     private final ServiceRegistry serviceRegistry = new ServiceRegistry();
+    private final InMemoryCmpFieldStore cmpFieldStore = new InMemoryCmpFieldStore();
+    private final SbbLifecycleManager sbbLifecycleManager = new SbbLifecycleManager();
     private final ConcurrentHashMap<String, SimpleSbbLocalObject> sbbs =
             new ConcurrentHashMap<String, SimpleSbbLocalObject>();
     private final ConcurrentHashMap<String, RaBootstrapContextImpl> resourceAdaptors =
@@ -66,20 +70,37 @@ public final class MicroSleeContainer {
                 configuration.isPreferVirtualThreads(),
                 configuration.isSbbPerVirtualThread());
         this.timerPort = TimerPortImpl.create(eventRouter);
-        this.sbbEntityPool = new VirtualThreadSbbEntityPool(
-                configuration.getSbbPoolMin(),
-                configuration.getSbbPoolMax(),
-                configuration.isSbbPerVirtualThread());
+        this.sbbEntityPool = newSbbEntityPool();
         this.eventRouter.bindSbbEntityPool(this.sbbEntityPool);
         this.eventRouter.bindTransactionSupport(timerPort.getBridge(),
                 new DefaultErrorHandlingPolicy(timerPort.getBridge()));
         this.deploymentClassLoader = Thread.currentThread().getContextClassLoader();
     }
 
+    /**
+     * Build a fresh {@link VirtualThreadSbbEntityPool} from the current
+     * configuration. Used both for the initial construction and to rebuild the
+     * pool after {@link #stop()} shut the previous one down.
+     */
+    private VirtualThreadSbbEntityPool newSbbEntityPool() {
+        return new VirtualThreadSbbEntityPool(
+                configuration.getSbbPoolMin(),
+                configuration.getSbbPoolMax(),
+                configuration.isSbbPerVirtualThread());
+    }
+
     public synchronized void start() {
         if (state == State.STARTED) {
             return;
         }
+        // The SBB entity pool's underlying executor is shut down by stop();
+        // rebuild it so a stop/start round-trip yields a usable pool.
+        if (sbbEntityPool == null || sbbEntityPool.isShutdown()) {
+            sbbEntityPool = newSbbEntityPool();
+            eventRouter.bindSbbEntityPool(sbbEntityPool);
+            LOG.info("Re-created SBB entity pool after previous stop()");
+        }
+        CmpFieldStoreLocator.set(cmpFieldStore);
         sbbEntityPool.prewarm(sbbEntityPool.getMin());
         state = State.STARTED;
         autoDeployFromClasspathIndex();
@@ -108,6 +129,7 @@ public final class MicroSleeContainer {
         eventRouter.shutdown();
         activityContextNamingFacility.clear();
         sbbs.clear();
+        CmpFieldStoreLocator.set(null);
         state = State.STOPPED;
     }
 
@@ -134,18 +156,65 @@ public final class MicroSleeContainer {
                         detachFromAllActivityContexts(removedObject);
                         sbbs.remove(id);
                         sbbEntityPool.release(entity);
+                        // Persist any in-flight CMP mutations the SBB did
+                        // through CmpAccessorInvoker before sbbRemove ran,
+                        // then drop the persistent representation. CmpBackedSbb
+                        // subclasses can override cmpPersist() to flush custom
+                        // state into the store before we drop the entity.
+                        Sbb sbbInstance = removedObject.getSbb();
+                        if (sbbInstance instanceof CmpBackedSbb) {
+                            try {
+                                ((CmpBackedSbb) sbbInstance).cmpPersist();
+                            } catch (RuntimeException ignored) {
+                                // best effort
+                            }
+                        }
+                        cmpFieldStore.remove(id);
                     }
                 },
                 0);
+        // SYNCHRONOUSLY bind entity id + CMP store on the SBB instance
+        // BEFORE submitting to the entity thread. This ensures callers
+        // can use CMP accessors immediately after registerSbb() returns,
+        // without racing the async activation.
+        if (sbb instanceof CmpBackedSbb) {
+            CmpBackedSbb backed = (CmpBackedSbb) sbb;
+            backed.setSbbEntityId(id);
+            backed.setCmpFieldStore(cmpFieldStore);
+        }
         entity.submit(new Runnable() {
             @Override
             public void run() {
-                SimpleSbbContext ctx = new SimpleSbbContext(serviceID, localObject, timerPort,
+                SimpleSbbContext ctx = new SimpleSbbContext(serviceID, localObject, sbbID, timerPort,
                         activityContextNamingFacility);
                 Sbb sbbInstance = entity.getSbb();
-                sbbInstance.setSbbContext(ctx);
-                sbbInstance.sbbCreate();
-                sbbInstance.sbbActivate();
+                try {
+                    // Phase A state machine: setSbbContext -> sbbCreate -> sbbPostCreate -> sbbActivate.
+                    // Falls back to the legacy direct invocation when sbbCreate throws
+                    // a non-CreateException failure (e.g. a RuntimeException from user code).
+                    sbbLifecycleManager.create(sbbInstance, ctx, null);
+                    sbbLifecycleManager.postCreate(sbbInstance);
+                    // Pre-populate CMP store on entity state so the SBB can read it
+                    // through the (reflection-based) CmpAccessorInvoker during sbbLoad.
+                    Map<String, Object> cmpState = cmpFieldStore.load(id);
+                    localObject.getEntityState().getCmpFields().putAll(cmpState);
+                    sbbLifecycleManager.activate(sbbInstance, cmpState);
+                    // SbbLifecycleManager.activate() already transitions to READY; mirror
+                    // the state in the per-entity state object as well.
+                    localObject.getEntityState().transitionTo(SbbLifecycleManager.State.READY);
+                } catch (CreateException ce) {
+                    LOG.warn("SBB {} failed sbbCreate/sbbPostCreate: {}", id, ce.getMessage());
+                    sbbLifecycleManager.removeEntity(sbbInstance);
+                    sbbs.remove(id);
+                    sbbEntityPool.release(entity);
+                    cmpFieldStore.remove(id);
+                    throw new RuntimeException(ce);
+                } catch (RuntimeException re) {
+                    LOG.error("SBB {} activation failed: {}", id, re.getMessage(), re);
+                    sbbs.remove(id);
+                    cmpFieldStore.remove(id);
+                    throw re;
+                }
             }
         });
         sbbs.put(id, localObject);
@@ -362,5 +431,115 @@ public final class MicroSleeContainer {
 
     public VirtualThreadSbbEntityPool getSbbEntityPool() {
         return sbbEntityPool;
+    }
+
+    /**
+     * Phase A — access the CMP field store. Returns the in-memory backend
+     * by default; embedders may wire in a Redis/JPA-backed implementation.
+     */
+    public CmpFieldStore getCmpFieldStore() {
+        return cmpFieldStore;
+    }
+
+    /**
+     * Phase A — access the SBB lifecycle state machine used during
+     * {@link #registerSbb(String, Sbb)}.
+     */
+    public SbbLifecycleManager getSbbLifecycleManager() {
+        return sbbLifecycleManager;
+    }
+
+    /**
+     * Phase B — factory that creates a child SBB entity under the given
+     * parent id. Delegates to {@link #registerSbb(String, Sbb)} using a
+     * freshly-constructed child SBB of the same class as the parent (this
+     * is the simplest reasonable behaviour for an R&D container; a
+     * production deployment would tie this to a service-bound
+     * {@code <sbb-ref>} from the deployment descriptor).
+     *
+     * <p>Returns the local object of the new child so the parent SBB can
+     * immediately narrow it to its typed interface.
+     */
+    public SbbLocalObject createChildSbb(String parentSbbId, String childSbbId) {
+        return createChildSbb(parentSbbId, childSbbId, null);
+    }
+
+    /**
+     * Phase B — create a child SBB entity under the given parent, using
+     * {@code childFactory} to materialise the child instance. When
+     * {@code childFactory} is {@code null}, the container falls back to
+     * reflection (looking up a no-arg constructor on the parent's SBB
+     * class) — which works for top-level classes but fails for anonymous
+     * or non-static inner SBBs. Embedders that use anonymous classes
+     * should pass an explicit factory.
+     */
+    public SbbLocalObject createChildSbb(String parentSbbId, String childSbbId,
+                                         java.util.function.Function<String, Sbb> childFactory) {
+        if (parentSbbId == null || childSbbId == null) {
+            throw new IllegalArgumentException("parentSbbId and childSbbId are required");
+        }
+        SimpleSbbLocalObject parent = sbbs.get(parentSbbId);
+        if (parent == null) {
+            throw new IllegalStateException("Unknown parent SBB entity: " + parentSbbId);
+        }
+        Sbb childInstance;
+        if (childFactory != null) {
+            childInstance = childFactory.apply(childSbbId);
+            if (childInstance == null) {
+                throw new IllegalStateException(
+                        "Child factory returned null for child " + childSbbId);
+            }
+        } else {
+            // Re-use the parent's Sbb class for the child via reflection.
+            // Production stacks derive this from the deployment descriptor;
+            // micro-jainslee keeps the convention simple. We use the
+            // declared no-arg constructor (rather than Class.newInstance
+            // which is deprecated since Java 9 and also requires public
+            // access) so private and package-private constructors are
+            // accepted too.
+            try {
+                java.lang.reflect.Constructor<? extends Sbb> ctor =
+                        parent.getSbb().getClass().getDeclaredConstructor();
+                ctor.setAccessible(true);
+                childInstance = ctor.newInstance();
+            } catch (ReflectiveOperationException e) {
+                throw new RuntimeException("Cannot instantiate child SBB of class "
+                        + parent.getSbb().getClass().getName() + ": " + e.getMessage(), e);
+            }
+        }
+        return registerSbb(childSbbId, childInstance,
+                new ServiceID(childSbbId, "com.microjainslee", "1.0"));
+    }
+
+    /**
+     * Phase B — convenience: get the {@link ChildRelationFactory} that
+     * child relations should use to spawn new children. The factory
+     * simply delegates to {@link #createChildSbb(String, String)} with
+     * a UUID-derived child id.
+     */
+    public ChildRelationFactory getChildRelationFactory() {
+        return new ChildRelationFactory() {
+            @Override
+            public SbbLocalObject createChild(String parentSbbId) {
+                String childId = parentSbbId + ".child." + java.util.UUID.randomUUID();
+                return createChildSbb(parentSbbId, childId, null);
+            }
+        };
+    }
+
+    /**
+     * Phase B — alternate factory that uses the given supplier to
+     * materialise each child SBB instance. Use this when your SBB class
+     * cannot be instantiated via reflection (anonymous / inner class).
+     */
+    public ChildRelationFactory getChildRelationFactory(
+            final java.util.function.Function<String, Sbb> childSupplier) {
+        return new ChildRelationFactory() {
+            @Override
+            public SbbLocalObject createChild(String parentSbbId) {
+                String childId = parentSbbId + ".child." + java.util.UUID.randomUUID();
+                return createChildSbb(parentSbbId, childId, childSupplier);
+            }
+        };
     }
 }

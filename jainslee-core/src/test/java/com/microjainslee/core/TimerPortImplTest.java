@@ -185,11 +185,13 @@ public class TimerPortImplTest {
 
     private static final class FakeSbbLocalObject implements SbbLocalObject {
         private final com.microjainslee.api.SbbID id = new com.microjainslee.api.SbbID("timer-test-sbb");
+        private int priority;
         @Override public com.microjainslee.api.Sbb getSbb() {
             return new com.microjainslee.api.Sbb() { };
         }
         @Override public com.microjainslee.api.SbbID getSbbID() { return id; }
-        @Override public int getPriority() { return 0; }
+        @Override public int getPriority() { return priority; }
+        @Override public void setPriority(int priority) { this.priority = priority; }
         @Override public void remove() { }
         @Override public boolean isRemoved() { return false; }
     }

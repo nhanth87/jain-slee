@@ -8,12 +8,59 @@
     <version>1.1.0</version>
     <packaging>pom</packaging>
 
+    <name>micro-jainslee</name>
+    <description>Lightweight, embeddable JAIN SLEE 1.1 (JSR-240) runtime — pure JVM, no JBoss dependency. R&amp;D only.</description>
+    <url>https://github.com/nhanth87/micro-jainslee</url>
+
+    <licenses>
+        <license>
+            <name>GNU General Public License v3.0</name>
+            <url>https://www.gnu.org/licenses/gpl-3.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+        <license>
+            <name>Commercial License</name>
+            <url>file://COMMERCIAL_LICENSE.md</url>
+            <distribution>repo</distribution>
+            <comments>See LICENSE Section B. Contact nhanth87@gmail.com for terms.</comments>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>nhanth87</id>
+            <name>Tran Nhan</name>
+            <email>nhanth87@gmail.com</email>
+            <url>https://github.com/nhanth87</url>
+            <roles>
+                <role>project-lead</role>
+                <role>architect</role>
+                <role>developer</role>
+                <role>maintainer</role>
+            </roles>
+            <timezone>+7</timezone>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/nhanth87/micro-jainslee.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/nhanth87/micro-jainslee.git</developerConnection>
+        <url>https://github.com/nhanth87/micro-jainslee</url>
+    </scm>
+
+    <organization>
+        <name>micro-jainslee</name>
+        <url>https://github.com/nhanth87/micro-jainslee</url>
+    </organization>
+
     <modules>
         <module>jainslee-api</module>
         <module>jainslee-core</module>
         <module>jainslee-apt</module>
+        <module>jainslee-spring-boot-starter</module>
         <module>adapters/adapter-quarkus</module>
         <module>ra-connectors</module>
+        <module>adapters/adapter-jakartaee</module>
     </modules>
 
     <properties>

@@ -24,7 +24,11 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------
-  # Job 1 — Build matrix: JDK 17 (compatibility) and JDK 25 (VTs)
+  # Job 1 — Build on JDK 25 only
+  #
+  # Java 25 is the project's runtime target — it is required to exercise
+  # the Java 25 Virtual Threads backing VirtualThreadSbbEntityPool.
+  # Source/target is still 8; only the runtime JVM is JDK 25.
   # ---------------------------------------------------------------------
   build:
     name: Build (${{ matrix.os }} / JDK ${{ matrix.java }})
@@ -33,7 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        java: ['17', '25']
+        java: ['25']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,7 +50,6 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: maven
-          cache-key: ${{ runner.os }}-maven-jdk${{ matrix.java }}
 
       - name: Cache local Maven repo (~/.m2)
         uses: actions/cache@v4
@@ -56,8 +59,13 @@ jobs:
           restore-keys: ${{ runner.os }}-m2-
 
       - name: Install micro-jainslee reactor (skip APT chicken-and-egg)
+        # -Dmaven.compiler.proc=none disables annotation processing entirely
+        # so the first build of jainslee-apt does not try to load its own
+        # SPI processor class (which does not exist yet at this point).
+        # Subsequent builds inside the same matrix job use the freshly
+        # installed jar and DO run the processor.
         run: |
-          mvn -pl jainslee-apt -am install -DskipTests -B -ntp
+          mvn -pl jainslee-apt -am install -DskipTests -B -ntp               -Dmaven.compiler.proc=none
 
       - name: Build + test (micro-jainslee modules)
         run: |
@@ -66,19 +74,18 @@ jobs:
             -am test \
             -DargLine="-Xmx4g"
 
-      - name: Stress test (Java 25 only — needs virtual threads)
-        if: matrix.java == '25'
+      - name: Stress test (virtual threads required)
         run: |
           mvn -B -ntp -pl jainslee-core test \
             -Dtest=SbbEntityPoolStressTest \
             -DargLine="-Xmx4g -XX:+UseZGC -XX:+ZGenerational"
 
       - name: Generate JavaDoc
-        if: matrix.java == '25' && github.ref == 'refs/heads/micro-jainslee'
+        if: github.ref == 'refs/heads/micro-jainslee'
         run: mvn -B -ntp -pl jainslee-api,jainslee-core javadoc:aggregate -DskipTests
 
       - name: Publish JavaDoc to GitHub Pages
-        if: matrix.java == '25' && github.ref == 'refs/heads/micro-jainslee'
+        if: github.ref == 'refs/heads/micro-jainslee'
         uses: actions/upload-pages-artifact@v3
         with:
           path: jainslee-api/target/site/apidocs

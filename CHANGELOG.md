@@ -14,11 +14,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **Documentation refresh** — `README.md`, `docs/microjainslee-design.md`, and
   `docs/run-testcase-100k-sbb.md` updated with Mermaid architecture/sequence
-  diagrams (colored `rect` blocks), function-call tables aligned to actual
-  source (`MicroJainsleeProcessor`, `MicroSleeContainer.attach`,
+  diagrams, function-call tables aligned to actual source
+  (`MicroJainsleeProcessor`, `MicroSleeContainer.attach`,
   `SleeTimerSchedulerBridge`), and a clarified dual-license section.
-- **Removed `docs/TCK_TIMER_CUTOVER.md`** — TCK timer cutover is a legacy
-  Mobicents/WildFly concern, out of scope for the Quarkus micro-jainslee stack.
+  `docs/TCK_TIMER_CUTOVER.md` is kept as background reading for anyone
+  migrating from the JBoss/Mobicents stack.
 
 ## [1.1.0] — 2026-06-26
 

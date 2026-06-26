@@ -33,6 +33,10 @@ jobs:
   build:
     name: Build (${{ matrix.os }} / JDK ${{ matrix.java }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -83,13 +87,13 @@ jobs:
 
       - name: Generate JavaDoc
         if: github.ref == 'refs/heads/micro-jainslee'
-        run: mvn -B -ntp -pl jainslee-api,jainslee-core -am javadoc:aggregate -DskipTests
+        run: mvn -B -ntp javadoc:aggregate -DskipTests
 
       - name: Publish JavaDoc to GitHub Pages
         if: github.ref == 'refs/heads/micro-jainslee'
         uses: actions/upload-pages-artifact@v3
         with:
-          path: jainslee-api/target/site/apidocs
+          path: target/site/apidocs
 
   # ---------------------------------------------------------------------
   # Job 2 — License header verification (runs on every PR)

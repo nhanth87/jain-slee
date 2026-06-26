@@ -1,0 +1,128 @@
+# Changelog
+
+All notable changes to **micro-jainslee** are documented here. The format
+is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
+this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+**Maintainer:** Tran Nhan ([nhanth87@gmail.com](mailto:nhanth87@gmail.com)) · **License:** Dual GPLv3 + Commercial (see [`LICENSE`](LICENSE))
+
+---
+
+## [1.1.0] — 2026-06-26
+
+First public release after the Phase 3 + Phase 3.5 work landed. R&D-only;
+not for production packaging.
+
+### Added
+
+- **VirtualThreadSbbEntityPool** — one parked Java 25 virtual thread per
+  SBB ID with a `LinkedBlockingQueue<Runnable>` for event delivery.
+  Guarantees JAIN SLEE §8.4 single-threaded per-SBB ordering without
+  locks. Reflection-based executor shim keeps `jainslee-core` Java 8
+  source/target compatible.
+- **`jainslee-spring-boot-starter`** — Spring Boot 3.3.0 auto-configuration:
+  `MicroSleeContainer`, `MicroSleeConfiguration`, `EventRouter`,
+  `TimerPort`, `InMemoryActivityContextNamingFacility` exposed as
+  beans. `SmartLifecycle` mapping for `start()`/`stop()`. `application.yml`
+  property binding under `microjainslee.*`. Uses `jakarta.*` namespace.
+- **`adapter-quarkus`** (parent + runtime + deployment) — Quarkus 3.15.1
+  extension. `MicroJainsleeProcessor` `@BuildStep` chain produces
+  synthetic CDI beans; `MicroJainsleeRecorder` `@Recorder` stashes the
+  container across the build-time / runtime boundary. Jandex scan for
+  `@Sbb`-annotated classes; `ShutdownContextBuildItem` shutdown hook.
+- **`adapter-jakartaee`** — Jakarta EE 9 `@Singleton @Startup @LocalBean`
+  EJB. `@PostConstruct` builds the container from `microjainslee.config.*`
+  system properties and binds `MicroSleeContainer`, `EventRouter`,
+  `TimerPort`, `ActivityContextNamingFacility` into JNDI at
+  `java:global/microjainslee/*`. Uses `jakarta.ejb.*` /
+  `jakarta.annotation.*` / `javax.naming.*`.
+- **`jainslee-apt`** — Javac annotation processor. Scans
+  `@SbbAnnotation` / `@DeployableUnit` / `@EventType` and emits
+  `META-INF/microjainslee/sbb-index.properties` at compile time.
+  Uses `AnnotationMirror` API to read `Class[]` members safely. SPI
+  registered via `META-INF/services/javax.annotation.processing.Processor`.
+- **`SbbEntityPoolStressTest`** — 246 LOC covering create + pending +
+  cancel lifecycle at 10K / 50K / 100K SBB scales. Verifies
+  `lastSeq+1 == seq` for every task to enforce single-threaded ordering.
+  Measured on Java 25.0.3 / 4 cores / 8 GB heap: 100K scenario finishes
+  in 5.7 s with `liveThreads=14`.
+- **`VirtualThreadSbbEntityPoolTest`** — 12 unit tests covering
+  acquire/release/shutdown/prewarm/concurrent-entity-creation races.
+- **`MicroJainsleeAutoConfigurationTest`** — Spring Boot context-loads
+  the auto-configuration and asserts all 6 beans are present and the
+  container is `STARTED`.
+- **`docs/microjainslee-design.md`** — 615-line architecture document
+  (goals/non-goals, module map, event router pipeline, virtual-thread
+  pool deep-dive, timer bridge, annotation processor, runtime
+  integrations, configuration model, concurrency contract, failure
+  modes, design-decision log).
+- **`docs/run-testcase-100k-sbb.md`** — 374-line step-by-step
+  stress-test guide (prerequisites, mvn commands per scenario,
+  output interpretation, hardware tuning, adding a new scale point,
+  troubleshooting).
+- **Dual license**: `LICENSE` rewritten as Section A (full GPLv3
+  verbatim) + Section B (Commercial License summary). New
+  `COMMERCIAL_LICENSE.md` with 8 sections, pricing tiers
+  (Indie $1.2K/yr / Small biz $6K/yr / Enterprise $25K+/yr / OEM custom),
+  and procurement instructions. Copyright (c) 2026 Tran Nhan.
+- **Maintainer info in `pom.xml`**: `<licenses>`, `<developers>` (Tran
+  Nhan / nhanth87 / nhanth87@gmail.com), `<scm>`, `<organization>`
+  blocks.
+- **License headers on every `.java` source file** (52 files) —
+  9-line stamp with project name, dual-license line, copyright,
+  maintainer email.
+
+### Changed
+
+- **`MicroSleeContainer.registerSbb`** now wires the per-SBB virtual
+  thread pool, so events for a given SBB ID execute on the SBB's
+  owning VT. The in-line `new SimpleSbbLocalObject(...)` instantiation
+  is preserved as a thin path for tests that don't need the pool.
+- **`EventRouter`** reworked to look up the SBB entity via the pool
+  and dispatch through `entity.submit(...)` rather than running on the
+  Disruptor's consumer thread.
+- **`MicroSleeConfiguration`** gains `sbbPoolMin` / `sbbPoolMax` /
+  `sbbPerVirtualThread` builder fields with validation
+  (`min >= 0`, `max >= 1`, `min <= max`).
+- **`SbbEntityPool`** refactored as a backward-compat facade over
+  `VirtualThreadSbbEntityPool`. New constructor signature
+  `SbbEntityPool(int min, int max, boolean perVirtualThread)`;
+  the old `SbbEntityPool(int poolSize)` is preserved.
+- **`README.md`** rewritten (935 lines) — covers What/Quickstart/
+  Modules/Architecture/Code flow/Quarkus/RA/SBB lifecycle/Profile/ACNF/
+  Timer/Stress test/Build/Comparison vs JBoss/Operational/Docs/
+  License sections. New badges for Java 25, Virtual Threads, dual
+  license, and maintainer.
+- **All new code uses `org.apache.logging.log4j.Logger`** via
+  `LogManager.getLogger` — never `System.out`/`System.err`.
+
+### Security
+
+- Dual-licensed under GPLv3 (open-source) OR a separate Commercial
+  License (proprietary use). See [`COMMERCIAL_LICENSE.md`](COMMERCIAL_LICENSE.md).
+- Original RestComm JAIN-SLEE v8 inheritance (AGPL-3.0) is **removed**
+  from micro-jainslee; the legacy `container/`, `api/`, `tools/`
+  directories retain the original AGPL-3.0 license (untouched).
+
+### Known limitations
+
+- No TCK run — explicitly out of scope for R&D.
+- No cluster / HA — single-JVM only.
+- No JSR-77 management MBeans — embedding runtime is responsible.
+- The `SleeTimerSchedulerBridge` reuses jSS7's `TimerType.TCAP_INVOKE_TIMEOUT`
+  as a placeholder; see [`docs/TCK_TIMER_CUTOVER.md`](docs/TCK_TIMER_CUTOVER.md)
+  for the cutover checklist.
+- `adapter-jakartaee` and `jainslee-apt` lack in-process unit tests
+  (the former requires WildFly; the latter was verified via a manual
+  fixture compilation).
+
+---
+
+## [1.0.0] — 2024 (RestComm inheritance)
+
+- Initial scaffold of `jainslee-api`, `jainslee-core`, `ra-connectors`.
+- LMAX Disruptor event router. jSS7 Scheduler 9.4.0 wired through
+  `SleeTimerSchedulerBridge`. log4j2 logging.
+
+[1.1.0]: https://github.com/nhanth87/jain-slee/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/nhanth87/jain-slee/releases/tag/v1.0.0

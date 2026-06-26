@@ -93,7 +93,7 @@ jobs:
         if: github.ref == 'refs/heads/micro-jainslee'
         uses: actions/upload-pages-artifact@v3
         with:
-          path: target/site/apidocs
+          path: target/reports/apidocs
 
   # ---------------------------------------------------------------------
   # Job 2 — License header verification (runs on every PR)

@@ -1,12 +1,12 @@
 # micro-jainslee 1.1.0 — Design Document
 
-> Audience: engineers integrating micro-jainslee into Spring Boot,
-> Quarkus, or Jakarta EE applications; contributors extending the
-> container; reviewers evaluating the architecture.
+> **Audience:** engineers embedding micro-jainslee in **Quarkus 3** applications;
+> contributors extending the container; reviewers evaluating the architecture.
+> Spring Boot and Jakarta EE adapters follow the same core patterns described here.
 
-**Maintainer:** Tran Nhan ([nhanth87@gmail.com](mailto:nhanth87@gmail.com))
-**License:** Dual — GPLv3 OR Commercial (see [`LICENSE`](../LICENSE))
-**Last updated:** 2026-06-26
+**Maintainer:** Tran Nhan ([nhanth87@gmail.com](mailto:nhanth87@gmail.com))  
+**License:** Dual — GPLv3 OR Commercial (see [`LICENSE`](../LICENSE))  
+**Last updated:** 2026-06-26  
 **Source:** [`jain-slee/`](../../) (branch `micro-jainslee`)
 
 ---
@@ -54,32 +54,38 @@
 
 ## 2. Architectural overview
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                  Runtime integration layer (pick one)                │
-│   Spring Boot 3  │  Quarkus 3  │  Jakarta EE 9 EJB  │  Plain `main`  │
-└──────────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│   MicroSleeContainer — orchestration + lifecycle                     │
-│   (com.microjainslee.core.MicroSleeContainer)                        │
-│                                                                      │
-│   ┌────────────────────┐  ┌──────────────────┐  ┌────────────────┐    │
-│   │  EventRouter       │  │  TimerPortImpl    │  │  InMemoryACNF   │    │
-│   │  (LMAX Disruptor)  │  │  + jSS7 bridge    │  │  + ACNF map     │    │
-│   └────────────────────┘  └──────────────────┘  └────────────────┘    │
-│   ┌────────────────────────────────────────────────────────────┐    │
-│   │  VirtualThreadSbbEntityPool — one parked VT per SBB ID     │    │
-│   └────────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                  jainslee-api — spec contracts only                  │
-│  Sbb · SbbContext · SbbLocalObject · ActivityContextInterface ·     │
-│  TimerPort · ResourceAdaptor · @SbbAnnotation · @DeployableUnit      │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph adapters["Runtime integration (pick one)"]
+        direction LR
+        Q["Quarkus 3<br/>adapter-quarkus"]
+        SB["Spring Boot 3<br/>jainslee-spring-boot-starter"]
+        EE["Jakarta EE 9<br/>adapter-jakartaee"]
+    end
+
+    subgraph core["MicroSleeContainer — com.microjainslee.core"]
+        ER["EventRouter<br/>LMAX Disruptor"]
+        TP["TimerPortImpl<br/>+ SleeTimerSchedulerBridge"]
+        ACNF["InMemoryActivityContextNamingFacility"]
+        POOL["VirtualThreadSbbEntityPool<br/>1 parked VT per SBB ID"]
+    end
+
+    subgraph api["jainslee-api — spec contracts only"]
+        SPEC["Sbb · SbbContext · TimerPort<br/>ActivityContextInterface · ResourceAdaptor"]
+    end
+
+    classDef adapter fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+    classDef container fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef spec fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
+
+    class Q,SB,EE adapter
+    class ER,TP,ACNF,POOL container
+    class SPEC spec
+
+    Q --> core
+    SB --> core
+    EE --> core
+    core --> api
 ```
 
 There are exactly **four orthogonal concerns**:
@@ -150,6 +156,40 @@ The single hot path of the runtime is event delivery:
 
 ```
 producer → ringBuffer.next() → ringBuffer.publish() → consumer fires → dispatch → SbbEntity.submit() → parked VT runs sbb.onEvent()
+```
+
+### End-to-end sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Prod as Producer (RA / timer / test)
+    participant ER as EventRouter
+    participant RB as Disruptor ring buffer
+    participant POOL as VirtualThreadSbbEntityPool
+    participant VT as parked virtual thread
+    participant SBB as Sbb.onEvent()
+
+    classDef producer fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+    classDef router fill:#fff3e0,stroke:#ef6c00,color:#e65100
+    classDef sbb fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+
+    class Prod producer
+    class ER,RB router
+    class POOL,VT,SBB sbb
+
+    Prod->>ER: routeEvent(SleeEvent, ACI)
+    ER->>RB: next() — claim sequence slot
+    ER->>RB: get(seq).setEvent/setAci
+    ER->>RB: publish(seq) — lock-free barrier
+    RB-->>ER: onEvent(EventWrapper) — consumer thread
+    ER->>ER: dispatch(event, aci)
+    loop for each SBB attached to ACI
+        ER->>POOL: entity.submit(Runnable)
+        POOL->>VT: queue.offer(task)
+        VT->>SBB: task.run() → onEvent(event, aci)
+    end
+    ER->>RB: wrapper.clear() — reuse slot
 ```
 
 ### Key invariants
@@ -224,34 +264,41 @@ per-SBB ordering** the JAIN SLEE spec mandates.
 
 ### Lifecycle of one entity
 
-```
-acquire("UssdMenuSbb", factory)
-    │
-    ├─ ConcurrentHashMap.putIfAbsent("UssdMenuSbb", fresh) ─┐
-    │                                                          │
-    │   ┌─ if winner ─────────────────────────────────────────┐│
-    │   │  SbbEntity ctor: owner.submit(new EventLoop())      ││
-    │   │  return fresh                                       ││
-    │   └──────────────────────────────────────────────────────┘│
-    │                                                          │
-    │   ┌─ if loser (race lost) ────────────────────────────────┐│
-    │   │  fresh.markShutdown(); fresh.queue.clear();          ││
-    │   │  fresh.loopFuture.cancel(true)                       ││
-    │   │  return prior  (the winner)                          ││
-    │   └──────────────────────────────────────────────────────┘│
-    └──────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller as acquire() caller
+    participant Pool as VirtualThreadSbbEntityPool
+    participant Map as ConcurrentHashMap
+    participant VT as new virtual thread
+    participant Q as LinkedBlockingQueue
 
-entity.submit(runnable)
-    │
-    └─ if !shutdown: queue.offer(runnable)
-       else:        throw IllegalStateException
+    classDef pool fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef thread fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
 
-pool.shutdown()
-    │
-    ├─ shuttingDown = true
-    ├─ for each entity: markShutdown(); queue.offer(POISON)
-    ├─ executor.shutdown()
-    └─ executor.awaitTermination(5s) → executor.shutdownNow() if needed
+    class Pool,Map pool
+    class VT,Q,Caller thread
+
+    Caller->>Pool: acquire(sbbId, factory)
+    Pool->>Map: putIfAbsent(sbbId, freshEntity)
+    alt first registrant (winner)
+        Map-->>Pool: null (inserted)
+        Pool->>VT: owner.submit(EventLoop)
+        Pool-->>Caller: fresh SbbEntity
+    else concurrent race (loser)
+        Map-->>Pool: prior entity
+        Pool->>Pool: fresh.markShutdown(); queue.clear()
+        Pool-->>Caller: prior SbbEntity
+    end
+
+    Caller->>Pool: entity.submit(runnable)
+    Pool->>Q: offer(runnable)
+    VT->>Q: poll(50ms)
+    VT->>VT: runnable.run()
+
+    Caller->>Pool: shutdown()
+    Pool->>Q: offer(POISON) per entity
+    Pool->>VT: awaitTermination(5s)
 ```
 
 ### EventLoop pseudo-code
@@ -308,28 +355,47 @@ to `SleeTimerSchedulerBridge`.
 
 ### Bridge flow
 
-```
-SBB: setTimer(30_000, sbbLocal)
-    │
-    └─→ TimerPortImpl.setTimer
-            └─→ SleeTimerSchedulerBridge.schedule(sbbLocal, 30_000)
-                    │
-                    ├─ resolve ACI for sbbLocal (or create anonymous)
-                    ├─ build TimerRecord(timerId, dialogId,
-                    │                   TCAP_INVOKE_TIMEOUT,
-                    │                   now + 30_000, "micro-jainslee")
-                    └─ scheduler.schedule(record, 30_000, callback)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SBB as Sbb (parked VT)
+    participant TP as TimerPortImpl
+    participant BR as SleeTimerSchedulerBridge
+    participant JSS7 as LocalTimerAdapter
+    participant ER as EventRouter
+    participant VT as same parked VT
 
-... 30 s later, on the hashed-wheel thread ...
+    classDef sbb fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
+    classDef timer fill:#fce4ec,stroke:#c62828,color:#880e4f
+    classDef router fill:#fff3e0,stroke:#ef6c00,color:#e65100
 
-jSS7: callback.onTimerFire(record)
-    │
-    └─→ SleeTimerSchedulerBridge.onTimerFire
-            ├─ targets.remove(timerId)
-            └─ eventRouter.routeEvent(new TimerFiredEvent(timerId, sbbLocal), aci)
-                    │
-                    └─→ ... same path as any other SleeEvent ...
+    class SBB,VT sbb
+    class TP,BR,JSS7 timer
+    class ER router
+
+    SBB->>TP: setTimer(delayMs, sbbLocal)
+    TP->>BR: schedule(sbbLocal, delayMs)
+    BR->>BR: resolve ACI, build TimerRecord
+    BR->>JSS7: schedule(record, delay, callback)
+    Note over JSS7: HashedWheelTimer — never calls SBB here
+
+    JSS7-->>BR: onTimerFire(record) — wheel thread
+    BR->>BR: targets.remove(timerId)
+    BR->>ER: routeEvent(TimerFiredEvent, aci)
+    ER->>VT: entity.submit(onEvent task)
+    VT->>SBB: onEvent(timerEvent, aci)
 ```
+
+### Function call chain
+
+| Step | Caller | Method | Callee |
+|-----:|--------|--------|--------|
+| 1 | SBB | `TimerPort.setTimer(ms, sbbLocal)` | `TimerPortImpl` |
+| 2 | `TimerPortImpl` | `schedule(sbbLocal, ms)` | `SleeTimerSchedulerBridge` |
+| 3 | Bridge | `scheduler.schedule(record, ms, callback)` | jSS7 `LocalTimerAdapter` |
+| 4 | Wheel thread | `onTimerFire(record)` | Bridge callback |
+| 5 | Bridge | `eventRouter.routeEvent(TimerFiredEvent, aci)` | `EventRouter` |
+| 6 | `EventRouter` | `entity.submit(() -> onEvent(...))` | `VirtualThreadSbbEntityPool` |
 
 ### Why we never invoke SBB code on the wheel thread
 
@@ -344,8 +410,9 @@ both order and isolation.
 
 The bridge currently reuses jSS7's `TCAP_INVOKE_TIMEOUT` because
 jSS7 9.4.0 does not yet expose a generic SLEE timer type. This is a
-known limitation; see [`TCK_TIMER_CUTOVER.md`](TCK_TIMER_CUTOVER.md)
-for the cutover plan once jSS7 adds a `SLEE_TIMER` enum value.
+known R&D limitation — timer semantics are correct for single-JVM
+Quarkus embeddings; a dedicated `SLEE_TIMER` enum in jSS7 would remove
+the type-name mismatch without changing the bridge contract.
 
 
 ---
@@ -430,25 +497,107 @@ new entries and incrementing the index counters (`sbb.0`, `sbb.1`,
   the requested scan paths.
 - `@EnableMicroJainslee` — marker annotation for opt-in use.
 
-### 8.2 Quarkus 3
+### 8.2 Quarkus 3 (primary integration path)
 
-`adapter-quarkus` follows the standard Quarkus 3 extension layout:
+**Quarkus is the recommended runtime** for new micro-jainslee services.
+The `adapter-quarkus` extension is a standard 3-module Quarkus layout:
 
-- **`deployment/`** — `MicroJainsleeProcessor` is a `@BuildStep` chain
-  that produces synthetic CDI beans for `MicroSleeContainer`,
-  `EventRouter`, `TimerPort`, `InMemoryActivityContextNamingFacility`,
-  optionally scans for `@Sbb`-annotated classes via Jandex, and wires
-  a shutdown hook via `ShutdownContextBuildItem`.
-- **`runtime/`** — `MicroJainsleeRecorder` is a `@Recorder` whose
-  methods replay at static-init and runtime-init. The container is
-  stashed in static fields so the CDI producer reads it during CDI
-  bootstrap.
-- **`runtime/MicroJainsleeHolder`** — package-private static holder
-  used by the processor and recorder to pass the container across the
-  build-time / runtime boundary.
+| Module | Artifact role | Key classes |
+|--------|---------------|-------------|
+| `adapter-quarkus` (parent) | BOM / reactor | — |
+| `deployment` | Build-time `@BuildStep` processor | `MicroJainsleeProcessor`, `MicroJainsleeBuildConfig` |
+| `runtime` | Run-time recorder + CDI producer | `MicroJainsleeRecorder`, `MicroJainsleeProducer` |
+
+#### Extension bootstrap sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Q as Quarkus build
+    participant Proc as MicroJainsleeProcessor
+    participant CFG as MicroJainsleeBuildConfig
+    participant Rec as MicroJainsleeRecorder
+    participant CT as MicroSleeContainer
+    participant CDI as Arc CDI
+
+    rect rgb(227, 242, 253)
+        Note over Q,Rec: STATIC_INIT — augmentation
+    Q->>Proc: feature() → FeatureBuildItem("micro-jainslee")
+    Q->>Proc: containerConfig(config)
+    Proc->>CFG: bufferSize, sbbPoolMin/Max, preferVT, perVT
+    Proc-->>Q: MicroSleeConfiguration
+    Q->>Proc: installContainer(recorder, configuration)
+    Proc->>Rec: createContainer(configuration)
+    Rec->>CT: new MicroSleeContainer(config)
+    Rec->>Rec: static fields ← container, EventRouter, TimerPort, ACNF
+    end
+
+    rect rgb(232, 245, 233)
+        Note over Q,CDI: RUNTIME_INIT — application start
+    Q->>Proc: startContainer(recorder)
+    Proc->>Rec: startContainer()
+    Rec->>CT: start()
+    Q->>Proc: synthetic beans (container, router, timer, ACNF)
+    Proc->>CDI: ApplicationScoped RuntimeValues
+    Q->>Proc: sbbSyntheticBeans (if scan enabled)
+    Proc->>CDI: register @SbbAnnotation classes from Jandex
+    end
+
+    rect rgb(255, 243, 224)
+        Note over Q,CT: Shutdown
+    Q->>Proc: shutdownContainer(recorder, shutdown)
+    Proc->>Rec: stopContainer() via ShutdownContextBuildItem
+    Rec->>CT: stop()
+    end
+```
+
+#### Build-step function call flow
+
+| Phase | `MicroJainsleeProcessor` method | Delegates to |
+|-------|--------------------------------|--------------|
+| Build | `containerConfig(MicroJainsleeBuildConfig)` | `MicroSleeConfiguration.builder()` |
+| `STATIC_INIT` | `installContainer(recorder, configuration)` | `recorder.createContainer(configuration)` |
+| `RUNTIME_INIT` | `startContainer(recorder)` | `recorder.startContainer()` → `container.start()` |
+| `RUNTIME_INIT` | `containerSyntheticBean(...)` | `SyntheticBeanBuildItem` for `MicroSleeContainer` |
+| `RUNTIME_INIT` | `eventRouterSyntheticBean(...)` | Synthetic bean for `EventRouter` |
+| `RUNTIME_INIT` | `timerPortSyntheticBean(...)` | Synthetic bean for `TimerPort` |
+| `RUNTIME_INIT` | `acnfSyntheticBean(...)` | Synthetic bean for `InMemoryActivityContextNamingFacility` |
+| Build | `sbbSyntheticBeans(...)` | Jandex scan for `@SbbAnnotation` implementors |
+| `RUNTIME_INIT` | `shutdownContainer(recorder, shutdown)` | `shutdown.addShutdownTask(recorder::stopContainer)` |
+
+#### Dependency in a Quarkus application
+
+```xml
+<dependency>
+  <groupId>com.microjainslee</groupId>
+  <artifactId>adapter-quarkus</artifactId>
+  <version>1.1.0</version>
+</dependency>
+```
+
+User services inject the container and facilities:
+
+```java
+@ApplicationScoped
+public class UssdEntryPoint {
+    @Inject MicroSleeContainer container;
+    @Inject EventRouter eventRouter;
+    @Inject TimerPort timerPort;
+
+    public void onSessionStart(String sessionId, SleeEvent event) {
+        ActivityContextInterface aci = container.createActivityContext(sessionId);
+        SbbLocalObject sbb = container.registerSbb("UssdMenuSbb", new UssdMenuSbb());
+        container.attach(sessionId, sbb);
+        container.routeEvent(event, aci);
+    }
+}
+```
+
+`MicroJainsleeProducer` also exposes `@Produces @DefaultBean` methods so
+applications can override any facility with a CDI `@Alternative`.
 
 The processor uses `jakarta.enterprise.context.ApplicationScoped` and
-`jakarta.enterprise.inject.Produces` (NOT javax.*) — Quarkus 3.x is
+`jakarta.enterprise.inject.Produces` (NOT `javax.*`) — Quarkus 3.x is
 on the Jakarta EE 9+ namespace.
 
 ### 8.3 Jakarta EE 9
@@ -601,10 +750,10 @@ development.
 ## Further reading
 
 - [`run-testcase-100k-sbb.md`](run-testcase-100k-sbb.md) — step-by-step
-  guide to running the 10K / 50K / 100K stress test
-- [`TCK_TIMER_CUTOVER.md`](TCK_TIMER_CUTOVER.md) — timer-backend cutover
-  checklist
-- [`../README.md`](../README.md) — user-facing quickstart and integration guides
+  guide to running the 10K / 50K / 100K stress test that validates
+  `VirtualThreadSbbEntityPool` used by the Quarkus extension
+- [`../README.md`](../README.md) — user-facing quickstart, Quarkus
+  `application.properties`, and integration guides
 - [`../optimizejainsleep2.md`](../optimizejainsleep2.md) — Phase 2
   (Javassist codegen) and Phase 3 (Spring Boot / Quarkus / Jakarta EE)
   roadmap

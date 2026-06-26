@@ -13,6 +13,7 @@ package com.microjainslee.core;
 import com.microjainslee.api.ActivityContextNamingFacility;
 import com.microjainslee.api.SbbContext;
 import com.microjainslee.api.SbbLocalObject;
+import com.microjainslee.api.ServiceID;
 import com.microjainslee.api.TimerPort;
 import com.microjainslee.api.TracePort;
 import com.microjainslee.api.UsagePort;
@@ -22,16 +23,26 @@ import com.microjainslee.api.UsagePort;
  */
 public final class SimpleSbbContext implements SbbContext {
 
+    private final ServiceID serviceID;
     private final SbbLocalObject localObject;
     private final TimerPort timerPort;
     private final ActivityContextNamingFacility namingFacility;
     private final UsagePort usagePort = new SimpleUsagePort();
 
-    public SimpleSbbContext(SbbLocalObject localObject, TimerPort timerPort,
+    public SimpleSbbContext(ServiceID serviceID, SbbLocalObject localObject, TimerPort timerPort,
             ActivityContextNamingFacility namingFacility) {
+        if (serviceID == null) {
+            throw new IllegalArgumentException("serviceID is required");
+        }
+        this.serviceID = serviceID;
         this.localObject = localObject;
         this.timerPort = timerPort;
         this.namingFacility = namingFacility;
+    }
+
+    @Override
+    public ServiceID getService() {
+        return serviceID;
     }
 
     @Override

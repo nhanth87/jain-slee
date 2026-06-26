@@ -15,8 +15,13 @@ import com.lmax.disruptor.*;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * JAIN-SLEE 1.1 §7.3 — Event Router.
@@ -27,6 +32,8 @@ public class EventRouter {
     private final ExecutorService executor;
     private final RingBuffer<EventWrapper> ringBuffer;
     private volatile VirtualThreadSbbEntityPool sbbEntityPool;
+    private volatile SleeTimerSchedulerBridge timerBridge;
+    private volatile ErrorHandlingPolicy errorHandlingPolicy;
 
     public EventRouter(int bufferSize) {
         this(bufferSize, false, false);
@@ -60,8 +67,6 @@ public class EventRouter {
             }
         });
         this.ringBuffer = disruptor.start();
-        // perVirtualThread is wired up later via bindSbbEntityPool() so the
-        // router does not need a circular reference to MicroSleeContainer.
     }
 
     /**
@@ -70,6 +75,15 @@ public class EventRouter {
      */
     public void bindSbbEntityPool(VirtualThreadSbbEntityPool pool) {
         this.sbbEntityPool = pool;
+    }
+
+    /**
+     * Bind timer and error-handling support for logical transactions during dispatch.
+     */
+    public void bindTransactionSupport(SleeTimerSchedulerBridge timerBridge,
+            ErrorHandlingPolicy errorHandlingPolicy) {
+        this.timerBridge = timerBridge;
+        this.errorHandlingPolicy = errorHandlingPolicy;
     }
 
     public void routeEvent(SleeEvent event, ActivityContextInterface aci) {
@@ -96,49 +110,125 @@ public class EventRouter {
             return;
         }
 
-        List<SbbLocalObject> attached = ((InMemoryActivityContext) aci).getAttachedSbbs();
-        for (final SbbLocalObject localObject : attached) {
-            final Sbb sbb = localObject.getSbb();
-            if (!(sbb instanceof SleeEventHandler)) {
-                continue;
+        InMemoryActivityContext activityContext = (InMemoryActivityContext) aci;
+        if (activityContext.isSuspended()) {
+            return;
+        }
+
+        ReentrantLock concurrencyLock = activityContext.lockForEvent(event);
+        if (concurrencyLock != null) {
+            concurrencyLock.lock();
+        }
+        try {
+            dispatchUnderLock(event, aci, activityContext);
+        } finally {
+            if (concurrencyLock != null) {
+                concurrencyLock.unlock();
             }
-            final SleeEventHandler handler = (SleeEventHandler) sbb;
-            final VirtualThreadSbbEntityPool pool = this.sbbEntityPool;
-            // If the entity pool is bound and knows about this SBB ID,
-            // deliver the event on the SBB's owning virtual thread so the
-            // SBB sees single-threaded ordering per JAIN-SLEE §6.
-            if (pool != null) {
-                VirtualThreadSbbEntityPool.SbbEntity entity =
-                        findEntity(pool, localObject.getSbbID().getId(), localObject);
-                if (entity != null) {
-                    entity.submit(new Runnable() {
-                        @Override public void run() {
-                            try {
-                                handler.onEvent(event, aci);
-                            } catch (Exception e) {
-                                sbb.sbbExceptionThrown(e, event, aci);
-                            }
-                        }
-                    });
+        }
+    }
+
+    private void dispatchUnderLock(SleeEvent event, ActivityContextInterface aci,
+            InMemoryActivityContext activityContext) {
+        SbbTransactionContext transaction = ActivityContextTransactionRegistry.begin(
+                activityContext, timerBridge);
+        boolean failed = false;
+        try {
+            List<SbbLocalObject> attached = new ArrayList<SbbLocalObject>(
+                    activityContext.getAttachedSbbs());
+            Collections.sort(attached, new Comparator<SbbLocalObject>() {
+                @Override
+                public int compare(SbbLocalObject left, SbbLocalObject right) {
+                    return Integer.compare(right.getPriority(), left.getPriority());
+                }
+            });
+            for (SbbLocalObject localObject : attached) {
+                if (localObject.isRemoved()) {
                     continue;
                 }
+                Sbb sbb = localObject.getSbb();
+                if (!(sbb instanceof SleeEventHandler)) {
+                    continue;
+                }
+                SleeEventHandler handler = (SleeEventHandler) sbb;
+                if (deliverEvent(localObject, handler, sbb, event, aci, transaction)) {
+                    failed = true;
+                    break;
+                }
             }
-            // Fallback: dispatch inline on the EventRouter worker thread.
+            if (!failed) {
+                transaction.commit();
+            }
+        } finally {
+            ActivityContextTransactionRegistry.clear(transaction);
+        }
+    }
+
+    private boolean deliverEvent(SbbLocalObject localObject, SleeEventHandler handler, Sbb sbb,
+            SleeEvent event, ActivityContextInterface aci, SbbTransactionContext transaction) {
+        VirtualThreadSbbEntityPool pool = this.sbbEntityPool;
+        if (pool != null) {
+            VirtualThreadSbbEntityPool.SbbEntity entity =
+                    findEntity(pool, localObject.getSbbID().getId(), localObject);
+            if (entity != null) {
+                final AtomicReference<Exception> failure = new AtomicReference<Exception>();
+                final CountDownLatch done = new CountDownLatch(1);
+                entity.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        ActivityContextTransactionRegistry.install(transaction);
+                        try {
+                            handler.onEvent(event, aci);
+                        } catch (Exception e) {
+                            failure.set(e);
+                        } finally {
+                            ActivityContextTransactionRegistry.clear(transaction);
+                            done.countDown();
+                        }
+                    }
+                });
+                try {
+                    if (!done.await(30, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "Timed out delivering event to SBB " + localObject.getSbbID());
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "Interrupted delivering event to SBB " + localObject.getSbbID(), e);
+                }
+                if (failure.get() != null) {
+                    handleSbbException(failure.get(), localObject, event, aci, transaction);
+                    return true;
+                }
+                return false;
+            }
+        }
+        try {
+            handler.onEvent(event, aci);
+            return false;
+        } catch (Exception e) {
+            handleSbbException(e, localObject, event, aci, transaction);
+            return true;
+        }
+    }
+
+    private void handleSbbException(Exception exception, SbbLocalObject localObject, SleeEvent event,
+            ActivityContextInterface aci, SbbTransactionContext transaction) {
+        transaction.rollback();
+        if (errorHandlingPolicy != null) {
+            errorHandlingPolicy.onSbbException(localObject, exception, event, aci);
+        } else {
             try {
-                handler.onEvent(event, aci);
-            } catch (Exception e) {
-                sbb.sbbExceptionThrown(e, event, aci);
+                localObject.getSbb().sbbExceptionThrown(exception, event, aci);
+            } catch (Throwable ignored) {
+                // never let application exception handlers break dispatch
             }
         }
     }
 
     private static VirtualThreadSbbEntityPool.SbbEntity findEntity(
             VirtualThreadSbbEntityPool pool, String sbbId, SbbLocalObject localObject) {
-        // The SbbEntity is keyed by SBB ID. We cannot expose ConcurrentHashMap
-        // directly without a public accessor, so look it up via the pool's
-        // public size()-and-future-based matching: the entity's Future is not
-        // accessible, but we can probe the map via reflection-free accessor.
-        // To keep the API tight, we add a small lookup helper to the pool.
         return pool.findEntity(sbbId);
     }
 

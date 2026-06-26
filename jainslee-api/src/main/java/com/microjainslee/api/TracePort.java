@@ -11,9 +11,18 @@
 package com.microjainslee.api;
 
 /**
- * JAIN-SLEE 1.1 §12 — Trace Port interface.
- * Provides tracing facilities.
+ * JAIN-SLEE 1.1 §16 — Trace Port interface.
+ * Provides SBB runtime tracing facilities.
  */
 public interface TracePort {
+
+    /**
+     * Emit a trace at {@link TraceLevel#INFO}.
+     */
     void trace(String message);
+
+    /**
+     * Emit a trace at the given level.
+     */
+    void trace(TraceLevel level, String message);
 }

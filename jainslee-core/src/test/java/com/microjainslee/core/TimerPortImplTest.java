@@ -189,5 +189,8 @@ public class TimerPortImplTest {
             return new com.microjainslee.api.Sbb() { };
         }
         @Override public com.microjainslee.api.SbbID getSbbID() { return id; }
+        @Override public int getPriority() { return 0; }
+        @Override public void remove() { }
+        @Override public boolean isRemoved() { return false; }
     }
 }

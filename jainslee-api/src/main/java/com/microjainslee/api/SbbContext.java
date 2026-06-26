@@ -15,6 +15,7 @@ package com.microjainslee.api;
  * Provides access to SLEE facilities.
  */
 public interface SbbContext {
+    ServiceID getService();
     SbbLocalObject getSbbLocalObject();
     TimerPort getTimerFacility();
     ActivityContextNamingFacility getActivityContextNamingFacility();

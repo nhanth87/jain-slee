@@ -16,4 +16,16 @@ package com.microjainslee.api;
  */
 public interface ResourceAdaptorContext {
     void setResourceAdaptor(ResourceAdaptor ra);
+
+    /**
+     * Create a new activity context handle for the given RA activity object.
+     */
+    ActivityContextHandle createActivityContextHandle(Object activity);
+
+    /**
+     * Look up the handle previously created for an RA activity object.
+     *
+     * @return the handle, or {@code null} if none was registered
+     */
+    ActivityContextHandle getActivityContextHandle(Object activity);
 }

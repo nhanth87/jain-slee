@@ -17,4 +17,27 @@ package com.microjainslee.api;
 public interface SbbLocalObject {
     Sbb getSbb();
     SbbID getSbbID();
+
+    /**
+     * Returns the invocation priority for this SBB entity (0–9 in micro-jainslee).
+     */
+    int getPriority();
+
+    /**
+     * Removes this SBB entity and detaches it from any activity contexts.
+     */
+    void remove();
+
+    /**
+     * Returns {@code true} when this SBB entity has been removed.
+     */
+    boolean isRemoved();
+
+    /**
+     * Runs {@code action} on the owning SBB entity thread when the container
+     * supports entity pooling; otherwise runs inline on the caller thread.
+     */
+    default void invokeLocally(Runnable action) {
+        action.run();
+    }
 }

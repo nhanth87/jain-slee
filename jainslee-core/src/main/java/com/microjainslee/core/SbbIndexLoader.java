@@ -1,0 +1,289 @@
+/*
+ * micro-jainslee 1.1.0
+ *
+ * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
+ * See the LICENSE file at the root of this repository for the full text.
+ *
+ * Copyright (c) 2026 Tran Nhan (nhanth87). All rights reserved.
+ * Contact: nhanth87@gmail.com
+ */
+
+package com.microjainslee.core;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Properties;
+
+/**
+ * Loads {@code META-INF/microjainslee/sbb-index.properties} produced by APT.
+ */
+public final class SbbIndexLoader {
+
+    public static final String INDEX_RESOURCE = "META-INF/microjainslee/sbb-index.properties";
+
+    private SbbIndexLoader() {
+    }
+
+    public static SbbIndex load(ClassLoader classLoader) throws IOException {
+        if (classLoader == null) {
+            throw new IllegalArgumentException("classLoader is required");
+        }
+        InputStream in = classLoader.getResourceAsStream(INDEX_RESOURCE);
+        if (in == null) {
+            return SbbIndex.empty();
+        }
+        try {
+            Properties props = new Properties();
+            props.load(in);
+            return parse(props);
+        } finally {
+            in.close();
+        }
+    }
+
+    static SbbIndex parse(Properties props) {
+        List<SbbIndexEntry> sbbs = parseSection(props, "sbb", new EntryFactory<SbbIndexEntry>() {
+            @Override
+            public SbbIndexEntry create(int index, Properties props) {
+                String clazz = required(props, "sbb." + index + ".class");
+                return new SbbIndexEntry(clazz,
+                        props.getProperty("sbb." + index + ".name", simpleName(clazz)),
+                        props.getProperty("sbb." + index + ".vendor", "com.microjainslee"),
+                        props.getProperty("sbb." + index + ".version", "1.0"));
+            }
+        });
+        List<EventTypeIndexEntry> eventTypes = parseSection(props, "eventType", new EntryFactory<EventTypeIndexEntry>() {
+            @Override
+            public EventTypeIndexEntry create(int index, Properties props) {
+                String clazz = required(props, "eventType." + index + ".class");
+                return new EventTypeIndexEntry(clazz,
+                        props.getProperty("eventType." + index + ".name", simpleName(clazz)),
+                        props.getProperty("eventType." + index + ".vendor", "com.microjainslee"),
+                        props.getProperty("eventType." + index + ".version", "1.0"));
+            }
+        });
+        List<DeployableUnitIndexEntry> deployableUnits = parseSection(props, "du", new EntryFactory<DeployableUnitIndexEntry>() {
+            @Override
+            public DeployableUnitIndexEntry create(int index, Properties props) {
+                String clazz = required(props, "du." + index + ".class");
+                return new DeployableUnitIndexEntry(clazz,
+                        props.getProperty("du." + index + ".name", simpleName(clazz)),
+                        props.getProperty("du." + index + ".vendor", "com.microjainslee"),
+                        props.getProperty("du." + index + ".version", "1.0"),
+                        csv(props.getProperty("du." + index + ".sbbs")),
+                        csv(props.getProperty("du." + index + ".ras")),
+                        csv(props.getProperty("du." + index + ".profileSpecs")));
+            }
+        });
+        return new SbbIndex(sbbs, eventTypes, deployableUnits);
+    }
+
+    private interface EntryFactory<T> {
+        T create(int index, Properties props);
+    }
+
+    private static <T> List<T> parseSection(Properties props, String prefix, EntryFactory<T> factory) {
+        int max = -1;
+        for (String key : props.stringPropertyNames()) {
+            if (key.startsWith(prefix + ".")) {
+                int dot = key.indexOf('.', prefix.length() + 1);
+                if (dot > 0) {
+                    try {
+                        int index = Integer.parseInt(key.substring(prefix.length() + 1, dot));
+                        if (index > max) {
+                            max = index;
+                        }
+                    } catch (NumberFormatException ignored) {
+                        // skip malformed keys
+                    }
+                }
+            }
+        }
+        if (max < 0) {
+            return Collections.emptyList();
+        }
+        List<T> entries = new ArrayList<T>(max + 1);
+        for (int i = 0; i <= max; i++) {
+            if (props.containsKey(prefix + "." + i + ".class")) {
+                entries.add(factory.create(i, props));
+            }
+        }
+        return Collections.unmodifiableList(entries);
+    }
+
+    private static String required(Properties props, String key) {
+        String value = props.getProperty(key);
+        if (value == null || value.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing required index property: " + key);
+        }
+        return value.trim();
+    }
+
+    private static String simpleName(String fqn) {
+        int dot = fqn.lastIndexOf('.');
+        return dot >= 0 ? fqn.substring(dot + 1) : fqn;
+    }
+
+    private static List<String> csv(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        String[] parts = value.split(",");
+        List<String> result = new ArrayList<String>(parts.length);
+        for (String part : parts) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                result.add(trimmed);
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    public static final class SbbIndex {
+        private final List<SbbIndexEntry> sbbs;
+        private final List<EventTypeIndexEntry> eventTypes;
+        private final List<DeployableUnitIndexEntry> deployableUnits;
+
+        public SbbIndex(List<SbbIndexEntry> sbbs,
+                        List<EventTypeIndexEntry> eventTypes,
+                        List<DeployableUnitIndexEntry> deployableUnits) {
+            this.sbbs = sbbs;
+            this.eventTypes = eventTypes;
+            this.deployableUnits = deployableUnits;
+        }
+
+        public static SbbIndex empty() {
+            return new SbbIndex(Collections.<SbbIndexEntry>emptyList(),
+                    Collections.<EventTypeIndexEntry>emptyList(),
+                    Collections.<DeployableUnitIndexEntry>emptyList());
+        }
+
+        public List<SbbIndexEntry> getSbbs() {
+            return sbbs;
+        }
+
+        public List<EventTypeIndexEntry> getEventTypes() {
+            return eventTypes;
+        }
+
+        public List<DeployableUnitIndexEntry> getDeployableUnits() {
+            return deployableUnits;
+        }
+
+        public boolean isEmpty() {
+            return sbbs.isEmpty() && eventTypes.isEmpty() && deployableUnits.isEmpty();
+        }
+    }
+
+    public static final class SbbIndexEntry {
+        private final String className;
+        private final String name;
+        private final String vendor;
+        private final String version;
+
+        public SbbIndexEntry(String className, String name, String vendor, String version) {
+            this.className = className;
+            this.name = name;
+            this.vendor = vendor;
+            this.version = version;
+        }
+
+        public String getClassName() {
+            return className;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getVendor() {
+            return vendor;
+        }
+
+        public String getVersion() {
+            return version;
+        }
+    }
+
+    public static final class EventTypeIndexEntry {
+        private final String className;
+        private final String name;
+        private final String vendor;
+        private final String version;
+
+        public EventTypeIndexEntry(String className, String name, String vendor, String version) {
+            this.className = className;
+            this.name = name;
+            this.vendor = vendor;
+            this.version = version;
+        }
+
+        public String getClassName() {
+            return className;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getVendor() {
+            return vendor;
+        }
+
+        public String getVersion() {
+            return version;
+        }
+    }
+
+    public static final class DeployableUnitIndexEntry {
+        private final String className;
+        private final String name;
+        private final String vendor;
+        private final String version;
+        private final List<String> sbbs;
+        private final List<String> ras;
+        private final List<String> profileSpecs;
+
+        public DeployableUnitIndexEntry(String className, String name, String vendor, String version,
+                                        List<String> sbbs, List<String> ras, List<String> profileSpecs) {
+            this.className = className;
+            this.name = name;
+            this.vendor = vendor;
+            this.version = version;
+            this.sbbs = sbbs;
+            this.ras = ras;
+            this.profileSpecs = profileSpecs;
+        }
+
+        public String getClassName() {
+            return className;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getVendor() {
+            return vendor;
+        }
+
+        public String getVersion() {
+            return version;
+        }
+
+        public List<String> getSbbs() {
+            return sbbs;
+        }
+
+        public List<String> getRas() {
+            return ras;
+        }
+
+        public List<String> getProfileSpecs() {
+            return profileSpecs;
+        }
+    }
+}

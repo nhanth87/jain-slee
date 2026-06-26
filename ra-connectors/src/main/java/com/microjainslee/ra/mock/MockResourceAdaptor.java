@@ -10,7 +10,8 @@
 
 package com.microjainslee.ra.mock;
 
-import com.microjainslee.api.*;
+import com.microjainslee.api.ResourceAdaptorContext;
+import com.microjainslee.api.ResourceAdaptor;
 
 /**
  * Mock Resource Adaptor for testing.
@@ -38,7 +39,11 @@ public class MockResourceAdaptor implements ResourceAdaptor {
     @Override
     public void raUnconfigure() {}
 
-    public void sendEvent(SleeEvent event) {
+    public ResourceAdaptorContext getResourceAdaptorContext() {
+        return context;
+    }
+
+    public void sendEvent(com.microjainslee.api.SleeEvent event) {
         // Mock event sending
     }
 }

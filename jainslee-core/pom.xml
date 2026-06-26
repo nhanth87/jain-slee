@@ -28,9 +28,9 @@
             <version>3.4.2</version>
         </dependency>
         <dependency>
-            <groupId>org.restcomm.protocols.ss7.scheduler</groupId>
-            <artifactId>scheduler</artifactId>
-            <version>9.4.0</version>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-scheduler</artifactId>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>

@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class SleeTimerSchedulerBridge {
 
     private static final String LOCAL_NODE_ID = "micro-jainslee";
-    private static final TimerType SLEE_TIMER_TYPE = TimerType.TCAP_INVOKE_TIMEOUT;
+    private static final TimerType SLEE_TIMER_TYPE = TimerType.SLEE_TIMER;
 
     private final TimerScheduler scheduler;
     private final EventRouter eventRouter;

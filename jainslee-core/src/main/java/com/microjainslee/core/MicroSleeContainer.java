@@ -13,6 +13,7 @@ package com.microjainslee.core;
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.CreateException;
 import com.microjainslee.api.InitialEventSelector;
+import com.microjainslee.api.ProfileFacility;
 import com.microjainslee.api.ResourceAdaptor;
 import com.microjainslee.api.Sbb;
 import com.microjainslee.api.SbbID;
@@ -50,6 +51,7 @@ public final class MicroSleeContainer {
     private VirtualThreadSbbEntityPool sbbEntityPool;
     private final ServiceRegistry serviceRegistry = new ServiceRegistry();
     private final InMemoryCmpFieldStore cmpFieldStore = new InMemoryCmpFieldStore();
+    private final InMemoryProfileFacility profileFacility = new InMemoryProfileFacility();
     private final SbbLifecycleManager sbbLifecycleManager = new SbbLifecycleManager();
     private final ConcurrentHashMap<String, SimpleSbbLocalObject> sbbs =
             new ConcurrentHashMap<String, SimpleSbbLocalObject>();
@@ -130,6 +132,7 @@ public final class MicroSleeContainer {
         activityContextNamingFacility.clear();
         sbbs.clear();
         CmpFieldStoreLocator.set(null);
+        profileFacility.shutdown();
         state = State.STOPPED;
     }
 
@@ -186,7 +189,7 @@ public final class MicroSleeContainer {
             @Override
             public void run() {
                 SimpleSbbContext ctx = new SimpleSbbContext(serviceID, localObject, sbbID, timerPort,
-                        activityContextNamingFacility);
+                        activityContextNamingFacility, profileFacility);
                 Sbb sbbInstance = entity.getSbb();
                 try {
                     // Phase A state machine: setSbbContext -> sbbCreate -> sbbPostCreate -> sbbActivate.
@@ -439,6 +442,16 @@ public final class MicroSleeContainer {
      */
     public CmpFieldStore getCmpFieldStore() {
         return cmpFieldStore;
+    }
+
+    /**
+     * Phase 2 — access the profile facility. Returns the in-memory backend
+     * by default; embedders may wire in a JPA / Redis-backed
+     * implementation through {@link #installProfileFacility(ProfileFacility)}
+     * before {@link #start()} runs.
+     */
+    public ProfileFacility getProfileFacility() {
+        return profileFacility;
     }
 
     /**

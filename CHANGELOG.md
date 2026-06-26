@@ -8,6 +8,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Documentation refresh** — `README.md`, `docs/microjainslee-design.md`, and
+  `docs/run-testcase-100k-sbb.md` updated with Mermaid architecture/sequence
+  diagrams (colored `rect` blocks), function-call tables aligned to actual
+  source (`MicroJainsleeProcessor`, `MicroSleeContainer.attach`,
+  `SleeTimerSchedulerBridge`), and a clarified dual-license section.
+- **Removed `docs/TCK_TIMER_CUTOVER.md`** — TCK timer cutover is a legacy
+  Mobicents/WildFly concern, out of scope for the Quarkus micro-jainslee stack.
+
 ## [1.1.0] — 2026-06-26
 
 First public release after the Phase 3 + Phase 3.5 work landed. R&D-only;
@@ -110,8 +122,7 @@ not for production packaging.
 - No cluster / HA — single-JVM only.
 - No JSR-77 management MBeans — embedding runtime is responsible.
 - The `SleeTimerSchedulerBridge` reuses jSS7's `TimerType.TCAP_INVOKE_TIMEOUT`
-  as a placeholder; see [`docs/TCK_TIMER_CUTOVER.md`](docs/TCK_TIMER_CUTOVER.md)
-  for the cutover checklist.
+  as a placeholder until jSS7 exposes a dedicated SLEE timer type.
 - `adapter-jakartaee` and `jainslee-apt` lack in-process unit tests
   (the former requires WildFly; the latter was verified via a manual
   fixture compilation).

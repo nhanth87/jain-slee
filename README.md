@@ -2,8 +2,8 @@
 
 > A lightweight, embeddable implementation of the **JAIN SLEE 1.1** (JSR-240) service
 > logic execution environment — designed to run as a plain Java library inside a
-> Spring Boot application, a Quarkus runtime, a Jakarta EE server, or a unit
-> test, with **no JBoss Modules, no VFS, no MSC, no JMX dependency**.
+> **Quarkus** application (recommended), Spring Boot, a Jakarta EE server, or a
+> unit test, with **no JBoss Modules, no VFS, no MSC, no JMX dependency**.
 
 [![Java](https://img.shields.io/badge/Java-25_LTS-orange)](https://openjdk.org/projects/jdk/25/)
 [![Virtual Threads](https://img.shields.io/badge/Virtual_Threads-Loom-green)](https://openjdk.org/projects/loom/)
@@ -102,68 +102,62 @@ That's it. No XML, no annotation scanning, no deployment descriptors.
 | `adapter-jakartaee` | `com.microjainslee:adapter-jakartaee:1.1.0` | ~250 | Stable — Jakarta EE 9 EJB |
 | `ra-connectors` | `com.microjainslee:ra-connectors:1.1.0` | ~80 | Stable — mock RA for tests |
 
-```
-
-The legacy **RestComm JAIN-SLEE v8** container (Mobicents, WildFly 10, ~1400
-modules, ~150 KLOC) lives in the sibling `container/`, `api/`, and `tools/`
-directories and is intentionally **not** part of micro-jainslee.
+> The legacy **RestComm JAIN-SLEE v8** container (Mobicents, WildFly 10, ~1,400
+> modules, ~150 KLOC) lives in the sibling `container/`, `api/`, and `tools/`
+> directories. It is intentionally **not** part of micro-jainslee and remains
+> under the original AGPL-3.0 license (see [License](#license)).
 
 ---
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Runtime integration layer (pick one)                               │
-│  ┌────────────────────┐  ┌─────────────────┐  ┌──────────────────┐  │
-│  │ Spring Boot 3      │  │ Quarkus 3       │  │ Jakarta EE 9 EJB │  │
-│  │ @AutoConfiguration│  │ @BuildStep +    │  │ @Startup EJB +   │  │
-│  │ + SmartLifecycle   │  │ @Recorder       │  │ JNDI java:global │  │
-│  └────────────────────┘  └─────────────────┘  └──────────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  MicroSleeContainer  (com.microjainslee.core)                       │
-│  ┌────────────────────┐  ┌──────────────────┐  ┌────────────────┐   │
-│  │  EventRouter       │  │ TimerPortImpl     │  │ InMemoryACNF    │   │
-│  │  (LMAX Disruptor   │  │ SleeTimerScheduler│  │ bind / lookup / │   │
-│  │   MPMC ring)       │  │ Bridge (jSS7      │  │ unbind          │   │
-│  │  + log4j2          │  │ TimerScheduler)   │  │                 │   │
-│  └────────────────────┘  └──────────────────┘  └────────────────┘   │
-│  ┌────────────────────────────────────────────────────────────┐    │
-│  │  VirtualThreadSbbEntityPool                                │    │
-│  │  1 parked virtual thread per SBB ID + BlockingQueue        │    │
-│  │  Acquire / release / shutdown / prewarm                   │    │
-│  └────────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  jainslee-api  (spec contracts only — no implementation)            │
-│  Sbb · SbbContext · SbbLocalObject · SbbID · SleeEvent ·            │
-│  TimerPort · ActivityContextInterface · ResourceAdaptor ·           │
-│  @SbbAnnotation · @DeployableUnit · @EventType                     │
-└──────────────────────────────────────────────────────────────────────┘
+micro-jainslee is a three-layer stack: a **runtime adapter** (Quarkus is the
+recommended integration path), an embeddable **core container**, and a thin
+**spec API** module. The Quarkus extension wires the container at build time
+via `@BuildStep` + `@Recorder` and exposes it as CDI beans at runtime.
+
+```mermaid
+flowchart TB
+    subgraph adapters["Runtime integration — pick one"]
+        direction LR
+        QK["Quarkus 3<br/>@BuildStep + @Recorder<br/>Synthetic CDI beans"]
+        SB["Spring Boot 3<br/>@AutoConfiguration<br/>SmartLifecycle"]
+        EE["Jakarta EE 9<br/>@Startup EJB<br/>JNDI java:global"]
+    end
+
+    subgraph core["MicroSleeContainer — com.microjainslee.core"]
+        direction TB
+        ER["EventRouter<br/>LMAX Disruptor ring buffer"]
+        TIM["TimerPortImpl<br/>SleeTimerSchedulerBridge"]
+        ACNF["InMemoryActivityContextNamingFacility<br/>bind / lookup / unbind"]
+        POOL["VirtualThreadSbbEntityPool<br/>one parked VT per SBB ID"]
+    end
+
+    subgraph api["jainslee-api — spec contracts only"]
+        direction TB
+        SPEC["Sbb · SbbContext · SbbLocalObject · SleeEvent<br/>TimerPort · ActivityContextInterface · ResourceAdaptor<br/>@SbbAnnotation · @DeployableUnit · @EventType"]
+    end
+
+    adapters --> core
+    core --> api
+
+    classDef adapter fill:#e8f4fc,stroke:#0d6efd,color:#0a3622
+    classDef container fill:#d1e7dd,stroke:#198754,color:#0a3622
+    classDef spec fill:#fff3cd,stroke:#ffc107,color:#664d03
+
+    class QK,SB,EE adapter
+    class ER,TIM,ACNF,POOL container
+    class SPEC spec
 ```
 
-There are **four orthogonal concerns**:
+### Four orthogonal concerns
 
-1. **Event routing** — `EventRouter` owns a single LMAX Disruptor ring buffer.
-   Producers (`MicroSleeContainer.routeEvent`, timers, RAs) write wrapped
-   events into the ring; one consumer dispatches to the ACI's attached SBBs.
-2. **SBB threading** — `VirtualThreadSbbEntityPool` pins each SBB ID to its
-   own parked virtual thread. Every `entity.submit(runnable)` lands on that
-   one thread, giving the **single-threaded per-SBB ordering** the JAIN SLEE
-   spec mandates.
-3. **Timer facility** — `TimerPortImpl` delegates to `SleeTimerSchedulerBridge`
-   which schedules a `TimerRecord` on a jSS7 `LocalTimerAdapter`
-   (Netty `HashedWheelTimer`, 10 ms tick). When the wheel fires, the
-   bridge posts a `TimerFiredEvent` back through the `EventRouter` — **never**
-   invokes SBB code on the hashed-wheel thread.
-4. **Naming & lookup** — `InMemoryActivityContextNamingFacility` is a
-   `ConcurrentHashMap<String, ActivityContextInterface>`; an RA can bind a
-   new ACI under a string name and any SBB can look it up.
+| Concern | Component | Responsibility |
+|---|---|---|
+| **Event routing** | `EventRouter` | Owns a single LMAX Disruptor ring buffer. Producers (`MicroSleeContainer.routeEvent`, timers, RAs) publish events; the consumer dispatches to SBBs attached to the target ACI. |
+| **SBB threading** | `VirtualThreadSbbEntityPool` | Pins each SBB ID to one parked virtual thread. Every `entity.submit(Runnable)` runs on that thread, preserving **single-threaded per-SBB ordering** required by JAIN SLEE. |
+| **Timer facility** | `TimerPortImpl` → `SleeTimerSchedulerBridge` | Schedules `TimerRecord` instances on jSS7 `LocalTimerAdapter` (Netty `HashedWheelTimer`). On fire, re-posts a `TimerFiredEvent` through `EventRouter` — SBB code never runs on the wheel thread. |
+| **Naming & lookup** | `InMemoryActivityContextNamingFacility` | `ConcurrentHashMap<String, ActivityContextInterface>` for O(1) bind/lookup/unbind. RAs create ACIs; SBBs resolve them by name. |
 
 ---
 
@@ -175,46 +169,56 @@ The shortest path from "RA receives a SIP INVITE" to "SBB handles it":
 sequenceDiagram
     autonumber
     participant RA as MockResourceAdaptor
-    participant FAC as ActivityContextFactory (RA)
+    participant FAC as ActivityContextFactory
     participant CT as MicroSleeContainer
-    participant ER as EventRouter (Disruptor)
-    participant POOL as VirtualThreadSbbEntityPool
-    participant VT as per-SBB virtual thread
-    participant SBB as UssdMenuSbb.onEvent()
+    participant ACI as InMemoryActivityContext
+    participant ER as EventRouter
+    participant POOL as SbbEntityPool
+    participant VT as per-SBB VT
+    participant SBB as UssdMenuSbb
     participant TIM as TimerPortImpl
-    participant BR as SleeTimerSchedulerBridge
-    participant JSS7 as jSS7 LocalTimerAdapter
+    participant BR as TimerSchedulerBridge
+    participant JSS7 as jSS7 TimerAdapter
 
-    RA->>FAC: createActivityContext("call-42")
-    FAC->>CT: createActivityContext(name)
-    CT-->>RA: InMemoryActivityContext
-    RA->>CT: registerSbb("UssdMenuSbb", sbb)
-    CT->>POOL: acquire("UssdMenuSbb", factory)
-    POOL->>POOL: spawn parked VT
-    POOL-->>CT: SbbEntity{Future<?>, BlockingQueue}
-    CT-->>RA: SimpleSbbLocalObject
-    RA->>CT: attach("call-42", sbbLocal)
-    CT->>POOL: bindActivityContext(sbbLocal, aci)
-    Note over CT,POOL: bind sbbLocal → aci for timer routing
+    rect rgb(232, 244, 252)
+        Note over RA,CT: Session setup
+        RA->>FAC: createActivityContext("call-42")
+        FAC->>CT: createActivityContext(name)
+        CT-->>RA: InMemoryActivityContext
+        RA->>CT: registerSbb("UssdMenuSbb", sbb)
+        CT->>POOL: acquire("UssdMenuSbb", factory)
+        POOL->>POOL: spawn parked virtual thread
+        POOL-->>CT: SbbEntity
+        CT-->>RA: SimpleSbbLocalObject
+        RA->>CT: attach("call-42", sbbLocal)
+        CT->>ACI: attach(sbbLocal)
+        CT->>BR: bindActivityContext(sbbLocal, aci)
+    end
 
-    RA->>CT: routeEvent(SipInviteEvent, aci)
-    CT->>ER: routeEvent(event, aci)
-    ER->>ER: publish to ring buffer slot
-    ER->>POOL: lookup SbbEntity for aci
-    POOL-->>ER: SbbEntity
-    ER->>VT: entity.submit(() -> sbb.onEvent(event, aci))
-    VT->>SBB: invoke onEvent() — single-threaded per SBB ID
+    rect rgb(209, 231, 221)
+        Note over RA,SBB: Event delivery
+        RA->>CT: routeEvent(SipInviteEvent, aci)
+        CT->>ER: routeEvent(event, aci)
+        ER->>ER: publish to Disruptor ring
+        ER->>POOL: lookup SbbEntity for aci
+        POOL-->>ER: SbbEntity
+        ER->>VT: entity.submit(onEvent task)
+        VT->>SBB: onEvent(event, aci)
+    end
 
-    SBB->>TIM: setTimer(30_000, sbbLocal)
-    TIM->>BR: schedule(sbbLocal, 30_000)
-    BR->>JSS7: schedule(TimerRecord, 30s, callback)
-    Note over JSS7: Netty wheel, 10 ms tick
-    JSS7-->>BR: onTimerFire(TimerRecord)  -- 30 s later
-    BR->>ER: routeEvent(TimerFiredEvent, aci)
-    ER->>POOL: findEntity by sbbLocal
-    POOL-->>ER: SbbEntity
-    ER->>VT: entity.submit(() -> sbb.onEvent(timerEvent, aci))
-    VT->>SBB: on timer event, same VT as before
+    rect rgb(255, 243, 205)
+        Note over SBB,JSS7: Timer arm and fire
+        SBB->>TIM: setTimer(30_000, sbbLocal)
+        TIM->>BR: schedule(sbbLocal, 30_000)
+        BR->>JSS7: schedule TimerRecord
+        Note over JSS7: Netty HashedWheelTimer, 10 ms tick
+        JSS7-->>BR: onTimerFire after 30 s
+        BR->>ER: routeEvent(TimerFiredEvent, aci)
+        ER->>POOL: findEntity by sbbLocal
+        POOL-->>ER: SbbEntity
+        ER->>VT: entity.submit(timer onEvent task)
+        VT->>SBB: onEvent(timerEvent, aci)
+    end
 ```
 
 Key invariants preserved by this design:
@@ -231,6 +235,11 @@ Key invariants preserved by this design:
 
 ## Quarkus integration in detail
 
+**Quarkus is the primary integration path** for new micro-jainslee services.
+The extension starts the container during application bootstrap, registers
+synthetic CDI beans for the core facilities, and wires a graceful shutdown
+hook — no XML descriptors or JNDI lookups required.
+
 The Quarkus adapter ships as a **3-module Maven reactor** that mirrors the
 standard Quarkus 3.x extension layout (deployment + runtime):
 
@@ -241,6 +250,44 @@ adapter-quarkus/                        ← parent pom (packaging=pom)
 └── runtime/                            ← runs inside the user's app (runtime)
     ├── MicroJainsleeRecorder.java      ← @Recorder methods replayed at static-init
     └── MicroJainsleeProducer.java      ← @Produces CDI beans
+```
+
+### Quarkus bootstrap sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Q as Quarkus build
+    participant P as MicroJainsleeProcessor
+    participant R as MicroJainsleeRecorder
+    participant C as MicroSleeContainer
+    participant CDI as Arc CDI
+
+    rect rgb(232, 244, 252)
+        Note over Q,R: STATIC_INIT — build replay
+        Q->>P: containerConfig(MicroJainsleeBuildConfig)
+        P->>P: MicroSleeConfiguration.builder().build()
+        Q->>P: installContainer(recorder, configuration)
+        P->>R: createContainer(configuration)
+        R->>C: new MicroSleeContainer(cfg)
+        R->>R: static fields ← container, EventRouter, TimerPort, ACNF
+    end
+
+    rect rgb(209, 231, 221)
+        Note over Q,CDI: RUNTIME_INIT — app boot
+        Q->>P: startContainer(recorder)
+        P->>R: startContainer()
+        R->>C: start() + prewarm SBB pool
+        Q->>P: synthetic beans (container, router, timer, ACNF)
+        P->>CDI: ApplicationScoped RuntimeValues from recorder
+    end
+
+    rect rgb(255, 243, 205)
+        Note over Q,C: Shutdown
+        Q->>P: shutdown hook
+        P->>R: stopContainer()
+        R->>C: stop() — drain pool + timers
+    end
 ```
 
 ### Build-time wiring (`MicroJainsleeProcessor`)
@@ -325,6 +372,26 @@ void shutdownContainer(MicroJainsleeRecorder recorder,
 
 `stopContainer()` is idempotent and short-circuits on an already-stopped
 container.
+
+`MicroJainsleeProducer` also exposes `@Produces @DefaultBean` fallbacks for
+unit tests that bypass the Quarkus augmentation pipeline.
+
+### `application.properties` (Quarkus)
+
+```properties
+# Event router — must be a power of two
+microjainslee.buffer-size=8192
+microjainslee.prefer-virtual-threads=true
+
+# SBB entity pool — tune for expected concurrent SBB count
+microjainslee.sbb-pool-min=64
+microjainslee.sbb-pool-max=100000
+microjainslee.sbb-per-virtual-thread=true
+
+# Optional @SbbAnnotation classpath scan (default: enabled)
+microjainslee.deployment.scan.enabled=true
+microjainslee.deployment.scan.includes=com.example.ussd
+```
 
 ---
 
@@ -734,9 +801,8 @@ JBoss stack depends on but the SLEE semantics do not strictly require.
 * **TCK** — the JBoss stack targets JSR-240 compliance; micro-jainslee
   has not been TCK-tested and probably fails several edge cases
   (child SBB reentrancy, transactional rollback, replicated SBB
-  state). See [`docs/TCK_TIMER_CUTOVER.md`](docs/TCK_TIMER_CUTOVER.md)
-  for the timer cutover checklist — the same level of rigour would
-  be needed for a full TCK gap analysis.
+  state). A full TCK gap analysis is out of scope for this R&D
+  runtime.
 * **Cluster / HA** — micro-jainslee has no Infinispan, no
   `FaultTolerantTimer`, no replicated SBB state. Drop one SBB's
   JVM and you lose every timer it owned.
@@ -840,7 +906,8 @@ micro-jainslee/
 ├── README.md                                  ← this file
 ├── optimizejainsleep2.md                      ← Phase 2 (codegen) + Phase 3 plan
 ├── docs/
-│   └── TCK_TIMER_CUTOVER.md                   ← timer cutover checklist
+│   ├── microjainslee-design.md                ← architecture & internals
+│   └── run-testcase-100k-sbb.md               ← 100K SBB stress-test guide
 │
 ├── jainslee-api/                              ← SLEE spec interfaces (no impl)
 │   └── src/main/java/com/microjainslee/api/
@@ -902,34 +969,50 @@ Detailed engineering docs live under `docs/`:
 
 | Document | What it covers |
 |---|---|
-| [`docs/microjainslee-design.md`](docs/microjainslee-design.md) | **Architecture & internals** — goals/non-goals, module map, event-router pipeline, the `VirtualThreadSbbEntityPool` deep-dive, timer bridge, annotation processor, runtime integrations, configuration model, concurrency contract, failure modes, design-decision log. Read this if you are integrating the runtime into a new framework or contributing to the core. |
+| [`docs/microjainslee-design.md`](docs/microjainslee-design.md) | **Architecture & internals** — goals/non-goals, module map, event-router pipeline, `VirtualThreadSbbEntityPool` deep-dive, timer bridge, Quarkus extension wiring, annotation processor, configuration model, concurrency contract, failure modes, design-decision log. Read this if you are integrating the runtime into Quarkus or contributing to the core. |
 | [`docs/run-testcase-100k-sbb.md`](docs/run-testcase-100k-sbb.md) | **Step-by-step stress-test guide** — prerequisites, per-scenario Maven commands, output interpretation, hardware tuning, how to add a new scale point, troubleshooting. Read this if you want to reproduce the 10K / 50K / 100K numbers reported in the [Stress test](#stress-test-100k-sbbs) section. |
-| [`docs/TCK_TIMER_CUTOVER.md`](docs/TCK_TIMER_CUTOVER.md) | Timer-backend cutover checklist — the rollout plan for swapping the in-process `SleeTimerSchedulerBridge` out for the cluster-backed `InfinispanTimerAdapter` when production USSD 7.3 graduates onto Java 17+. |
 
 ## License
 
-micro-jainslee 1.1.0 is released under a **dual license** — you choose
-which one applies to your use:
+This repository contains **two independently licensed codebases**. Read the
+table below before copying, modifying, or distributing any source.
 
-| License | When to use it |
-|---|---|
-| **[GPLv3, Section A of `LICENSE`](LICENSE)** | Free for open-source projects, internal evaluation, and any use where copyleft is acceptable. Source code changes you distribute must also be under GPLv3. |
-| **[Commercial License, Section B of `LICENSE`](LICENSE)** | Required if you want to embed micro-jainslee in a proprietary product, ship it as part of a closed-source SaaS, or avoid the GPLv3 section 13 network-copyleft obligation. See [`COMMERCIAL_LICENSE.md`](COMMERCIAL_LICENSE.md) for terms, support tiers, and pricing. |
+### What is licensed how
 
-Copyright © 2026 **Tran Nhan** (GitHub: [nhanth87](https://github.com/nhanth87),
-email: [nhanth87@gmail.com](mailto:nhanth87@gmail.com)). All rights reserved.
+| Path / artifact | Copyright | License | Applies to |
+|---|---|---|---|
+| `jainslee-api/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** (choose one) | Spec interfaces (`Sbb`, `TimerPort`, `ResourceAdaptor`, annotations) |
+| `jainslee-core/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | `MicroSleeContainer`, `EventRouter`, `VirtualThreadSbbEntityPool`, timer bridge |
+| `jainslee-apt/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Build-time `@SbbAnnotation` annotation processor |
+| `jainslee-spring-boot-starter/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Spring Boot 3 auto-configuration |
+| `adapters/adapter-quarkus/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Quarkus 3 extension (deployment + runtime) |
+| `adapters/adapter-jakartaee/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Jakarta EE 9 EJB bootstrap |
+| `ra-connectors/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Mock RA for tests |
+| `container/`, `api/`, `tools/` | RestComm / Mobicents | **AGPL-3.0** (unchanged) | Legacy JAIN-SLEE v8 production stack — **out of micro-jainslee scope** |
 
-> Both licenses are negotiated from the same copyright holder; switching
-> between them is a contract event, not a code event. The source code
-> you receive is identical under either license — only the *terms
-> governing what you may do with it* differ.
+All micro-jainslee `.java` files carry a 9-line dual-license header. The
+legacy Mobicents directories retain their original AGPL-3.0 headers and are
+not relicensed.
+
+### Choosing a micro-jainslee license
+
+You must pick **exactly one** license before using any micro-jainslee module.
+The source code is identical under both options — only the terms differ.
+
+| Option | Document | Choose when… |
+|---|---|---|
+| **GPLv3** | [Section A of `LICENSE`](LICENSE) | Your project is open source, you accept copyleft, or you are evaluating internally without distributing binaries. Modifications you **distribute** must also be GPLv3. |
+| **Commercial** | [Section B of `LICENSE`](LICENSE) + [`COMMERCIAL_LICENSE.md`](COMMERCIAL_LICENSE.md) | You embed micro-jainslee in a **proprietary** product, ship it in closed-source SaaS, or need to avoid GPLv3 section 13 (network copyleft). Contact [nhanth87@gmail.com](mailto:nhanth87@gmail.com). |
+
+> Switching between GPLv3 and Commercial is a **contract event**, not a code
+> change. You cannot combine both licenses simultaneously for the same
+> deployment.
 
 ### Why dual?
 
-The GPLv3 alone is sufficient for academic and open-source use, but it
-forces downstream users who ship proprietary products to either release
-their source code or buy a commercial license anyway. By offering a
-Commercial License explicitly, the maintainer avoids the awkwardness of
-"everyone ignores the GPL" and gives commercial users a clear,
-auditable alternative that funds ongoing maintenance of the open-source
-release. This is the same model used by MySQL, Qt, and MariaDB.
+GPLv3 covers academic and open-source use well, but proprietary products need
+a clear alternative. The Commercial License funds ongoing maintenance while
+keeping the GPLv3 path free — the same model used by MySQL, Qt, and MariaDB.
+
+Copyright © 2026 **Tran Nhan** ([nhanth87](https://github.com/nhanth87),
+[nhanth87@gmail.com](mailto:nhanth87@gmail.com)). All rights reserved.

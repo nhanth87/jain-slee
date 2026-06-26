@@ -68,6 +68,29 @@
         <maven.compiler.target>8</maven.compiler.target>
     </properties>
 
+    <!--
+      jSS7 `org.restcomm.protocols.ss7.scheduler:scheduler:9.4.0` is not on
+      Maven Central — it lives on the RestComm public Maven repo. Declare it
+      here so CI builds (which have no local ~/.m2 cache) can resolve it.
+      See https://github.com/RestComm/jss7 for the source project.
+    -->
+    <repositories>
+        <repository>
+            <id>restcomm-snapshots</id>
+            <name>RestComm Public Maven Repository</name>
+            <url>https://maven.restcomm.com/public/</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>true</enabled></snapshots>
+        </repository>
+    </repositories>
+    <pluginRepositories>
+        <pluginRepository>
+            <id>restcomm-snapshots</id>
+            <name>RestComm Public Maven Repository</name>
+            <url>https://maven.restcomm.com/public/</url>
+        </pluginRepository>
+    </pluginRepositories>
+
     <build>
         <plugins>
             <plugin>

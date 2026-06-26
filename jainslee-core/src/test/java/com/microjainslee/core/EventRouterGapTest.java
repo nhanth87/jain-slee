@@ -151,7 +151,19 @@ public class EventRouterGapTest {
 
         assertTrue(failing.awaitFailure());
         assertTrue(awaitDetached(aci, localObject));
-        assertTrue(failing.exceptionHandled.get());
+        assertTrue(awaitExceptionHandled(failing));
+    }
+
+    private static boolean awaitExceptionHandled(FailingSbb failing)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (failing.exceptionHandled.get()) {
+                return true;
+            }
+            Thread.sleep(10L);
+        }
+        return failing.exceptionHandled.get();
     }
 
     private static boolean awaitDetached(InMemoryActivityContext aci, SbbLocalObject localObject)

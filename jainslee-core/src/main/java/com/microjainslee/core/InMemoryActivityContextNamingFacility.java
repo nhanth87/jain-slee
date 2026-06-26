@@ -35,6 +35,10 @@ public final class InMemoryActivityContextNamingFacility implements ActivityCont
         return contexts.get(name);
     }
 
+    public java.util.Collection<ActivityContextInterface> getBoundContexts() {
+        return java.util.Collections.unmodifiableCollection(contexts.values());
+    }
+
     public void unbind(String name) {
         contexts.remove(name);
     }

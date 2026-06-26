@@ -12,8 +12,14 @@ package com.microjainslee.api;
 
 /**
  * JAIN-SLEE 1.1 §12 — Usage Port interface.
- * Provides usage monitoring facilities.
+ * Provides usage monitoring facilities (counters and samples).
  */
 public interface UsagePort {
+
     void incrementCounter(String counterName);
+
+    /**
+     * Record a sample usage parameter value (e.g. latency, queue depth).
+     */
+    void recordSample(String parameterName, long value);
 }

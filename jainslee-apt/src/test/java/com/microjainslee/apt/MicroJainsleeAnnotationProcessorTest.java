@@ -154,6 +154,13 @@ public class MicroJainsleeAnnotationProcessorTest {
         assertEquals("com.example.MyDU", props.getProperty("du.0.class"));
         assertEquals("MyDU", props.getProperty("du.0.name"));
 
+        Path generatedSource = outDir.resolve("com/example/GeneratedEventTypes.java");
+        assertTrue("Processor did not emit GeneratedEventTypes.java",
+                Files.isRegularFile(generatedSource));
+        String generated = Files.readString(generatedSource);
+        assertTrue(generated.contains("public static final EventTypeRef MY_EVENT"));
+        assertTrue(generated.contains("new EventTypeRef(\"MyEvent\", \"com.example\", \"1.0\")"));
+
         LOG.info("index file emitted with {} properties", props.size());
     }
 

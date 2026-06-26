@@ -78,6 +78,7 @@ jobs:
         run: |
           mvn -B -ntp -pl jainslee-core -am test \
             -Dtest=SbbEntityPoolStressTest \
+            -Dsurefire.failIfNoSpecifiedTests=false \
             -DargLine="-Xmx4g -XX:+UseZGC -XX:+ZGenerational"
 
       - name: Generate JavaDoc

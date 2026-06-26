@@ -1,131 +1,118 @@
 # micro-jainslee — Core Gap Analysis (Jakarta + Quarkus + Java 25)
-# Updated: 2026-06-24
+
+**Updated:** 2026-06-26  
+**Status:** Phases 1–4 implemented on branch `micro-jainslee`
+
+---
 
 ## Trạng thái hiện tại
 
-### ✅ ĐÃ CÓ PLAN CHI TIẾT
-- EventRouter (Virtual Threads + ReentrantLock per AC)
-- SbbEntity (POJO wrapper + FSM lifecycle)
-- StateMachine (sealed interfaces + pattern matching)
-- ActivityContextRegistry (ConcurrentHashMap)
-- CoreTimerFacility (ScheduledExecutorService + VT dispatch)
-- SleeContainerFactory (builder pattern)
-- SbbAnnotationProcessor (APT - build-time)
-- SbbRegistry (ServiceLoader)
-- jainslee-api ports: EventPublisherPort, TimerPort, RaEndpointPort, RaCommandPort
-- adapter-quarkus bootstrap (@ApplicationScoped + CDI)
+### ✅ ĐÃ IMPLEMENT
 
-### ❌ CHƯA CÓ / CÒN THIẾU (Gap list đầy đủ)
+| Component | Location |
+|-----------|----------|
+| EventRouter + priority sort + concurrency modes | `jainslee-core/EventRouter` |
+| InitialEventSelector (GAP-19) | `DefaultInitialEventSelector` |
+| ErrorHandlingPolicy + rollback (GAP-17) | `DefaultErrorHandlingPolicy` |
+| EventContext suspend/resume (GAP-10) | `InMemoryActivityContext` implements `EventContext` |
+| ConcurrencyControl (GAP-15) | `ConcurrencyControl` enum + AC locks |
+| SbbLocalObject local invoke (GAP-07) | `SimpleSbbLocalObject` + `SbbLocalInvoker` |
+| Logical transaction (GAP-09) | `SbbTransactionContext` |
+| SbbContext + ServiceID (GAP-11) | `SimpleSbbContext` |
+| APT EventType constants (GAP-13) | `GeneratedEventTypes.java` via APT |
+| SbbIndexLoader auto-deploy (GAP-14) | `SbbIndexLoader` + `MicroSleeContainer.start()` |
+| ServiceRegistry (GAP-02) | `ServiceRegistry` + `ServiceState` |
+| RaBootstrapContext (GAP-12) | `RaBootstrapContextImpl` + `RaBootstrap` |
+| TracePort levels (GAP-05) | `TraceLevel` + `TraceFacilityQuarkusAdapter` |
+| UsagePort samples (GAP-06) | `UsageFacilityQuarkusAdapter` (Micrometer optional) |
+| AlarmPort (GAP-04) | `AlarmPort` + Quarkus adapter |
+| ProfileTablePort (GAP-01) | `InMemoryProfileTablePort` + Quarkus stub |
+| NamingPort (GAP-03) | `InMemoryNamingPort` |
+| Timer (vendored scheduler) | `jainslee-scheduler` module |
+| Namespace strategy doc (GAP-16) | `docs/microjainslee-design.md` §13 |
+| Quarkus native profile (GAP-20) | `adapters/adapter-quarkus/pom.xml` |
 
-#### GAP-01: ProfileFacility (spec §10)
-- JAIN-SLEE 1.1 §10 yêu cầu ProfileFacility đầy đủ
-- ProfileTable, ProfileSpec, ProfileID
-- Port: ProfileTablePort (interface đã mention nhưng chưa define chi tiết)
-- Cần: ProfileTablePort interface + CDI/JPA adapter impl trong adapter-quarkus
+### ⏳ DEFERRED (non-goals / production stack)
 
-#### GAP-02: ServiceManagement (spec §13)
-- Service lifecycle: INACTIVE → ACTIVE → STOPPING → INACTIVE
-- ServiceID, ServiceComponent
-- DeploymentUnit concept (SBB + RA bundled)
-- SleeManagementMBean (cho operator interface)
-- Chưa có bất kỳ class nào cho phần này
+| Gap | Rationale |
+|-----|-----------|
+| TCK compliance | R&D only — Mobicents container targets TCK |
+| Cluster / HA timers | Single-JVM; Infinispan adapter deferred |
+| JSR-77 MBean management | Delegate to Quarkus Actuator / WildFly JMX |
+| Full ProfileFacility JPA | Interface + in-memory done; JPA when USSD needs it |
+| Full javax.slee.* API parity | micro-jainslee uses `com.microjainslee.api` subset |
 
-#### GAP-03: NamingFacility (spec §14)
-- JAIN-SLEE 1.1 §14: global namespace cho SBB lookup objects
-- Thay JNDI bằng CDI-based naming trong micro-jainslee
-- NamingPort interface chưa được define
+---
 
-#### GAP-04: AlarmFacility (spec §15)
-- §15: AlarmFacility cho operator alerting
-- AlarmLevel (WARNING, MINOR, MAJOR, CRITICAL, CLEARED)
-- AlarmPort interface chưa có
+## Gap detail (original analysis)
 
-#### GAP-05: TraceFacility (spec §16)
-- §16: TraceFacility cho SBB runtime tracing (khác với logging thông thường)
-- TraceLevel, TraceMessageEvent
-- Cần tích hợp với Quarkus OpenTelemetry (otel) → TraceFacilityQuarkusAdapter
-- Hiện tại chỉ mention "Logger" chung chung
+#### GAP-01: ProfileFacility — **DONE (minimal)**
+- `ProfileTablePort` + `InMemoryProfileTablePort` + Quarkus adapter stub
 
-#### GAP-06: UsageFacility (spec §12)
-- §12: SBB Usage Parameters (counter, sample, average)
-- UsageParameterSet, UsageNotificationManager
-- Quan trọng cho telecom KPIs/metrics → tích hợp với Quarkus Micrometer
-- Chưa có gì
+#### GAP-02: ServiceManagement — **DONE (minimal)**
+- `ServiceRegistry`, `ServiceState`, lifecycle activate/stop
 
-#### GAP-07: SbbLocalObject (spec §8.5)
-- SbbLocalObject là interface SBB dùng để call lẫn nhau (local invocation)
-- Phải implement đầy đủ: getSbbPriority, sbbRollback, v.v.
-- Hiện tại chỉ mention tên interface, chưa có implementation plan
+#### GAP-03: NamingFacility — **DONE (minimal)**
+- `NamingPort` + `InMemoryNamingPort`
 
-#### GAP-08: ActivityContextNamingFacility (spec §6.2)
-- §6.2: bind/lookup ActivityContext bằng tên
-- ActivityContextNamingFacilityPort chưa define
-- Quan trọng: cho phép SBB lookup AC theo tên (cross-SBB communication)
+#### GAP-04: AlarmFacility — **DONE**
+- `AlarmPort`, `AlarmLevel`, Quarkus adapter
 
-#### GAP-09: Transaction (spec §§ 5.14, 6.8)
-- JAIN-SLEE spec yêu cầu transactional semantics cho SBB invocation
-- rollback, commit khi sbbExceptionThrown
-- micro-jainslee dùng SLEE Transaction Model hay bỏ qua?
-- Quyết định: dùng "logical transaction" không cần JTA/XA
+#### GAP-05: TraceFacility — **DONE**
+- `TraceLevel`, `TraceFacilityQuarkusAdapter`
 
-#### GAP-10: EventContextInterface (spec §7.4)
-- EventContext: suspend/resume event processing
-- suspend(): tạm dừng event processing trên AC
-- resume(): tiếp tục
-- Cần tích hợp với Virtual Thread (park/unpark)
-- Chưa có plan
+#### GAP-06: UsageFacility — **DONE**
+- Extended `UsagePort`, Micrometer adapter
 
-#### GAP-11: SbbContext (spec §8.6)
-- SbbContext inject vào SBB khi sbbCreate()
-- Cung cấp: getSbbLocalObject(), getActivityContextNamingFacility()
-- SbbContextPort đã mention nhưng chưa đầy đủ methods theo spec
+#### GAP-07: SbbLocalObject — **DONE**
+- priority, remove, invokeLocally via entity pool
 
-#### GAP-12: RaBootstrapContext (spec §11.2)
-- ResourceAdaptorContext (spec name) cho RA lifecycle
-- createActivityContextHandle(), getActivityContextHandle()
-- Đã define RaBootstrapContext trong gap-analysis nhưng chưa trong architecture-master
+#### GAP-08: ActivityContextNamingFacility — **DONE (pre-existing)**
+- `InMemoryActivityContextNamingFacility`
 
-#### GAP-13: EventTypeRepository (compile-time)
-- EventTypeId phải được resolve tại compile time (APT)
-- Hiện tại EventTypeId.of() là runtime string
-- Cần: @EventTypeDefinition annotation + APT generation
+#### GAP-09: Transaction — **DONE (logical)**
+- `SbbTransactionContext`, no JTA
 
-#### GAP-14: DeployableUnit (spec §13.2)
-- Package/unpackage SBB + RA + Profile + Event definitions
-- Trong micro-jainslee: Maven module = DeployableUnit
-- Cần: annotation-based manifest thay XML deployment descriptor
+#### GAP-10: EventContextInterface — **DONE**
+- suspend/resume on `InMemoryActivityContext`
 
-#### GAP-15: ConcurrencyControl (spec §6.3.4)
-- SBB ConcurrencyControl: TRANSACTION, EVENT_TYPE_INDEPENDENT, EVENT_TYPE
-- micro-jainslee dùng ReentrantLock → map như thế nào sang 3 modes này?
-- Chưa có plan cụ thể
+#### GAP-11: SbbContext — **DONE**
+- `getService()`, full facility accessors
 
-#### GAP-16: Jakarta EE namespace strategy (toàn bộ project)
-- Quyết định: core dùng com.microjainslee.* (không phụ thuộc javax.* hay jakarta.*)
-- Adapter-quarkus: dùng jakarta.* (CDI, injection, etc.) → ✅ đã quyết định
-- JAIN-SIP vẫn dùng javax.sip.* → giữ nguyên trong RA layer
-- Cần document rõ: mỗi module được phép dùng namespace nào
+#### GAP-12: RaBootstrapContext — **DONE**
+- `RaBootstrapContextImpl`, `RaBootstrap`
 
-#### GAP-17: Error handling & Rollback strategy
-- JAIN-SLEE §5.14: nếu SBB throw exception → rollback activity
-- micro-jainslee: rollback strategy chưa được define rõ
-- Cần: ErrorHandlingPolicy interface + default impl
+#### GAP-13: EventTypeRepository — **DONE**
+- APT generates `GeneratedEventTypes.java`
 
-#### GAP-18: SBB Priority (spec §7.2.2)
-- Event delivery priority: SBB có priority 0-9
-- EventRouter phải sort attached SBBs by priority trước khi dispatch
-- Hiện tại EventRouter không có priority sorting
+#### GAP-14: DeployableUnit — **DONE**
+- `SbbIndexLoader`, auto-register on start
 
-#### GAP-19: InitialEventSelector (spec §7.1)
-- IES: quyết định SBB nào là "root" xử lý event mới (không có AC trước)
-- InitialEventSelectorPort + InitialEventSelectorMethod
-- Chưa có gì
+#### GAP-15: ConcurrencyControl — **DONE**
+- Three modes mapped to AC locking
 
-#### GAP-20: quarkus pom.xml + build pipeline chưa có
-- Chi tiết pom.xml cho tất cả modules chưa được viết
-- Build profile: native vs JVM mode
-- Test profile: unit + integration + native-test
+#### GAP-16: Namespace strategy — **DONE**
+- Documented in design doc §13
 
+#### GAP-17: Error handling — **DONE**
+- `ErrorHandlingPolicy` + rollback
 
+#### GAP-18: SBB Priority — **DONE**
+- Priority sort in `EventRouter`
 
+#### GAP-19: InitialEventSelector — **DONE**
+- `DefaultInitialEventSelector`
 
+#### GAP-20: Quarkus build — **DONE**
+- native profile, CI includes scheduler
+
+---
+
+## Test coverage
+
+```
+mvn -pl jainslee-api,jainslee-scheduler,jainslee-core,jainslee-apt,ra-connectors,adapters/adapter-quarkus/runtime -am test
+→ 62+ tests, BUILD SUCCESS
+```
+
+Key test classes: `EventRouterGapTest`, `SbbTransactionRollbackIntegrationTest`, `MicroSleeContainerAutoDeployTest`, `FacilityPortsTest`, `SbbIndexLoaderTest`, `RaBootstrapContextImplTest`

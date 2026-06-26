@@ -10,6 +10,7 @@
 
 package com.microjainslee.core;
 
+import com.microjainslee.api.TraceLevel;
 import com.microjainslee.api.TracePort;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -27,6 +28,26 @@ public final class SimpleTracePort implements TracePort {
 
     @Override
     public void trace(String message) {
-        logger.info(message);
+        trace(TraceLevel.INFO, message);
+    }
+
+    @Override
+    public void trace(TraceLevel level, String message) {
+        if (message == null) {
+            return;
+        }
+        TraceLevel effective = level == null ? TraceLevel.INFO : level;
+        switch (effective) {
+            case FINE:
+                logger.debug(message);
+                break;
+            case FINER:
+                logger.trace(message);
+                break;
+            case INFO:
+            default:
+                logger.info(message);
+                break;
+        }
     }
 }

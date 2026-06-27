@@ -45,6 +45,7 @@ public class EventRouter {
     private volatile VirtualThreadSbbEntityPool sbbEntityPool;
     private volatile SleeTimerSchedulerBridge timerBridge;
     private volatile ErrorHandlingPolicy errorHandlingPolicy;
+    private final EventDeliveryMode deliveryMode;
 
     /**
      * Running count of events skipped because no attached SBB had a matching
@@ -62,6 +63,12 @@ public class EventRouter {
     }
 
     public EventRouter(int bufferSize, boolean preferVirtualThreads, boolean perVirtualThread) {
+        this(bufferSize, preferVirtualThreads, perVirtualThread, EventDeliveryMode.SYNC);
+    }
+
+    public EventRouter(int bufferSize, boolean preferVirtualThreads, boolean perVirtualThread,
+            EventDeliveryMode deliveryMode) {
+        this.deliveryMode = deliveryMode != null ? deliveryMode : EventDeliveryMode.SYNC;
         this.executor = MicroSleeExecutors.newEventExecutor(preferVirtualThreads);
         // Disruptor 3.4.2 still uses the (factory, ringSize, executor,
         // producerType, waitStrategy) constructor — the builder API
@@ -214,7 +221,7 @@ public class EventRouter {
                     break;
                 }
             }
-            if (!failed) {
+            if (!failed && deliveryMode != EventDeliveryMode.ASYNC_COMMIT) {
                 transaction.commit();
             }
         } finally {
@@ -246,60 +253,84 @@ public class EventRouter {
 
     private boolean deliverEvent(SbbLocalObject localObject, SleeEventHandler handler, Sbb sbb,
             SleeEvent event, ActivityContextInterface aci, SbbTransactionContext transaction) {
-        VirtualThreadSbbEntityPool pool = this.sbbEntityPool;
-        if (pool != null) {
-            VirtualThreadSbbEntityPool.SbbEntity entity =
-                    findEntity(pool, localObject.getSbbID().getId(), localObject);
-            if (entity != null) {
-                final AtomicReference<Exception> failure = new AtomicReference<Exception>();
-                final CountDownLatch done = new CountDownLatch(1);
-                entity.submit(new Runnable() {
-                    @Override
-                    public void run() {
-                        // ScopedValue.where binds the transaction to the
-                        // structured scope for the duration of this runnable.
-                        // When the runnable returns, the scope exits and the
-                        // value is automatically cleared — safe across
-                        // virtual threads.
-                        ScopedValue.where(ActivityContextTransactionRegistry.CURRENT,
-                                transaction).run(new Runnable() {
-                            @Override
-                            public void run() {
-                                try {
-                                    handler.onEvent(event, aci);
-                                } catch (Exception e) {
-                                    failure.set(e);
-                                } finally {
-                                    done.countDown();
-                                }
-                            }
-                        });
-                    }
-                });
-                try {
-                    if (!done.await(30, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException(
-                                "Timed out delivering event to SBB " + localObject.getSbbID());
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException(
-                            "Interrupted delivering event to SBB " + localObject.getSbbID(), e);
-                }
-                if (failure.get() != null) {
-                    handleSbbException(failure.get(), localObject, event, aci, transaction);
-                    return true;
-                }
+        if (deliveryMode == EventDeliveryMode.INLINE || sbbEntityPool == null) {
+            try {
+                handler.onEvent(event, aci);
                 return false;
+            } catch (Exception e) {
+                handleSbbException(e, localObject, event, aci, transaction);
+                return true;
             }
         }
-        try {
-            handler.onEvent(event, aci);
+        VirtualThreadSbbEntityPool pool = this.sbbEntityPool;
+        VirtualThreadSbbEntityPool.SbbEntity entity =
+                findEntity(pool, localObject.getSbbID().getId(), localObject);
+        if (entity == null) {
+            try {
+                handler.onEvent(event, aci);
+                return false;
+            } catch (Exception e) {
+                handleSbbException(e, localObject, event, aci, transaction);
+                return true;
+            }
+        }
+        if (deliveryMode == EventDeliveryMode.ASYNC_COMMIT) {
+            entity.submit(new Runnable() {
+                @Override
+                public void run() {
+                    ScopedValue.where(ActivityContextTransactionRegistry.CURRENT,
+                            transaction).run(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                handler.onEvent(event, aci);
+                                transaction.commit();
+                            } catch (Exception e) {
+                                handleSbbException(e, localObject, event, aci, transaction);
+                            } finally {
+                                ActivityContextTransactionRegistry.clear(transaction);
+                            }
+                        }
+                    });
+                }
+            });
             return false;
-        } catch (Exception e) {
-            handleSbbException(e, localObject, event, aci, transaction);
+        }
+        final AtomicReference<Exception> failure = new AtomicReference<Exception>();
+        final CountDownLatch done = new CountDownLatch(1);
+        entity.submit(new Runnable() {
+            @Override
+            public void run() {
+                ScopedValue.where(ActivityContextTransactionRegistry.CURRENT,
+                        transaction).run(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            handler.onEvent(event, aci);
+                        } catch (Exception e) {
+                            failure.set(e);
+                        } finally {
+                            done.countDown();
+                        }
+                    }
+                });
+            }
+        });
+        try {
+            if (!done.await(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException(
+                        "Timed out delivering event to SBB " + localObject.getSbbID());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "Interrupted delivering event to SBB " + localObject.getSbbID(), e);
+        }
+        if (failure.get() != null) {
+            handleSbbException(failure.get(), localObject, event, aci, transaction);
             return true;
         }
+        return false;
     }
 
     private void handleSbbException(Exception exception, SbbLocalObject localObject, SleeEvent event,

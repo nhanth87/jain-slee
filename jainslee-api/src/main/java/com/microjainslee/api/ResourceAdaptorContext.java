@@ -28,4 +28,12 @@ public interface ResourceAdaptorContext {
      * @return the handle, or {@code null} if none was registered
      */
     ActivityContextHandle getActivityContextHandle(Object activity);
+
+    /**
+     * @return the {@link SleeEndpointPort} for firing events into the SLEE,
+     *         or {@code null} when not available on this context implementation.
+     */
+    default SleeEndpointPort getSleeEndpointPort() {
+        return null;
+    }
 }

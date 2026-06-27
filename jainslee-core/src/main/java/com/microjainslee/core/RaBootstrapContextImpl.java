@@ -24,6 +24,7 @@ public final class RaBootstrapContextImpl implements ResourceAdaptorContext {
 
     private final MicroSleeContainer container;
     private final String entityName;
+    private final SleeEndpointPortImpl endpoint;
     private final ConcurrentHashMap<Object, ActivityContextHandle> handlesByActivity =
             new ConcurrentHashMap<Object, ActivityContextHandle>();
     private final AtomicLong handleSequence = new AtomicLong();
@@ -38,6 +39,7 @@ public final class RaBootstrapContextImpl implements ResourceAdaptorContext {
         }
         this.container = container;
         this.entityName = entityName;
+        this.endpoint = new SleeEndpointPortImpl(container, entityName);
     }
 
     public String getEntityName() {
@@ -55,6 +57,15 @@ public final class RaBootstrapContextImpl implements ResourceAdaptorContext {
 
     public ResourceAdaptor getResourceAdaptor() {
         return resourceAdaptor;
+    }
+
+    @Override
+    public com.microjainslee.api.SleeEndpointPort getSleeEndpointPort() {
+        return endpoint;
+    }
+
+    public SleeEndpointPortImpl getEndpoint() {
+        return endpoint;
     }
 
     @Override

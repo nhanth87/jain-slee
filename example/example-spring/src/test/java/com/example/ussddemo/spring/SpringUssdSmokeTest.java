@@ -10,12 +10,24 @@
 
 package com.example.ussddemo.spring;
 
-import com.example.ussddemo.spring.grpc.MockGrpcMenuClient;
+import com.example.ussddemo.spring.events.HttpUssdBeginEvent;
+import com.example.ussddemo.spring.profile.UssdSubscriberProfile;
+import com.example.ussddemo.spring.ra.GrpcMenuResourceAdaptor;
+import com.example.ussddemo.spring.ra.HttpIngressResourceAdaptor;
+import com.example.ussddemo.spring.sbbs.GrpcClientSbb;
+import com.example.ussddemo.spring.sbbs.HttpServerSbb;
+import com.example.ussddemo.spring.sbbs.Ss7UssdIngressSbb;
+import com.example.ussddemo.spring.service.InMemoryGrpcMenuClient;
 import com.example.ussddemo.spring.service.UssdCallbackDispatcher;
-import com.example.ussddemo.spring.service.UssdDemoRuntime;
 import com.example.ussddemo.spring.service.UssdSessionStore;
+import com.example.ussddemo.spring.service.UssdWiring;
+import com.microjainslee.api.InitialEventSelector;
+import com.microjainslee.api.Profile;
+import com.microjainslee.api.ProfileLocalObject;
+import com.microjainslee.core.InMemoryProfileFacility;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
+import com.microjainslee.core.RaBootstrapContextImpl;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -26,6 +38,10 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -38,29 +54,20 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Wiring test for the Spring Boot variant of the USSD gateway demo.
+ * End-to-end smoke test for the RA-based Spring variant.
  *
- * <p>This test does <b>not</b> use {@code @SpringBootTest} because
- * Spring Boot 3.3.0's bytecode reader cannot read the Java 25 (v69)
- * class files in {@code jainslee-core 1.1.0} (same Quarkus 3.15.1
- * caveat). Instead we exercise the production classes
- * ({@link UssdDemoRuntime}, {@link UssdSessionStore},
- * {@link UssdCallbackDispatcher}, {@link MockGrpcMenuClient})
- * directly through a {@link MicroSleeContainer} we construct by
- * hand -- proving the Spring wiring pattern works without ever
- * booting the Spring runtime.
- *
- * <p>The Spring runtime path is exercised separately via
- * {@code mvn spring-boot:run} once the project upgrades to a Spring
- * Boot version that supports Java 25 as a target.
+ * <p>Boots {@link MicroSleeContainer}, both RAs, and the SBB chain without
+ * starting Spring Boot (Java 25 bytecode compatibility). Drives
+ * {@code POST /api/ussd/begin-callback} on the HTTP ingress RA.
  */
 class SpringUssdSmokeTest {
 
     private MicroSleeContainer container;
     private UssdSessionStore sessionStore;
     private UssdCallbackDispatcher callbackDispatcher;
-    private MockGrpcMenuClient grpcClient;
-    private UssdDemoRuntime runtime;
+    private UssdWiring wiring;
+    private HttpIngressResourceAdaptor httpRa;
+    private int httpPort;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -76,22 +83,34 @@ class SpringUssdSmokeTest {
 
         sessionStore = new UssdSessionStore();
         callbackDispatcher = new UssdCallbackDispatcher();
-        grpcClient = new MockGrpcMenuClient(5L);
+        wiring = new UssdWiring();
+        wiring.setContainer(container);
 
-        runtime = buildRuntime();
+        container.setInitialEventSelectorCustomizer(this::customizeInitialEvent);
+        seedProfiles();
+
+        httpPort = findFreePort();
+        httpRa = new HttpIngressResourceAdaptor();
+        httpRa.setSessionStore(sessionStore);
+        httpRa.setPort(httpPort);
+        activateRa(httpRa, "http-ingress");
+        wiring.setHttpRa(httpRa);
+
+        GrpcMenuResourceAdaptor grpcRa = new GrpcMenuResourceAdaptor();
+        grpcRa.setContainer(container);
+        InMemoryGrpcMenuClient inMemory = new InMemoryGrpcMenuClient(5L);
+        grpcRa.setGrpcMenuResolver(inMemory::resolveMenu);
+        activateRa(grpcRa, "grpc-menu");
+        wiring.setGrpcRa(grpcRa);
     }
 
     @AfterEach
     void tearDown() {
-        if (callbackDispatcher != null) {
-            try {
-                Field ex = UssdCallbackDispatcher.class.getDeclaredField("executor");
-                ex.setAccessible(true);
-                ((ExecutorService) ex.get(callbackDispatcher)).shutdownNow();
-            } catch (Exception ignored) {
-                // best effort
-            }
+        if (httpRa != null) {
+            httpRa.raStopping();
+            httpRa.raInactive();
         }
+        shutdownCallbackDispatcher();
         if (container != null) {
             container.stop();
         }
@@ -102,8 +121,21 @@ class SpringUssdSmokeTest {
         try (CallbackReceiver receiver = new CallbackReceiver()) {
             receiver.start();
             String callbackUrl = receiver.url();
-            String sessionId = "test-" + System.nanoTime();
-            runtime.beginSession(sessionId, "251911000001", "*123#", callbackUrl);
+            String appUrl = "http://127.0.0.1:" + httpPort + "/api/ussd/begin-callback"
+                    + "?callbackUrl=" + java.net.URLEncoder.encode(callbackUrl, StandardCharsets.UTF_8);
+
+            HttpClient http = HttpClient.newHttpClient();
+            HttpResponse<String> resp = http.send(
+                    HttpRequest.newBuilder()
+                            .uri(URI.create(appUrl))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    "{\"msisdn\":\"251911000001\",\"ussdString\":\"*123#\"}"))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(202, resp.statusCode());
+            String sessionId = extractJson(resp.body(), "sessionId");
+            assertNotNull(sessionId);
 
             assertTrue(receiver.delivered.await(10, TimeUnit.SECONDS),
                     "callback was not delivered within 10s");
@@ -116,8 +148,19 @@ class SpringUssdSmokeTest {
 
     @Test
     void pollingFlowReachesCompletedState() throws Exception {
-        String sessionId = "test-" + System.nanoTime();
-        runtime.beginSession(sessionId, "251911000002", "*123#", null);
+        String appUrl = "http://127.0.0.1:" + httpPort + "/api/ussd/begin";
+        HttpClient http = HttpClient.newHttpClient();
+        HttpResponse<String> resp = http.send(
+                HttpRequest.newBuilder()
+                        .uri(URI.create(appUrl))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(
+                                "{\"msisdn\":\"251911000002\",\"ussdString\":\"*123#\"}"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(202, resp.statusCode());
+        String sessionId = extractJson(resp.body(), "sessionId");
+        assertNotNull(sessionId);
 
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
         UssdSessionStore.SessionRecord rec = null;
@@ -133,29 +176,75 @@ class SpringUssdSmokeTest {
         assertNotNull(rec.getResponseText());
     }
 
-    /**
-     * Build a {@link UssdDemoRuntime} the same way the Spring container
-     * would -- via @Autowired field injection. We replicate that here
-     * with reflection.
-     */
-    private UssdDemoRuntime buildRuntime() throws Exception {
-        UssdDemoRuntime r = new UssdDemoRuntime();
-        Field fContainer = UssdDemoRuntime.class.getDeclaredField("container");
-        fContainer.setAccessible(true);
-        fContainer.set(r, container);
+    private void customizeInitialEvent(InitialEventSelector selector) {
+        if (selector.getEvent() instanceof HttpUssdBeginEvent) {
+            String sessionId = ((HttpUssdBeginEvent) selector.getEvent()).getSessionId();
+            String httpId = sessionId + "/HttpServer";
+            HttpServerSbb httpSbb = new HttpServerSbb(wiring, sessionStore, callbackDispatcher);
+            container.registerSbb(httpId, httpSbb);
+            selector.setRootSbbId(httpId);
+        }
+    }
 
-        Field fStore = UssdDemoRuntime.class.getDeclaredField("sessionStore");
-        fStore.setAccessible(true);
-        fStore.set(r, sessionStore);
+    private void activateRa(com.microjainslee.api.ResourceAdaptor ra, String entityName) {
+        RaBootstrapContextImpl ctx = new RaBootstrapContextImpl(container, entityName);
+        ctx.setResourceAdaptor(ra);
+        ra.setResourceAdaptorContext(ctx);
+        ra.raConfigure();
+        ra.raActive();
+    }
 
-        Field fDispatch = UssdDemoRuntime.class.getDeclaredField("callbackDispatcher");
-        fDispatch.setAccessible(true);
-        fDispatch.set(r, callbackDispatcher);
+    private void seedProfiles() {
+        InMemoryProfileFacility facility =
+                (InMemoryProfileFacility) container.getProfileFacility();
+        facility.createProfileTable("ussdSubscribers");
+        seedSubscriber(facility, "251911000001", 2);
+        seedSubscriber(facility, "251911000002", 1);
+    }
 
-        Field fGrpc = UssdDemoRuntime.class.getDeclaredField("grpcClient");
-        fGrpc.setAccessible(true);
-        fGrpc.set(r, grpcClient);
-        return r;
+    private static void seedSubscriber(InMemoryProfileFacility facility,
+                                       String msisdn, int tier) {
+        try {
+            facility.createProfile("ussdSubscribers", msisdn, UssdSubscriberProfile.class);
+            ProfileLocalObject plo = facility.getProfile(
+                    new com.microjainslee.api.ProfileID("ussdSubscribers", msisdn));
+            Profile profile = plo == null ? null : plo.getProfile();
+            if (profile instanceof UssdSubscriberProfile) {
+                UssdSubscriberProfile sub = (UssdSubscriberProfile) profile;
+                sub.setMsisdn(msisdn);
+                sub.setMenuTier(tier);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static int findFreePort() throws IOException {
+        try (java.net.ServerSocket socket = new java.net.ServerSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+
+    private void shutdownCallbackDispatcher() {
+        try {
+            Field ex = UssdCallbackDispatcher.class.getDeclaredField("executor");
+            ex.setAccessible(true);
+            ((ExecutorService) ex.get(callbackDispatcher)).shutdownNow();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static String extractJson(String json, String field) {
+        if (json == null) {
+            return null;
+        }
+        String marker = "\"" + field + "\":\"";
+        int start = json.indexOf(marker);
+        if (start < 0) {
+            return null;
+        }
+        int valueStart = start + marker.length();
+        int valueEnd = json.indexOf('"', valueStart);
+        return valueEnd < 0 ? null : json.substring(valueStart, valueEnd);
     }
 
     static final class CallbackReceiver implements AutoCloseable {
@@ -193,25 +282,12 @@ class SpringUssdSmokeTest {
             public void handle(HttpExchange ex) throws IOException {
                 byte[] body = ex.getRequestBody().readAllBytes();
                 String json = new String(body, StandardCharsets.UTF_8);
-                status.set(extract(json, "status"));
-                sessionId.set(extract(json, "sessionId"));
-                responseText.set(extract(json, "responseText"));
+                status.set(extractJson(json, "status"));
+                sessionId.set(extractJson(json, "sessionId"));
+                responseText.set(extractJson(json, "responseText"));
                 ex.sendResponseHeaders(204, -1);
                 ex.close();
                 delivered.countDown();
-            }
-
-            private String extract(String json, String field) {
-                if (json == null) {
-                    return null;
-                }
-                String marker = "\"" + field + "\":\"";
-                int s = json.indexOf(marker);
-                if (s < 0) {
-                    return null;
-                }
-                int e = json.indexOf('"', s + marker.length());
-                return e < 0 ? null : json.substring(s + marker.length(), e);
             }
         }
     }

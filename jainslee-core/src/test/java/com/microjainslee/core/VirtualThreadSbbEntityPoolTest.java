@@ -42,7 +42,8 @@ public class VirtualThreadSbbEntityPoolTest {
         try {
             int warmed = pool.prewarm(4);
             assertEquals(4, warmed);
-            assertEquals(4, pool.size());
+            assertEquals(0, pool.size());
+            assertTrue(pool.idleSlotCount() >= 4);
         } finally {
             pool.shutdown();
         }
@@ -54,7 +55,8 @@ public class VirtualThreadSbbEntityPoolTest {
         try {
             int warmed = pool.prewarm(10);
             assertEquals(3, warmed);
-            assertEquals(3, pool.size());
+            assertEquals(0, pool.size());
+            assertTrue(pool.idleSlotCount() >= 3);
         } finally {
             pool.shutdown();
         }
@@ -90,13 +92,19 @@ public class VirtualThreadSbbEntityPoolTest {
     }
 
     @Test
-    public void releaseIsIdempotentAndDoesNotLoseEntity() {
+    public void releaseReturnsSlotToIdlePool() {
         VirtualThreadSbbEntityPool pool = new VirtualThreadSbbEntityPool(1, 4, true);
         try {
             VirtualThreadSbbEntityPool.SbbEntity e = pool.acquire("sbb-X", NoopSbb::new);
+            assertEquals(1, pool.size());
             pool.release(e);
             pool.release(e);
-            assertSame(e, pool.acquire("sbb-X", NoopSbb::new));
+            assertEquals(0, pool.size());
+            assertTrue(pool.idleSlotCount() >= 1);
+            VirtualThreadSbbEntityPool.SbbEntity rebound =
+                    pool.acquire("sbb-Y", NoopSbb::new);
+            assertNotSame(e, rebound);
+            assertEquals(1, pool.size());
         } finally {
             pool.shutdown();
         }

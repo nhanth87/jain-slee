@@ -1,68 +1,87 @@
-# micro-jainslee examples
+# micro-jainslee examples / Ví dụ micro-jainslee
 
-This directory contains runnable sample applications that show how to embed
-**micro-jainslee 1.1.0** in a real JVM process.
+**English:** Five runnable projects demonstrating micro-jainslee 1.1.0 USSD call flow.  
+**Tiếng Việt:** Năm project chạy được, minh họa luồng USSD với micro-jainslee 1.1.0.
 
-| Project | Description |
-|---------|-------------|
-| [`example-embedded-j25/`](example-embedded-j25/) | **Plain Java 25** app that embeds `jainslee-core` directly (no Quarkus, no Spring). Uses the JDK's built-in `com.sun.net.httpserver.HttpServer` for the REST front-end. Demonstrates that micro-jainslee can run inside any JVM. |
-| [`example-quarkus/`](example-quarkus/) | **Quarkus 3** REST app that integrates micro-jainslee via the in-tree `com.microjainslee:adapter-quarkus` CDI extension. SBBs, REST resources, and facilities are all `@Inject`-driven. |
-| [`example-spring/`](example-spring/) | **Spring Boot 3** app that integrates micro-jainslee via the in-tree `com.microjainslee:adapter-springboot`. SBBs, REST resources, and facilities are all `@Autowired`-driven. The starter exposes `MicroSleeContainer` as a Spring bean and uses `SmartLifecycle` to start/stop the container with the Spring context. |
-| [`ussdgw-simulator/`](ussdgw-simulator/) | Standalone CLI JARs that simulate the USSD gateway firing SS7 USSD begin into any of the three examples. Two single-session entry points (`Ss7UssdSimulatorMain` + `HttpClientRaStyleMain`) plus `VirtualThreadUssdHammerMain` for load testing. All three use the callback pattern (1 outbound request, zero polling). |
+| Project | Role | Port |
+|---------|------|------|
+| [`grpc-simulator/`](grpc-simulator/) | gRPC USSD AS (`ResolveMenu`) | **9090** |
+| [`example-quarkus/`](example-quarkus/) | Quarkus 3 + HTTP RA | **8080** |
+| [`example-spring/`](example-spring/) | Spring Boot 3 + HTTP RA | **8081** |
+| [`example-embedded-j25/`](example-embedded-j25/) | Plain Java 25 + HTTP RA | **8082** |
+| [`ussdgw-simulator/`](ussdgw-simulator/) | USSD GW HTTP client | ephemeral callback |
 
-## Scenario
+Each example is a **standalone Maven project** (copy-not-share). Per-project run/test guides:
 
-The demo models a simplified USSD gateway call flow. We follow the
-**HttpClient RA callback pattern** (Mobicents' `HttpClientSbb.execute()`
-flow inverted: the server pushes the response to the caller via a
-caller-supplied `callbackUrl`, so the caller never has to poll):
+- [example-embedded-j25/README.md](example-embedded-j25/README.md) — EN + VI
+- [example-quarkus/README.md](example-quarkus/README.md) — EN + VI
+- [example-spring/README.md](example-spring/README.md) — EN + VI
+- [grpc-simulator/README.md](grpc-simulator/README.md) — EN + VI
+- [ussdgw-simulator/README.md](ussdgw-simulator/README.md) — EN + VI
+
+---
+
+## SS7 SBB role / Vai trò Ss7UssdIngressSbb
+
+**English:** Production USSD GW terminates real SS7/MAP. **This demo has no external SS7 stack.**
+
+| Component | Role |
+|-----------|------|
+| `ussdgw-simulator` | External GW over HTTP |
+| `HttpIngressResourceAdaptor` | Brings HTTP into SLEE (replaces SS7 RA on ingress) |
+| `HttpServerSbb` | GW-facing: normalize, profile lookup, session |
+| `Ss7UssdIngressSbb` | **Internal MAP/USSD leg** — CMP, timer, dialog state (would receive MAP from SS7 RA in production) |
+| `GrpcClientSbb` + gRPC RA | Backend menu client |
+| `grpc-simulator` | External menu AS |
+
+**Tiếng Việt:** Trong production, GW USSD kết nối SS7/MAP thật. **Demo này không có SS7 bên ngoài.**
+
+| Thành phần | Vai trò |
+|------------|---------|
+| `ussdgw-simulator` | GW bên ngoài qua HTTP |
+| `HttpIngressResourceAdaptor` | Đưa HTTP vào SLEE |
+| `HttpServerSbb` | Lớp GW: chuẩn hóa, profile, session |
+| `Ss7UssdIngressSbb` | **Lớp MAP/USSD nội bộ** — CMP, timer, state machine |
+| `GrpcClientSbb` + gRPC RA | Client menu backend |
+| `grpc-simulator` | AS menu bên ngoài |
+
+---
+
+## Scenario / Kịch bản
 
 ```mermaid
 sequenceDiagram
-    participant Sim as ussdgw-simulator (caller)
-    participant REST as Quarkus REST / JDK HttpServer
-    participant SLEE as micro-jainslee
+    participant GW as ussdgw-simulator
+    participant HRA as HttpIngress RA
+    participant HTTP as HttpServerSbb
     participant SS7 as Ss7UssdIngressSbb
-    participant GRPC as GrpcBackendSbb
-    participant CB as Sim's embedded callback receiver
+    participant GRA as GrpcMenu RA
+    participant GRPC as GrpcClientSbb
+    participant AS as grpc-simulator :9090
+    participant CB as callback receiver
 
-    Sim->>REST: POST /api/ussd/begin-callback?callbackUrl=http://sim/cb
-    REST->>SLEE: create ACI, attach SBBs, route UssdBeginEvent
-    REST-->>Sim: 202 Accepted (Location: <callbackUrl>)
-    SLEE->>SS7: onEvent(UssdBeginEvent)
-    SS7->>SLEE: route GrpcBackendRequestEvent
-    SLEE->>GRPC: onEvent(GrpcBackendRequestEvent)
-    GRPC->>GRPC: MockGrpcMenuClient.fetchMenu()
-    GRPC->>SLEE: route GrpcBackendResponseEvent
-    SLEE->>SS7: onEvent(GrpcBackendResponseEvent)
-    SS7->>REST: complete session (UssdResponseEvent)
-    REST-->>CB: async POST <callbackUrl> (UssdSessionView JSON)
-    CB-->>Sim: latch counts down, response printed
-
-    Note over Sim,CB: zero polling, single outbound request
+    GW->>HRA: POST /api/ussd/begin-callback
+    HRA->>HTTP: HttpUssdBeginEvent
+    HTTP->>SS7: Ss7UssdBeginEvent
+    Note over SS7: internal MAP leg
+    SS7->>GRA: requestMenu()
+    GRA->>GRPC: GrpcMenuRequestEvent
+    GRPC->>AS: ResolveMenu
+    AS-->>SS7: menu text
+    SS7->>HTTP: UssdCompleteEvent
+    HTTP->>CB: POST callbackUrl
+    CB-->>GW: response printed
 ```
 
-The two embedded-j25 and example-quarkus variants share the same business
-logic (events, SBBs, services, gRPC mock) but differ in how they wire
-micro-jainslee into the runtime:
+---
 
-- **`example-embedded-j25`** boots `MicroSleeContainer` by hand in a
-  `static main()` and exposes a tiny `com.sun.net.httpserver`-based
-  front-end. No JEE, no Spring, no Quarkus -- just plain Java 25.
-- **`example-quarkus`** delegates the boot to the `adapter-quarkus` CDI
-  extension which produces `MicroSleeContainer` as an `@ApplicationScoped`
-  bean injectable by SBBs and the REST resource.
+## Prerequisites / Yêu cầu
 
-## Prerequisites
-
-- **JDK 25** (matches micro-jainslee CI; both example modules use
-  Java 25 source-level features like `ScopedValue`)
-- **Maven 3.9+**
-- micro-jainslee **1.1.0** installed in the local Maven repository
-
-## 1. Build and install micro-jainslee
-
-From the repository root:
+| | English | Tiếng Việt |
+|---|---------|------------|
+| JDK | **25** (Java 25 features) | **25** |
+| Maven | 3.9+ | 3.9+ |
+| Local install | micro-jainslee **1.1.0** | Cài micro-jainslee **1.1.0** vào local repo |
 
 ```bash
 cd jain-slee/jain-slee
@@ -71,285 +90,129 @@ mvn -B -ntp install -DskipTests \
   -am
 ```
 
-## 2. Run the embedded plain-Java 25 example
+For Quarkus/Spring examples also install the adapter:
 
 ```bash
-cd example/example-embedded-j25
-mvn -B -ntp package
-java -jar target/example-embedded-j25.jar [port]   # default port 8080
+mvn -B -ntp install -DskipTests -pl adapter-quarkus -am    # Quarkus
+mvn -B -ntp install -DskipTests -pl adapter-springboot -am  # Spring
 ```
 
-The app exposes the same `POST /api/ussd/begin-callback` and
-`POST /api/ussd/begin` (polling) endpoints as the Quarkus variant,
-backed by the JDK's `com.sun.net.httpserver`. SIGTERM / Ctrl-C
-stops the container cleanly via a registered shutdown hook.
+---
 
-### Manual curl test (embedded)
+## Full 5-project runbook / Hướng dẫn chạy đầy đủ
+
+### English
 
 ```bash
-# Start a tiny netcat callback receiver in another terminal:
-nc -l 9999 > /tmp/ussd-callback.log &
+# Terminal A — gRPC backend (start first)
+cd example/grpc-simulator && mvn -B -ntp package
+java -cp target/grpc-simulator.jar:$(mvn -q dependency:build-classpath -Dmdep.outputFile=/dev/stdout) \
+  com.example.grpcsimulator.GrpcSimulatorMain 9090
 
-# Fire a USSD begin with the callback URL -- server returns 202 immediately,
-# then POSTs the result to your netcat listener when the pipeline completes.
-curl -s -X POST 'http://127.0.0.1:8080/api/ussd/begin-callback?callbackUrl=http://127.0.0.1:9999/cb' \
-  -H 'Content-Type: application/json' \
-  -d '{"msisdn":"251911000001","ussdString":"*123#"}'
+# Terminal B — pick ONE example (see per-project README)
+# Quarkus:   cd example/example-quarkus && mvn quarkus:dev
+# Spring:    cd example/example-spring && mvn spring-boot:run
+# Embedded:  cd example/example-embedded-j25 && mvn package && java -jar target/example-embedded-j25.jar
+
+# Terminal C — fire USSD session
+cd example/ussdgw-simulator && mvn -B -ntp package
+java -jar target/ussdgw-simulator-1.0.0-SNAPSHOT.jar http://127.0.0.1:8080 251911000001 '*123#'
 ```
 
-### Run embedded integration test
+Expected: `202 Accepted`, callback within seconds with `COMPLETED` and menu text containing `Balance`.
+
+### Tiếng Việt
 
 ```bash
-cd example/example-embedded-j25
-mvn -B -ntp test
+# Terminal A — backend gRPC (chạy trước)
+cd example/grpc-simulator && mvn -B -ntp package
+java -cp target/grpc-simulator.jar:$(mvn -q dependency:build-classpath -Dmdep.outputFile=/dev/stdout) \
+  com.example.grpcsimulator.GrpcSimulatorMain 9090
+
+# Terminal B — chọn MỘT example (xem README từng project)
+# Quarkus:   cd example/example-quarkus && mvn quarkus:dev
+# Spring:    cd example/example-spring && mvn spring-boot:run
+# Embedded:  cd example/example-embedded-j25 && mvn package && java -jar target/example-embedded-j25.jar
+
+# Terminal C — bắn phiên USSD
+cd example/ussdgw-simulator && mvn -B -ntp package
+java -jar target/ussdgw-simulator-1.0.0-SNAPSHOT.jar http://127.0.0.1:8082 251911000001 '*123#'
 ```
 
-Expected: 2 tests, 0 failures, 0 errors. The test boots `EmbeddedUssdMain`
-on a free port in a background thread, plus an embedded
-`com.sun.net.httpserver` callback receiver. Both the callback flow
-and the polling flow are exercised end-to-end.
+Kỳ vọng: `202 Accepted`, callback trả về `COMPLETED` và menu có chữ `Balance`.
 
-## 3. Run the Quarkus example
+---
+
+## Run all tests / Chạy toàn bộ test
+
+### English
+
+From `jain-slee/jain-slee/example/` — no external processes needed (tests use in-process stubs):
 
 ```bash
-cd example/example-quarkus
-mvn -B -ntp package -Dquarkus.build.skip=false   # see note below
+cd example/grpc-simulator          && mvn -B -ntp test   # 4 tests
+cd example/example-embedded-j25    && mvn -B -ntp test   # 7 tests
+cd example/example-quarkus         && mvn -B -ntp test   # 2 tests
+cd example/example-spring          && mvn -B -ntp test   # 2 tests
 ```
 
-> **Java 25 / Quarkus 3.15.1 note:** Quarkus 3.15.1's bundled ASM only
-> reads class files up to v65 (Java 21). micro-jainslee 1.1.0 itself
-> compiles to v69 (Java 25). For now, the example uses a wiring test
-> (no `@QuarkusTest`) that exercises the production classes by
-> hand, without booting the Quarkus runtime. To run the full
-> Quarkus runtime path, upgrade to Quarkus 3.17+ and drop the
-> `<release>21</release>` override in `pom.xml`.
-
-The Quarkus module exposes the same REST API as the embedded one
-(`/api/ussd/begin`, `/api/ussd/begin-callback`, `/api/ussd/sessions/{id}`)
-backed by `quarkus-rest` (JAX-RS). SBBs are `@Inject`-wired.
-
-### Manual curl test (Quarkus)
+One-liner:
 
 ```bash
-# Same as embedded, just point at the Quarkus port (default 8080):
-curl -s -X POST 'http://127.0.0.1:8080/api/ussd/begin-callback?callbackUrl=http://127.0.0.1:9999/cb' \
-  -H 'Content-Type: application/json' \
-  -d '{"msisdn":"251911000001","ussdString":"*123#"}'
+cd jain-slee/jain-slee/example && \
+  for d in grpc-simulator example-embedded-j25 example-quarkus example-spring; do \
+    echo "=== $d ===" && (cd "$d" && mvn -B -ntp test -q) || exit 1; \
+  done && echo "All example tests passed."
 ```
 
-### Run Quarkus integration test
+### Tiếng Việt
+
+Từ thư mục `example/` — test tự dùng stub trong process, **không cần** chạy grpc-simulator hay example server:
 
 ```bash
-cd example/example-quarkus
-mvn -B -ntp test
+cd example/grpc-simulator          && mvn -B -ntp test   # 4 test
+cd example/example-embedded-j25    && mvn -B -ntp test   # 7 test
+cd example/example-quarkus         && mvn -B -ntp test   # 2 test
+cd example/example-spring          && mvn -B -ntp test   # 2 test
 ```
 
-Expected: 2 tests, 0 failures, 0 errors. The wiring test reflects
-into the production classes (`UssdDemoRuntime`, `UssdSessionStore`,
-`UssdCallbackDispatcher`, `MockGrpcMenuClient`, `Ss7UssdIngressSbb`,
-`GrpcBackendSbb`) and exercises the same callback + polling flows
-without booting Quarkus (see the Java 25 / Quarkus 3.15.1 note above).
-
-## 3b. Run the Spring Boot example
+Lệnh gộp:
 
 ```bash
-cd example/example-spring
-mvn -B -ntp package       # see note below
-java -jar target/example-spring-1.0.0-SNAPSHOT.jar
+cd jain-slee/jain-slee/example && \
+  for d in grpc-simulator example-embedded-j25 example-quarkus example-spring; do \
+    echo "=== $d ===" && (cd "$d" && mvn -B -ntp test -q) || exit 1; \
+  done && echo "Tất cả test example đã pass."
 ```
 
-The Spring module uses `spring-boot-starter-web` (Spring MVC) +
-`spring-boot-starter-log4j2`. The `jainslee-spring-boot-starter`
-auto-configures a `MicroSleeContainer` bean and a `SmartLifecycle`
-that starts/stops the container with the Spring context. SBBs, the
-REST resource (`UssdDemoResource`), and the service layer
-(`UssdDemoRuntime`, `UssdSessionStore`, `UssdCallbackDispatcher`)
-are all `@Autowired`-wired. Configuration goes through
-`application.properties`:
+---
 
-```properties
-# microjainslee configuration (consumed by MicroJainsleeProperties)
-microjainslee.event-router.buffer-size=2048
-microjainslee.event-router.prefer-virtual-threads=true
-microjainslee.sbb-pool.min=16
-microjainslee.sbb-pool.max=4096
+## Per-example quick reference / Bảng tra nhanh
 
-# Mock gRPC latency (consumed by MockGrpcMenuClient @Value)
-ussd.demo.grpc.latency-ms=10
-```
+| Example | Run (EN) | Test (EN) | Chạy (VI) | Test (VI) |
+|---------|----------|-----------|------------|-----------|
+| embedded-j25 | [`README`](example-embedded-j25/README.md#english--run) | `mvn test` (7) | [`README`](example-embedded-j25/README.md#tiếng-việt--chạy-thử) | `mvn test` |
+| quarkus | [`README`](example-quarkus/README.md#english--run) | `mvn test` (2) | [`README`](example-quarkus/README.md#tiếng-việt--chạy-thử) | `mvn test` |
+| spring | [`README`](example-spring/README.md#english--run) | `mvn test` (2) | [`README`](example-spring/README.md#tiếng-việt--chạy-thử) | `mvn test` |
+| grpc-simulator | [`README`](grpc-simulator/README.md#english--run) | `mvn test` (4) | [`README`](grpc-simulator/README.md#tiếng-việt--chạy-thử) | `mvn test` |
+| ussdgw-simulator | [`README`](ussdgw-simulator/README.md#english--build-and-run) | manual E2E | [`README`](ussdgw-simulator/README.md#tiếng-việt--build-và-chạy) | E2E thủ công |
 
-> **Java 25 / Spring Boot 3.3.0 note:** Spring Boot 3.3.0 (the version
-> `jainslee-spring-boot-starter` is pinned to) supports Java 17+ as a
-> target, but its bytecode reader can parse class files up to Java 21
-> (v65). For now, the example uses a wiring test (no
-> `@SpringBootTest`) that exercises the production classes by hand,
-> without booting the Spring runtime. The project pom uses
-> `<release>21</release>` for the example sources so they fit under
-> that limit; upgrade to Spring Boot 3.4+ and remove the override to
-> use the full Spring runtime with Java 25.
+---
 
-### Manual curl test (Spring Boot)
+## How the three examples differ / So sánh ba example
 
-```bash
-# Same flow as embedded / Quarkus, default port 8080:
-curl -s -X POST 'http://127.0.0.1:8080/api/ussd/begin-callback?callbackUrl=http://127.0.0.1:9999/cb' \
-  -H 'Content-Type: application/json' \
-  -d '{"msisdn":"251911000001","ussdString":"*123#"}'
-```
+| Aspect | embedded-j25 | quarkus | spring |
+|--------|--------------|---------|--------|
+| Framework | none | Quarkus 3 | Spring Boot 3 |
+| DI | direct calls | CDI `@Inject` | `@Autowired` |
+| Container boot | `main()` | adapter-quarkus | `SmartLifecycle` |
+| HTTP ingress | JDK HttpServer RA | JDK HttpServer RA | JDK HttpServer RA |
+| USSD port | **8082** | **8080** | **8081** |
+| gRPC backend | `grpc-simulator:9090` | same | same |
 
-### Run Spring Boot integration test
+---
 
-```bash
-cd example/example-spring
-mvn -B -ntp test
-```
+## Production note / Lưu ý production
 
-Expected: 2 tests, 0 failures, 0 errors. The wiring test reflects
-into the production classes (`UssdDemoRuntime`, `UssdSessionStore`,
-`UssdCallbackDispatcher`, `MockGrpcMenuClient`, `Ss7UssdIngressSbb`,
-`GrpcBackendSbb`) and exercises the same callback + polling flows
-without booting Spring (see the Java 25 / Spring Boot 3.3.0 note above).
-
-## 4. Run the USSD gateway simulator JARs
-
-In a third terminal (while one of the example servers is running):
-
-```bash
-cd example/ussdgw-simulator
-mvn -B -ntp package
-```
-
-The module ships **three** JAR entry points -- pick the one that matches
-the flow you want to exercise:
-
-### 4a. `HttpClientRaStyleMain` (recommended -- HttpClient RA pattern)
-
-Boots an embedded `com.sun.net.httpserver.HttpServer` on a random free
-port, fires one `POST /api/ussd/begin-callback`, suspends on a
-`CountDownLatch`, and prints the body the server pushes back. One
-outbound HTTP request, zero polling -- exact analog of Mobicents'
-`HttpClientSbb.execute()` callback.
-
-```bash
-java -cp target/ussdgw-simulator-1.0.0-SNAPSHOT.jar:$(mvn -q dependency:build-classpath -Dmdep.outputFile=/dev/stdout) \
-    com.example.ussdgw.HttpClientRaStyleMain \
-    http://127.0.0.1:8080 251911000001 '*123#'
-```
-
-### 4b. `Ss7UssdSimulatorMain` (SS7-style callback)
-
-Same callback flow as 4a, but with `[SS7-sim]` log prefixes so you can
-run the two side-by-side to cross-validate the output. Fires one
-`POST /api/ussd/begin-callback`, suspends on a `CountDownLatch`
-hosted by an embedded `com.sun.net.httpserver.HttpServer`, and prints
-the body the server pushes back.
-
-```bash
-java -cp target/ussdgw-simulator-1.0.0-SNAPSHOT.jar:$(mvn -q dependency:build-classpath -Dmdep.outputFile=/dev/stdout) \
-    com.example.ussdgw.Ss7UssdSimulatorMain \
-    http://127.0.0.1:8080 251911000001 '*123#'
-```
-
-### 4c. `VirtualThreadUssdHammerMain` (load test)
-
-Fires N concurrent callback flows on virtual threads, reports p50/p95/p99
-latency and req/s. Use to validate the HttpClient RA pipeline under load.
-
-```bash
-java -cp target/ussdgw-simulator-1.0.0-SNAPSHOT.jar:$(mvn -q dependency:build-classpath -Dmdep.outputFile=/dev/stdout) \
-    com.example.ussdgw.VirtualThreadUssdHammerMain \
-    http://127.0.0.1:8080 251911 1000 30000
-```
-
-Output ends with `=== Summary ===` plus a per-request CSV on stdout.
-Typical throughput on a laptop: **>500 req/s** for the callback path.
-
-## Project layout
-
-```text
-example/
-+- example-embedded-j25/      # Plain Java 25, no Quarkus
-|  +- pom.xml
-|  +- src/main/java/com/example/ussddemo/embedded/
-|  |  +- EmbeddedUssdMain.java   # main() + ShutdownEvent
-|  |  +- UssdHttpServer.java     # JDK HttpServer handlers
-|  |  +- UssdDemoRuntime.java    # bridge
-|  |  +- UssdSessionStore.java
-|  |  +- UssdCallbackDispatcher.java
-|  |  +- MockGrpcMenuClient.java
-|  +- src/main/java/com/example/ussddemo/sbbs/
-|  |  +- Ss7UssdIngressSbb.java
-|  |  +- GrpcBackendSbb.java
-|  +- src/main/java/com/example/ussddemo/events/
-|  |  +- UssdBeginEvent.java
-|  |  +- GrpcBackendRequestEvent.java
-|  |  +- GrpcBackendResponseEvent.java
-|  |  +- UssdResponseEvent.java
-|  +- src/main/resources/log4j2.xml
-|  +- src/test/java/.../embedded/EmbeddedUssdSmokeTest.java
-|
-+- example-quarkus/           # Quarkus 3, adapter-quarkus CDI extension
-|  +- pom.xml
-|  +- src/main/java/com/example/ussddemo/quarkus/
-|  |  +- rest/UssdDemoResource.java       # JAX-RS
-|  |  +- quarkus/UssdDemoRuntime.java      # CDI bridge
-|  |  +- service/UssdSessionStore.java
-|  |  +- service/UssdCallbackDispatcher.java
-|  |  +- grpc/MockGrpcMenuClient.java
-|  |  +- sbbs/Ss7UssdIngressSbb.java
-|  |  +- sbbs/GrpcBackendSbb.java
-|  |  +- events/*.java
-|  |  +- du/UssdGatewayDemoDu.java
-|  +- src/test/java/.../QuarkusUssdSmokeTest.java
-|
-+- example-spring/            # Spring Boot 3, jainslee-spring-boot-starter
-|  +- pom.xml
-|  +- src/main/java/com/example/ussddemo/spring/
-|  |  +- config/UssdDemoResource.java      # @RestController
-|  |  +- service/UssdDemoRuntime.java       # @Service bridge
-|  |  +- service/UssdSessionStore.java
-|  |  +- service/UssdCallbackDispatcher.java
-|  |  +- grpc/MockGrpcMenuClient.java      # @Value
-|  |  +- sbbs/Ss7UssdIngressSbb.java
-|  |  +- sbbs/GrpcBackendSbb.java
-|  |  +- rest/UssdBeginRequest.java
-|  |  +- rest/UssdSessionView.java
-|  |  +- events/*.java
-|  |  +- du/UssdGatewayDemoDu.java
-|  +- src/main/resources/application.properties
-|  +- src/test/java/.../SpringUssdSmokeTest.java
-|
-+- ussdgw-simulator/          # Standalone CLI callers
-   +- ...
-```
-
-## How the three examples differ
-
-The three modules share the same business logic (events, SBBs, services,
-gRPC mock) but differ only in how they wire `MicroSleeContainer` into
-the host runtime:
-
-| Aspect              | example-embedded-j25             | example-quarkus                          | example-spring                            |
-|---------------------|-----------------------------------|------------------------------------------|-------------------------------------------|
-| Host framework      | none (plain Java 25)              | Quarkus 3.15.1                           | Spring Boot 3.3.0                          |
-| DI mechanism        | direct method calls               | `@Inject` / CDI / ARC                    | `@Autowired`                               |
-| Container boot      | `MicroSleeContainer.start()` in `EmbeddedUssdMain` | Quarkus `SyntheticBeanBuildItem` + recorder | `SmartLifecycle` from starter           |
-| Container config    | builder (programmatic)            | `MicroJainsleeBuildConfig` (build-time)  | `MicroJainsleeProperties` (`@ConfigurationProperties`) |
-| SBB auto-deploy     | none                              | `META-INF/microjainslee/sbb-index.properties` (APT) | same APT                                |
-| REST front-end      | `com.sun.net.httpserver` (JDK)    | `quarkus-rest` (JAX-RS)                   | `spring-boot-starter-web` (Spring MVC)     |
-| Per-session SBB IDs | per-session unique IDs (avoid APT collision) | per-session unique IDs (same)        | per-session unique IDs (same)              |
-| Test approach       | plain JUnit 4 (main thread)      | JUnit 5 wiring test (no `@QuarkusTest`) | JUnit 5 wiring test (no `@SpringBootTest`) |
-| Tests               | 2 pass                            | 2 pass                                   | 2 pass                                    |
-| Runtime path        | `java -jar target/example-embedded-j25.jar` | `mvn quarkus:dev` / `quarkus:run` | `mvn spring-boot:run` / `java -jar ...` |
-| Run anywhere?       | any JVM (no deps)                  | needs Quarkus 3.17+ for Java 25 path     | needs Spring Boot 3.4+ for Java 25 path    |
-
-The wiring tests in all three cases reflect the production classes
-to validate the integration without booting the host framework.
-Once you upgrade to a host-framework version that supports Java 25
-class files, drop the wiring test and use the real
-`@QuarkusTest` / `@SpringBootTest` annotations.
-
-## Production note
-
-This demo is **R&D only**. Production USSD 7.3 still uses the Mobicents JAIN-SLEE
-container on WildFly. Do not deploy this example to production gateways.
+**English:** R&D demo only. Production USSD 7.3 uses Mobicents JAIN-SLEE on WildFly.  
+**Tiếng Việt:** Chỉ dùng cho R&D. Production USSD 7.3 vẫn dùng Mobicents JAIN-SLEE trên WildFly.

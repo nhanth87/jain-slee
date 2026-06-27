@@ -10,9 +10,11 @@
 
 package com.example.ussddemo.quarkus;
 
-import com.example.ussddemo.quarkus.grpc.MockGrpcMenuClient;
-import com.example.ussddemo.quarkus.quarkus.UssdDemoRuntime;
+import com.example.ussddemo.quarkus.bootstrap.UssdDemoBootstrap;
+import com.example.ussddemo.quarkus.grpc.StubGrpcMenuClient;
+import com.example.ussddemo.quarkus.ra.HttpIngressResourceAdaptor;
 import com.example.ussddemo.quarkus.service.UssdCallbackDispatcher;
+import com.example.ussddemo.quarkus.service.UssdSbbWiring;
 import com.example.ussddemo.quarkus.service.UssdSessionStore;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
@@ -25,8 +27,11 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -39,25 +44,24 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Wiring test for the Quarkus variant of the USSD gateway demo.
- *
- * <p>This test does <b>not</b> use {@code @QuarkusTest} because
- * Quarkus 3.15.1's bundled ASM cannot read Java 25 (v69) class
- * files in the {@code jainslee-core 1.1.0} jar. Instead we exercise
- * the production classes directly through a {@link MicroSleeContainer}
- * we construct by hand -- proving the CDI wiring pattern works
- * without ever booting the Quarkus runtime.
+ * End-to-end smoke test via HTTP RA (not Quarkus REST).
  */
 class QuarkusUssdSmokeTest {
 
     private MicroSleeContainer container;
     private UssdSessionStore sessionStore;
     private UssdCallbackDispatcher callbackDispatcher;
-    private MockGrpcMenuClient grpcClient;
-    private UssdDemoRuntime runtime;
+    private UssdSbbWiring wiring;
+    private UssdDemoBootstrap bootstrap;
+    private int httpPort;
 
     @BeforeEach
     void setUp() throws Exception {
+        try (java.net.ServerSocket probe =
+                     new java.net.ServerSocket(0, 0, InetSocketAddress.createUnresolved("127.0.0.1", 0).getAddress())) {
+            httpPort = probe.getLocalPort();
+        }
+
         MicroSleeConfiguration cfg = MicroSleeConfiguration.builder()
                 .eventRouterBufferSize(64)
                 .preferVirtualThreads(false)
@@ -66,24 +70,34 @@ class QuarkusUssdSmokeTest {
                 .sbbPerVirtualThread(false)
                 .build();
         container = new MicroSleeContainer(cfg);
-        container.start();
 
         sessionStore = new UssdSessionStore();
         callbackDispatcher = new UssdCallbackDispatcher();
-        grpcClient = new MockGrpcMenuClient(5L);
+        wiring = new UssdSbbWiring();
+        bootstrap = new UssdDemoBootstrap();
+        inject(bootstrap, "sessionStore", sessionStore);
+        inject(bootstrap, "callbackDispatcher", callbackDispatcher);
+        inject(bootstrap, "wiring", wiring);
+        inject(bootstrap, "sessionTimeoutMs", 5_000L);
 
-        runtime = buildRuntime();
+        bootstrap.startForTesting(container, httpPort, new StubGrpcMenuClient());
     }
 
     @AfterEach
     void tearDown() {
+        if (bootstrap != null) {
+            HttpIngressResourceAdaptor httpRa = bootstrap.httpRa();
+            if (httpRa != null) {
+                httpRa.raInactive();
+                httpRa.raUnconfigure();
+            }
+        }
         if (callbackDispatcher != null) {
             try {
                 Field ex = UssdCallbackDispatcher.class.getDeclaredField("executor");
                 ex.setAccessible(true);
                 ((ExecutorService) ex.get(callbackDispatcher)).shutdownNow();
             } catch (Exception ignored) {
-                // best effort
             }
         }
         if (container != null) {
@@ -92,15 +106,30 @@ class QuarkusUssdSmokeTest {
     }
 
     @Test
-    void callbackFlowDeliversAsynchronously() throws Exception {
+    void callbackFlowViaHttpRa() throws Exception {
         try (CallbackReceiver receiver = new CallbackReceiver()) {
             receiver.start();
             String callbackUrl = receiver.url();
-            String sessionId = "test-" + System.nanoTime();
-            runtime.beginSession(sessionId, "251911000001", "*123#", callbackUrl);
+            String appUrl = "http://127.0.0.1:" + httpPort + "/api/ussd/begin-callback"
+                    + "?callbackUrl=" + java.net.URLEncoder.encode(callbackUrl, StandardCharsets.UTF_8);
 
-            assertTrue(receiver.delivered.await(10, TimeUnit.SECONDS),
-                    "callback was not delivered within 10s");
+            HttpClient http = HttpClient.newHttpClient();
+            HttpResponse<String> resp = http.send(
+                    HttpRequest.newBuilder()
+                            .uri(URI.create(appUrl))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    "{\"msisdn\":\"251911000001\",\"ussdString\":\"*123#\"}"))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(202, resp.statusCode(), "body=" + resp.body());
+            String sessionId = extractJson(resp.body(), "sessionId");
+            assertNotNull(sessionId);
+            assertEquals("PROCESSING", extractJson(resp.body(), "status"));
+
+            assertTrue(receiver.delivered.await(15, TimeUnit.SECONDS),
+                    "callback was not delivered within 15s");
             assertEquals("COMPLETED", receiver.status.get());
             assertEquals(sessionId, receiver.sessionId.get());
             assertNotNull(receiver.responseText.get());
@@ -109,76 +138,58 @@ class QuarkusUssdSmokeTest {
     }
 
     @Test
-    void pollingFlowReachesCompletedState() throws Exception {
-        String sessionId = "test-" + System.nanoTime();
-        runtime.beginSession(sessionId, "251911000002", "*123#", null);
+    void pollingFlowViaHttpRa() throws Exception {
+        String appUrl = "http://127.0.0.1:" + httpPort + "/api/ussd/begin";
+        HttpClient http = HttpClient.newHttpClient();
+        HttpResponse<String> resp = http.send(
+                HttpRequest.newBuilder()
+                        .uri(URI.create(appUrl))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(
+                                "{\"msisdn\":\"251911000002\",\"ussdString\":\"*123#\"}"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(202, resp.statusCode());
+        String sessionId = extractJson(resp.body(), "sessionId");
+        assertNotNull(sessionId);
 
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
-        UssdSessionStore.SessionRecord rec = null;
-        while (System.nanoTime() < deadline) {
-            rec = sessionStore.get(sessionId);
-            if (rec != null && rec.getStatus() == UssdSessionStore.Status.COMPLETED) {
-                break;
-            }
+        String status = "PROCESSING";
+        while (System.nanoTime() < deadline && "PROCESSING".equals(status)) {
+            HttpResponse<String> poll = http.send(
+                    HttpRequest.newBuilder()
+                            .uri(URI.create("http://127.0.0.1:" + httpPort
+                                    + "/api/ussd/sessions/" + sessionId))
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, poll.statusCode());
+            status = extractJson(poll.body(), "status");
             Thread.sleep(50L);
         }
-        assertNotNull(rec, "session not found in store");
-        assertEquals(UssdSessionStore.Status.COMPLETED, rec.getStatus());
-        assertNotNull(rec.getResponseText());
+        assertEquals("COMPLETED", status);
     }
 
-    private UssdDemoRuntime buildRuntime() throws Exception {
-        UssdDemoRuntime r = UssdDemoRuntime.class.getDeclaredConstructor()
-                .newInstance();
-        // Pre-populate the @ConfigProperty fields so the CDI producer
-        // (microSleeContainer) can build a valid MicroSleeConfiguration.
-        // In a real Quarkus runtime, ARC would inject these from
-        // application.properties; we set them by hand here.
-        for (String name : new String[]{"bufferSize", "sbbPoolMin", "sbbPoolMax"}) {
-            Field f = UssdDemoRuntime.class.getDeclaredField(name);
-            f.setAccessible(true);
-            f.setInt(r, 64);
+    private static void inject(Object target, String field, Object value) throws Exception {
+        Field f = target.getClass().getDeclaredField(field);
+        f.setAccessible(true);
+        f.set(target, value);
+    }
+
+    private static String extractJson(String json, String field) {
+        if (json == null) {
+            return null;
         }
-        Field fVT = UssdDemoRuntime.class.getDeclaredField("preferVirtualThreads");
-        fVT.setAccessible(true);
-        fVT.setBoolean(r, false);
-        Field fSbbVT = UssdDemoRuntime.class.getDeclaredField("sbbPerVirtualThread");
-        fSbbVT.setAccessible(true);
-        fSbbVT.setBoolean(r, false);
-
-        Method producer = UssdDemoRuntime.class.getDeclaredMethod(
-                "microSleeContainer");
-        producer.setAccessible(true);
-        MicroSleeContainer produced = (MicroSleeContainer) producer.invoke(r);
-        // The producer creates a fresh MicroSleeContainer. We must
-        // start it (Quarkus ARC would normally do this via the
-        // adapter-quarkus SyntheticBeanBuildItem + startContainer
-        // build step at runtime-init; we replicate that here).
-        if (produced.getState() != MicroSleeContainer.State.STARTED) {
-            produced.start();
+        String marker = "\"" + field + "\":\"";
+        int s = json.indexOf(marker);
+        if (s < 0) {
+            return null;
         }
-
-        Field fContainer = UssdDemoRuntime.class.getDeclaredField("container");
-        fContainer.setAccessible(true);
-        fContainer.set(r, produced);
-
-        Field fStore = UssdDemoRuntime.class.getDeclaredField("sessionStore");
-        fStore.setAccessible(true);
-        fStore.set(r, sessionStore);
-
-        Field fDispatch = UssdDemoRuntime.class.getDeclaredField("callbackDispatcher");
-        fDispatch.setAccessible(true);
-        fDispatch.set(r, callbackDispatcher);
-
-        // Inject the gRPC client (Quarkus ARC would do this via @Inject).
-        Field fGrpc = UssdDemoRuntime.class.getDeclaredField("grpcClient");
-        fGrpc.setAccessible(true);
-        fGrpc.set(r, grpcClient);
-        return r;
+        int e = json.indexOf('"', s + marker.length());
+        return e < 0 ? null : json.substring(s + marker.length(), e);
     }
 
     static final class CallbackReceiver implements AutoCloseable {
-
         final HttpServer server;
         final int port;
         final CountDownLatch delivered = new CountDownLatch(1);
@@ -212,25 +223,12 @@ class QuarkusUssdSmokeTest {
             public void handle(HttpExchange ex) throws IOException {
                 byte[] body = ex.getRequestBody().readAllBytes();
                 String json = new String(body, StandardCharsets.UTF_8);
-                status.set(extract(json, "status"));
-                sessionId.set(extract(json, "sessionId"));
-                responseText.set(extract(json, "responseText"));
+                status.set(extractJson(json, "status"));
+                sessionId.set(extractJson(json, "sessionId"));
+                responseText.set(extractJson(json, "responseText"));
                 ex.sendResponseHeaders(204, -1);
                 ex.close();
                 delivered.countDown();
-            }
-
-            private String extract(String json, String field) {
-                if (json == null) {
-                    return null;
-                }
-                String marker = "\"" + field + "\":\"";
-                int s = json.indexOf(marker);
-                if (s < 0) {
-                    return null;
-                }
-                int e = json.indexOf('"', s + marker.length());
-                return e < 0 ? null : json.substring(s + marker.length(), e);
             }
         }
     }

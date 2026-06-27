@@ -11,11 +11,9 @@
 
     <name>micro-jainslee example :: USSD gateway embedded (plain Java 25, no Quarkus)</name>
     <description>Plain-Java 25 example that embeds micro-jainslee-core directly
-        and exposes the HttpClient RA-style callback REST API via the JDK's
-        com.sun.net.httpserver. Demonstrates that micro-jainslee can run
-        inside any JVM, with no JEE/Spring/Quarkus dependency required.
-        For the Quarkus-native variant that uses the adapter-quarkus CDI
-        extension, see example-quarkus instead.</description>
+        with HTTP ingress RA + gRPC menu RA. HTTP enters via
+        com.sun.net.httpserver on port 8082; gRPC menu calls go to an
+        external grpc-simulator on localhost:9090.</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -23,13 +21,17 @@
         <maven.compiler.target>25</maven.compiler.target>
         <maven.compiler.release>25</maven.compiler.release>
         <microjainslee.version>1.1.0</microjainslee.version>
+        <grpc.version>1.82.1</grpc.version>
+        <protobuf.version>4.35.1</protobuf.version>
+        <protoc.version>4.35.1</protoc.version>
+        <protoc_artifact>com.google.protobuf:protoc:${protoc.version}</protoc_artifact>
+        <protoc_grpc_artifact>io.grpc:protoc-gen-grpc-java:${grpc.version}</protoc_grpc_artifact>
         <surefire.version>3.5.4</surefire.version>
         <log4j.version>2.23.1</log4j.version>
         <disruptor.version>3.4.2</disruptor.version>
     </properties>
 
     <dependencies>
-        <!-- micro-jainslee runtime — embedded directly, no adapter -->
         <dependency>
             <groupId>com.microjainslee</groupId>
             <artifactId>jainslee-core</artifactId>
@@ -47,7 +49,27 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- Logging (Log4j2 — the same Log4j 2.23.1 used by jainslee-core) -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+            <version>${grpc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-protobuf</artifactId>
+            <version>${grpc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-stub</artifactId>
+            <version>${grpc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>${protobuf.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
@@ -58,17 +80,12 @@
             <artifactId>log4j-core</artifactId>
             <version>${log4j.version}</version>
         </dependency>
-
-        <!-- Disruptor is transitive of jainslee-core but we pin it here so the
-             dependency graph is self-documenting. -->
         <dependency>
             <groupId>com.lmax</groupId>
             <artifactId>disruptor</artifactId>
             <version>${disruptor.version}</version>
         </dependency>
 
-        <!-- Test scope: JUnit 4 (matching jainslee-core test suite convention),
-             plus the JDK's built-in HttpServer for the callback receiver. -->
         <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
@@ -79,6 +96,13 @@
 
     <build>
         <finalName>example-embedded-j25</finalName>
+        <extensions>
+            <extension>
+                <groupId>kr.motd.maven</groupId>
+                <artifactId>os-maven-plugin</artifactId>
+                <version>1.7.1</version>
+            </extension>
+        </extensions>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -112,6 +136,48 @@
             </plugin>
 
             <plugin>
+                <groupId>org.xolstice.maven.plugins</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
+                <version>0.6.1</version>
+                <configuration>
+                    <protocArtifact>${protoc_artifact}:exe:${os.detected.classifier}</protocArtifact>
+                    <pluginId>grpc-java</pluginId>
+                    <pluginArtifact>${protoc_grpc_artifact}:exe:${os.detected.classifier}</pluginArtifact>
+                    <protoSourceRoot>${project.basedir}/src/main/proto</protoSourceRoot>
+                    <outputDirectory>${project.build.directory}/generated-sources/protobuf/java</outputDirectory>
+                    <clearOutputDirectory>false</clearOutputDirectory>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>compile</goal>
+                            <goal>compile-custom</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>add-protobuf-generated-sources</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.build.directory}/generated-sources/protobuf/java</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
                 <version>3.4.1</version>
@@ -138,7 +204,6 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${surefire.version}</version>
                 <configuration>
-                    <!-- Same flags the jainslee-core test suite uses -->
                     <argLine>-Xmx512m -Dlog4j2.configurationFile=log4j2-test.xml</argLine>
                 </configuration>
             </plugin>

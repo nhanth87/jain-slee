@@ -122,9 +122,8 @@ There are exactly **four orthogonal concerns**:
 | `com.microjainslee:jainslee-spring-boot-starter:1.1.0` | Spring Boot 3 auto-configuration | `@AutoConfiguration MicroJainsleeAutoConfiguration`, `@ConfigurationProperties MicroJainsleeProperties`, `MicroJainsleeLifecycle`, `MicroJainsleeDeployer`, `@EnableMicroJainslee` |
 | `com.microjainslee:adapter-quarkus:1.1.0` (3-module reactor: parent + runtime + deployment) | Quarkus 3 extension | `MicroJainsleeBuildConfig`, `MicroJainsleeProcessor`, `MicroJainsleeRecorder`, `MicroJainsleeProducer`, `MicroJainsleeHolder`, `TraceFacilityQuarkusAdapter`, `UsageFacilityQuarkusAdapter`, `AlarmPortQuarkusAdapter`, `ProfileTablePortQuarkusAdapter` |
 | `com.microjainslee:adapter-jakartaee:1.1.0` | Jakarta EE 9 EJB integration | `@Singleton @Startup @LocalBean MicroSleeContainerStartup`, `JndiNames` |
-| `com.microjainslee:ra-connectors:1.1.0` | Mock RA for unit tests | `MockResourceAdaptor`, `MockActivityContext` |
 
-Dependencies flow strictly one-way: adapters depend on core; core depends on api; api has no dependencies. ra-connectors depends only on api.
+Dependencies flow strictly one-way: adapters depend on core; core depends on api; api has no dependencies. Example apps ship their own RA classes (see `example/example-quarkus/.../ra/`).
 
 ```
                         ┌───────────────┐
@@ -133,12 +132,11 @@ Dependencies flow strictly one-way: adapters depend on core; core depends on api
                                 │
         ┌───────────────────────┼───────────────────────┐
         │                       │                       │
-┌───────▼───────┐   ┌───────────▼───────────┐   ┌───────▼───────────────┐
-│ jainslee-core │   │   jainslee-apt       │   │   ra-connectors       │
-│  (Disruptor   │   │  (javax.annotation  │   │   (mock RA + mock ACI)│
-│   + jSS7      │   │   .processing)      │   │                       │
-│   scheduler)  │   │                     │   │                       │
-└───────┬───────┘   └─────────────────────┘   └───────────────────────┘
+┌───────▼───────┐   ┌───────────▼───────────┐
+│ jainslee-core │   │   jainslee-apt       │
+│  (Disruptor   │   │  (javax.annotation  │
+│   + pools)    │   │   .processing)      │
+└───────┬───────┘   └─────────────────────┘
         │
         ├──────────────────────┬───────────────────────┐
         │                      │                       │

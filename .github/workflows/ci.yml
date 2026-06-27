@@ -74,7 +74,7 @@ jobs:
       - name: Build + test (micro-jainslee modules)
         run: |
           mvn -B -ntp \
-            -pl jainslee-api,jainslee-scheduler,jainslee-core,jainslee-apt,jainslee-spring-boot-starter,ra-connectors,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee \
+            -pl jainslee-api,jainslee-scheduler,jainslee-core,jainslee-apt,jainslee-spring-boot-starter,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee \
             -am test \
             -DargLine="-Xmx4g"
 
@@ -108,7 +108,7 @@ jobs:
         run: |
           set -e
           MISSING=0
-          for f in $(find jainslee-* adapters ra-connectors \
+          for f in $(find jainslee-* adapters \
                        -name '*.java' -not -path '*/target/*'); do
             if ! grep -q 'Dual-licensed: GPLv3' "$f"; then
               echo "::error file=$f::Missing license header"

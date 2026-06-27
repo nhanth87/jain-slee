@@ -60,7 +60,6 @@
         <module>jainslee-apt</module>
         <module>adapters/adapter-quarkus</module>
         <module>adapters/adapter-springboot</module>
-        <module>ra-connectors</module>
         <module>adapters/adapter-jakartaee</module>
     </modules>
 

@@ -101,7 +101,6 @@ That's it. No XML, no annotation scanning, no deployment descriptors.
 | `adapter-quarkus` | `com.microjainslee:adapter-quarkus:1.1.0` | ~520 | Stable — Quarkus 3 extension |
 | `adapter-springboot` | `com.microjainslee:adapter-springboot:1.1.0` | ~270 | Stable — Spring Boot 3 auto-config |
 | `adapter-jakartaee` | `com.microjainslee:adapter-jakartaee:1.1.0` | ~250 | Stable — Jakarta EE 9 EJB |
-| `ra-connectors` | `com.microjainslee:ra-connectors:1.1.0` | ~80 | Stable — mock RA for tests |
 
 > The legacy **RestComm JAIN-SLEE v8** container (Mobicents, WildFly 10, ~1,400
 > modules, ~150 KLOC) lives in the sibling `container/`, `api/`, and `tools/`
@@ -406,18 +405,20 @@ diameter answers, …) enter the SLEE. micro-jainslee exposes
 {@link com.microjainslee.api.SleeEndpointPort} on {@code ResourceAdaptorContext}
 so RAs fire events without blocking the transport thread.
 
-### HTTP callback RA (`ra-connectors`)
+### RA bootstrap + `SleeEndpointPort`
 
 ```java
-RaBootstrapContextImpl ctx = RaBootstrap.activate(
-        container, HttpCallbackResourceAdaptor.class, "http-callback");
-HttpCallbackResourceAdaptor ra = (HttpCallbackResourceAdaptor) ctx.getResourceAdaptor();
-ra.onHttpBegin(sessionId, new UssdBeginEvent(...));
-// ...
-ra.onHttpEnd(sessionId);
+RaBootstrapContextImpl ctx = container.bootstrapResourceAdaptor(
+        MyHttpResourceAdaptor.class.getName(), "http-ingress");
+MyHttpResourceAdaptor ra = (MyHttpResourceAdaptor) ctx.getResourceAdaptor();
+// ctx.getSleeEndpointPort().fireEvent(handle, initialEvent);
 ```
 
-### Minimal RA skeleton (direct container — legacy / tests)
+Reference implementations live in each example app (copy-not-share):
+`example-quarkus/.../ra/HttpIngressResourceAdaptor.java`,
+`example-quarkus/.../ra/GrpcMenuResourceAdaptor.java`.
+
+### Minimal RA skeleton
 
 ```java
 public class SipResourceAdaptor implements ResourceAdaptor {
@@ -441,20 +442,6 @@ public class SipResourceAdaptor implements ResourceAdaptor {
     }
 }
 ```
-
-### Mock RA for tests (`ra-connectors`)
-
-A drop-in test double:
-
-```java
-MockResourceAdaptor ra = new MockResourceAdaptor();
-ra.raConfigure(); ra.raActive();
-// inject events directly:
-ra.sendEvent(new MyEvent());   // no-op stub — extend for your tests
-```
-
-`MockActivityContext` is also a no-op ACI useful for unit tests that want to
-exercise the `ActivityContextInterface` contract without the real pool.
 
 ---
 
@@ -771,7 +758,7 @@ mvn -pl jainslee-core test -Dtest=SbbEntityPoolStressTest
 mvn -pl adapters/adapter-springboot test
 
 # Build everything except the legacy Mobicents container/
-mvn -pl 'jainslee-api,jainslee-core,jainslee-apt,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee,adapters/adapter-springboot,ra-connectors' -am test
+mvn -pl 'jainslee-api,jainslee-core,jainslee-apt,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee,adapters/adapter-springboot' -am test
 ```
 
 ### Module-by-module commands
@@ -832,7 +819,7 @@ The same repo ships **two parallel stacks** under `jain-slee/`:
 
 | Stack | Where | Java | Lines of code | Use case |
 |---|---|---|---|---|
-| **micro-jainslee** | `jainslee-*`, `ra-connectors/`, `adapters/` | Java 8 source / Java 21+ runtime | **~3,000** | R&D only — embedded in plain JVMs |
+| **micro-jainslee** | `jainslee-*`, `adapters/` | Java 8 source / Java 21+ runtime | **~3,000** | R&D only — embedded in plain JVMs |
 | **RestComm JAIN-SLEE v8** | `container/`, `api/`, `tools/` | Java 8 + JBoss APIs | **~152,000** | Production USSD 7.3 — WildFly 10 |
 
 The JBoss stack is the original Mobicents SLEE v8 (later RestComm) — the
@@ -1049,9 +1036,6 @@ micro-jainslee/
 │           ├── MicroSleeContainerStartup.java ← @Singleton @Startup @LocalBean
 │           └── JndiNames.java
 │
-├── ra-connectors/                            ← mock RA for tests
-│   └── src/main/java/com/microjainslee/ra/mock/{MockResourceAdaptor,MockActivityContext}.java
-│
 └── .understand-anything/                      ← /understand knowledge graph
     ├── knowledge-graph.json                   ← 118 nodes / 175 edges
     └── meta.json
@@ -1083,7 +1067,6 @@ table below before copying, modifying, or distributing any source.
 | `adapters/adapter-springboot/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Spring Boot 3 auto-configuration |
 | `adapters/adapter-quarkus/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Quarkus 3 extension (deployment + runtime) |
 | `adapters/adapter-jakartaee/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Jakarta EE 9 EJB bootstrap |
-| `ra-connectors/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Mock RA for tests |
 | `container/`, `api/`, `tools/` | RestComm / Mobicents | **AGPL-3.0** (unchanged) | Legacy JAIN-SLEE v8 production stack — **out of micro-jainslee scope** |
 
 All micro-jainslee `.java` files carry a 9-line dual-license header. The

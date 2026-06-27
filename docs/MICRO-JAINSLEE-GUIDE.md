@@ -1,7 +1,7 @@
 # Hướng dẫn micro-jainslee cho Junior Developer
 
 > Tài liệu này giải thích **micro-jainslee 1.1.0** hoạt động thế nào, cách tích hợp với **Quarkus**, và luồng code khi **fire event**.  
-> Demo tham chiếu: `example/example-quarkus/`, `example/example-embedded-j25/`, `example/ussdgw-simulator/`.
+> Demo tham chiếu: `example/example-quarkus/` (đọc kỹ nhất), `example/example-embedded-j25/`, `example/grpc-simulator/`, `example/ussdgw-simulator/`.
 
 ---
 
@@ -13,15 +13,19 @@
 4. [Cấu trúc module trong repo](#4-cấu-trúc-module-trong-repo)
 5. [App có `main()` ở đâu?](#5-app-có-main-ở-đâu)
 6. [Khởi động container — ai gọi `start()`?](#6-khởi-động-container--ai-gọi-start)
-7. [Tích hợp Quarkus ↔ JAIN SLEE](#7-tích-hợp-quarkus--jain-slee)
-8. [Luồng end-to-end khi fire event](#8-luồng-end-to-end-khi-fire-event)
-9. [Khi fire event, code nào chạy? (call stack)](#9-khi-fire-event-code-nào-chạy-call-stack)
-10. [RA fire event ra sao? (demo vs production)](#10-ra-fire-event-ra-sao-demo-vs-production)
-11. [SBB lifecycle và virtual thread](#11-sbb-lifecycle-và-virtual-thread)
-12. [APT auto-deploy lúc compile](#12-apt-auto-deploy-lúc-compile)
-13. [Bản đồ file quan trọng](#13-bản-đồ-file-quan-trọng)
-14. [Chạy thử nhanh](#14-chạy-thử-nhanh)
-15. [FAQ cho junior](#15-faq-cho-junior)
+7. [example-quarkus — kiến trúc tổng quan](#7-example-quarkus--kiến-trúc-tổng-quan)
+8. [Resource Adaptors (RA)](#8-resource-adaptors-ra)
+9. [Events — pipeline đầy đủ](#9-events--pipeline-đầy-đủ)
+10. [SBBs — ai làm gì?](#10-sbbs--ai-làm-gì)
+11. [Profile, timer, CMP](#11-profile-timer-cmp)
+12. [Luồng end-to-end (sequence diagram)](#12-luồng-end-to-end-sequence-diagram)
+13. [Khi fire event, code nào chạy? (call stack)](#13-khi-fire-event-code-nào-chạy-call-stack)
+14. [Tích hợp Quarkus ↔ JAIN SLEE](#14-tích-hợp-quarkus--jain-slee)
+15. [SBB lifecycle và virtual thread](#15-sbb-lifecycle-và-virtual-thread)
+16. [APT auto-deploy lúc compile](#16-apt-auto-deploy-lúc-compile)
+17. [Bản đồ file quan trọng](#17-bản-đồ-file-quan-trọng)
+18. [Chạy thử nhanh](#18-chạy-thử-nhanh)
+19. [FAQ cho junior](#19-faq-cho-junior)
 
 ---
 
@@ -31,22 +35,22 @@
 
 Thay vì viết một luồng `if/else` dài từ đầu đến cuối, bạn chia logic thành:
 
-| Thành phần | Vai trò | Ví dụ trong demo USSD |
-|-----------|---------|---------------------|
-| **SBB** (Service Building Block) | Khối xử lý business logic | `Ss7UssdIngressSbb`, `GrpcBackendSbb` |
-| **Event** | Message nội bộ giữa các SBB | `UssdBeginEvent`, `GrpcBackendRequestEvent` |
-| **RA** (Resource Adaptor) | Cầu nối với thế giới bên ngoài (SS7, HTTP, DB…) | Trong demo: REST endpoint **giả lập** RA |
-| **ACI** (Activity Context Interface) | Context của một phiên/cuộc gọi | Một session USSD = một ACI |
-| **Container (SLEE)** | Router event, quản lý SBB, timer, transaction | `MicroSleeContainer` |
+| Thành phần | Vai trò | Ví dụ trong demo USSD (example-quarkus) |
+|-----------|---------|------------------------------------------|
+| **SBB** (Service Building Block) | Khối xử lý business logic | `HttpServerSbb`, `Ss7UssdIngressSbb`, `GrpcClientSbb` |
+| **Event** | Message nội bộ giữa các SBB / RA | `HttpUssdBeginEvent`, `Ss7UssdBeginEvent`, `GrpcMenuResponseEvent` |
+| **RA** (Resource Adaptor) | Cầu nối với thế giới bên ngoài | `HttpIngressResourceAdaptor`, `GrpcMenuResourceAdaptor` |
+| **ACI** (Activity Context Interface) | Context của một phiên/cuộc gọi | Một session USSD = một ACI (key = `sessionId`) |
+| **Container (SLEE)** | Router event, quản lý SBB, timer, profile | `MicroSleeContainer` |
 
 **Mô hình event-driven:**
 
 ```
-Bên ngoài (network)  →  RA  →  fire Event  →  Container  →  SBB.onEvent()
-SBB A                →  fire Event khác  →  Container  →  SBB B.onEvent()
+Bên ngoài (HTTP/gRPC)  →  RA  →  fire Event  →  Container  →  SBB.onEvent()
+SBB A                  →  fire Event khác  →  Container  →  SBB B.onEvent()
 ```
 
-SBB **không gọi trực tiếp** SBB khác. Mọi giao tiếp qua **container.routeEvent()**.
+SBB **không gọi trực tiếp** SBB khác. Mọi giao tiếp qua **`container.routeEvent()`** (hoặc `UssdSbbWiring.routeEvent()` — wrapper mỏng).
 
 ---
 
@@ -72,13 +76,13 @@ Class Java implement `Sbb` + `SleeEventHandler`. Nhận event qua:
 ```java
 @Override
 public void onEvent(SleeEvent event, ActivityContextInterface aci) {
-    if (event instanceof UssdBeginEvent) {
+    if (event instanceof HttpUssdBeginEvent) {
         // xử lý...
     }
 }
 ```
 
-Lifecycle callbacks (giống EJB cũ):
+Lifecycle callbacks:
 
 - `sbbCreate()` — tạo instance
 - `sbbActivate()` — kích hoạt
@@ -90,38 +94,39 @@ Lifecycle callbacks (giống EJB cũ):
 POJO implement `SleeEvent`, annotate `@EventType`:
 
 ```java
-@EventType(name = "UssdBegin", vendor = "com.example.ussddemo", version = "1.0")
-public final class UssdBeginEvent implements SleeEvent { ... }
+@EventType(name = "HttpUssdBegin", vendor = "com.example.ussddemo.quarkus", version = "1.0")
+public final class HttpUssdBeginEvent implements SleeEvent { ... }
 ```
+
+APT scan `@EventType` lúc compile → ghi vào `sbb-index.properties`.
 
 ### 3.3 ACI (Activity Context Interface)
 
-Đại diện **một phiên** (một cuộc USSD, một cuộc gọi…). Trong micro-jainslee:
+Đại diện **một phiên** USSD. Trong demo:
 
 - Implementation: `InMemoryActivityContext`
-- Tên ACI = `sessionId` (UUID)
+- Key ACI = `sessionId` (UUID do HTTP RA sinh ra)
 - Các SBB được **attach** vào ACI → cùng nhận event trên context đó
 
 ### 3.4 RA (Resource Adaptor)
 
-Trong JAIN SLEE thật, RA lắng nghe SS7/SIP/HTTP và gọi:
+Trong JAIN SLEE thật, RA lắng nghe SS7/SIP/HTTP và fire event vào container.
 
-```java
-container.routeEvent(ss7Event, aci);
-```
+Trong **example-quarkus**, có **2 RA thật** (class Java implement `ResourceAdaptor`):
 
-Trong **demo USSD**, RA được **giả lập** bằng:
+| RA | File | Vai trò |
+|----|------|---------|
+| HTTP ingress | `HttpIngressResourceAdaptor` | JDK `HttpServer` port **8080**, nhận POST từ `ussdgw-simulator` |
+| gRPC menu | `GrpcMenuResourceAdaptor` | Gọi `grpc-simulator:9090`, fire request/response events |
 
-- `UssdDemoResource` (Quarkus REST) — nhận HTTP POST
-- `UssdHttpServer` (embedded Java 25) — JDK `HttpServer`
-- `Ss7UssdSimulatorMain` — client CLI giả USSD gateway
+**Không còn** REST Quarkus làm entry USSD. Quarkus REST (`HealthResource`) chỉ phục vụ admin trên port **18080**.
 
 ### 3.5 Deployable Unit (DU)
 
-Nhóm SBB + RA thành một gói deploy. Demo:
-
 ```java
-@DeployableUnit(name = "UssdGatewayDemo", sbbs = { Ss7UssdIngressSbb.class, GrpcBackendSbb.class })
+@DeployableUnit(
+    name = "UssdGatewayDemo",
+    sbbs = { HttpServerSbb.class, Ss7UssdIngressSbb.class, GrpcClientSbb.class })
 public final class UssdGatewayDemoDu { }
 ```
 
@@ -137,12 +142,13 @@ jain-slee/jain-slee/
 ├── jainslee-scheduler/    # Timer (HashedWheelTimer)
 ├── adapters/
 │   ├── adapter-quarkus/   # Quarkus CDI extension
-│   └── adapter-spring/    # Spring Boot starter
+│   └── adapter-springboot/
 └── example/
-    ├── example-quarkus/       # Quarkus + adapter-quarkus
-    ├── example-embedded-j25/  # Plain Java 25, không framework
+    ├── example-quarkus/       # Quarkus + adapter-quarkus  ← đọc file này trước
+    ├── example-embedded-j25/  # Plain Java 25
     ├── example-spring/        # Spring Boot
-    └── ussdgw-simulator/      # CLI client giả USSD GW
+    ├── grpc-simulator/        # gRPC AS ngoài process (:9090)
+    └── ussdgw-simulator/      # HTTP client giả USSD GW
 ```
 
 **Trái tim runtime:** `jainslee-core/.../MicroSleeContainer.java` + `EventRouter.java`
@@ -153,42 +159,26 @@ jain-slee/jain-slee/
 
 **micro-jainslee không có `main()` riêng.** Nó là **thư viện embed** — app host gọi `MicroSleeContainer.start()`.
 
-| Variant | Entry point (`main`) | Ai start SLEE? |
-|---------|---------------------|----------------|
+| Variant | Entry point | Ai start SLEE? |
+|---------|-------------|----------------|
 | **example-embedded-j25** | `EmbeddedUssdMain.main()` | Gọi trực tiếp trong `main()` |
-| **example-quarkus** | Quarkus bootstrap (không có `main` viết tay) | `UssdDemoRuntime.onStart(StartupEvent)` hoặc `adapter-quarkus` |
-| **example-spring** | `SpringApplication.run(...)` | `jainslee-spring-boot-starter` SmartLifecycle |
-| **ussdgw-simulator** | `Ss7UssdSimulatorMain.main()` | **Không** chạy SLEE — chỉ là HTTP client |
-
-### Embedded — entry point rõ nhất cho junior
-
-File: `example/example-embedded-j25/.../EmbeddedUssdMain.java`
-
-```java
-public static void main(String[] args) throws Exception {
-    // 1. Tạo và start MicroSleeContainer
-    container = new MicroSleeContainer(configuration);
-    container.start();
-
-    // 2. Tạo services (session store, callback, gRPC mock)
-    runtime = new UssdDemoRuntime(container, sessionStore, callbackDispatcher);
-
-    // 3. Start HTTP server (giả RA)
-    UssdHttpServer httpServer = new UssdHttpServer(port, runtime);
-    httpServer.start();
-
-    // 4. Chờ shutdown
-    shutdownLatch.await();
-}
-```
+| **example-quarkus** | Quarkus bootstrap | `UssdDemoBootstrap.onStart(StartupEvent)` |
+| **example-spring** | `SpringApplication.run(...)` | `UssdDemoBootstrap` `@PostConstruct` |
+| **ussdgw-simulator** | `Ss7UssdSimulatorMain.main()` | **Không** chạy SLEE — chỉ HTTP client |
+| **grpc-simulator** | `GrpcSimulatorMain.main()` | **Không** chạy SLEE — chỉ gRPC server |
 
 ### Quarkus — không có `main()` viết tay
 
-Quarkus dùng `quarkus-maven-plugin` generate bootstrap. SLEE start qua CDI observer:
+Quarkus dùng `quarkus-maven-plugin` generate bootstrap. SLEE + RA start qua CDI observer:
 
 ```java
+// UssdDemoBootstrap.java
 void onStart(@Observes StartupEvent ev) {
     microSleeContainer().start();
+    wiring.install(...);
+    registerSbbTypes(c);
+    seedProfiles(c);
+    bootstrapResourceAdaptors(c, new GrpcMenuClient(grpcHost, grpcPort));
 }
 ```
 
@@ -214,158 +204,408 @@ container.start()
 
 Sau khi start, container sẵn sàng nhận `routeEvent()`.
 
+**Lưu ý demo:** Mỗi session USSD vẫn **register SBB thủ công** trong `UssdSbbWiring.beginUssdSession()` vì cần inject `UssdSbbWiring` qua constructor. `registerSbbType()` đăng ký factory cho pooling tương lai / `acquireEntity()`.
+
 ---
 
-## 7. Tích hợp Quarkus ↔ JAIN SLEE
+## 7. example-quarkus — kiến trúc tổng quan
 
-Có **3 lớp** tương tác:
+Demo mô phỏng **USSD Gateway** bên trong SLEE. **Không có SS7 wire thật** — `ussdgw-simulator` đóng vai GW bên ngoài qua HTTP.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ LỚP 1: Quarkus app (JAX-RS, CDI)                            │
-│   UssdDemoResource  →  UssdDemoRuntime  →  UssdSessionStore   │
-├─────────────────────────────────────────────────────────────┤
-│ LỚP 2: adapter-quarkus (CDI extension)                      │
-│   MicroJainsleeProcessor (build-time)                       │
-│   MicroJainsleeRecorder + MicroJainsleeProducer (runtime)   │
-│   → expose MicroSleeContainer, EventRouter, TimerPort...    │
-├─────────────────────────────────────────────────────────────┤
-│ LỚP 3: jainslee-core (SLEE engine)                          │
-│   MicroSleeContainer → EventRouter → SBB.onEvent()          │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  ussdgw-simulator (HTTP client, ngoài process)                      │
+│       POST /api/ussd/begin-callback?callbackUrl=...                 │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │ HTTP :8080
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  HttpIngressResourceAdaptor  (HTTP RA — JDK HttpServer)             │
+│       wiring.beginUssdSession() → create ACI + attach SBBs          │
+│       container.routeEvent(HttpUssdBeginEvent)                      │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │ Disruptor EventRouter
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  HttpServerSbb (priority 8)                                         │
+│    → setTimer (session timeout)                                     │
+│    → routeEvent(Ss7UssdBeginEvent)                                  │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  Ss7UssdIngressSbb (priority 7) — internal MAP/USSD leg             │
+│    → CMP write (sessionId, msisdn, menuTier)                        │
+│    → grpcRa().requestMenu()                                         │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  GrpcMenuResourceAdaptor (gRPC RA)                                  │
+│    → routeEvent(GrpcMenuRequestEvent)  ← GrpcClientSbb observes     │
+│    → async gRPC call → grpc-simulator:9090                          │
+│    → routeEvent(GrpcMenuResponseEvent)                              │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  Ss7UssdIngressSbb                                                    │
+│    → build USSD text → routeEvent(UssdCompleteEvent)                │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  HttpServerSbb → completeSession() → UssdCallbackDispatcher         │
+│       async POST callbackUrl → ussdgw-simulator                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.1 adapter-quarkus (build-time)
+### Package layout (example-quarkus)
 
-File: `adapters/adapter-quarkus/deployment/.../MicroJainsleeProcessor.java`
-
-| Build step | Việc làm |
-|------------|----------|
-| `installContainer` (STATIC_INIT) | Tạo `MicroSleeContainer` từ config |
-| `startContainer` (RUNTIME_INIT) | Gọi `container.start()` |
-| `containerSyntheticBean` | Expose `MicroSleeContainer` injectable |
-| `sbbSyntheticBeans` | Scan `@SbbAnnotation` → CDI bean (optional) |
-| `shutdownContainer` | Stop container khi Quarkus shutdown |
-
-Config đọc từ `application.properties`:
-
-```properties
-microjainslee.buffer-size=2048
-microjainslee.prefer-virtual-threads=true
-microjainslee.sbb-pool-min=16
-microjainslee.sbb-pool-max=4096
+```
+com.example.ussddemo.quarkus/
+├── bootstrap/UssdDemoBootstrap.java   ← CDI startup: container, RA, profile seed
+├── service/
+│   ├── UssdSbbWiring.java           ← cầu nối RA ↔ SBB ↔ container
+│   ├── UssdSessionStore.java        ← trạng thái session (PROCESSING/COMPLETED)
+│   └── UssdCallbackDispatcher.java  ← HTTP callback async
+├── ra/
+│   ├── HttpIngressResourceAdaptor.java
+│   └── GrpcMenuResourceAdaptor.java
+├── sbbs/
+│   ├── HttpServerSbb.java
+│   ├── Ss7UssdIngressSbb.java
+│   └── GrpcClientSbb.java
+├── events/                          ← 5 event types
+├── profile/UssdSubscriberProfile.java
+├── grpc/GrpcMenuClient.java         ← client tới grpc-simulator
+├── rest/HealthResource.java         ← Quarkus admin only (:18080)
+└── du/UssdGatewayDemoDu.java
 ```
 
-### 7.2 UssdDemoRuntime — bridge app ↔ SLEE
+---
 
-File: `example/example-quarkus/.../quarkus/UssdDemoRuntime.java`
+## 8. Resource Adaptors (RA)
 
-Đây là **cầu nối chính** mà junior cần hiểu:
+### 8.1 HttpIngressResourceAdaptor — HTTP ingress RA
 
-| Trách nhiệm | Method |
-|-------------|--------|
-| Start/stop container | `@Observes StartupEvent` / `ShutdownEvent` |
-| CDI producer fallback | `@Produces MicroSleeContainer` |
-| Bắt đầu session USSD | `beginSession(...)` |
-| Fire event tiếp (từ SBB) | `routeEvent(event, aci)` |
-| Kết thúc session + callback | `completeSession()` / `failSession()` |
+**File:** `ra/HttpIngressResourceAdaptor.java`
 
-**Quan trọng:** SBB **không phải** CDI bean thực sự trong demo hiện tại. Mỗi session tạo SBB bằng `new`:
+| Thuộc tính | Giá trị |
+|------------|---------|
+| Port | `ussd.http.port` = **8080** |
+| Transport | JDK `com.sun.net.httpserver.HttpServer` |
+| Implements | `ResourceAdaptor` |
+
+**Endpoints:**
+
+| Method | Path | Mô tả |
+|--------|------|-------|
+| POST | `/api/ussd/begin-callback?callbackUrl=...` | Bắt đầu session + callback bất đồng bộ |
+| POST | `/api/ussd/begin` | Bắt đầu session (polling qua GET session) |
+| GET | `/api/ussd/sessions/{id}` | Trạng thái session |
+| GET | `/health` | Health check |
+
+**Luồng khi nhận POST:**
+
+```
+1. Parse JSON body → msisdn, ussdString
+2. Sinh sessionId = UUID
+3. wiring.beginUssdSession(sessionId, msisdn, ussdString, callbackUrl)
+4. Trả 202 Accepted + JSON {"sessionId":"...","status":"PROCESSING"}
+```
+
+HTTP RA delegate sang `UssdSbbWiring.beginUssdSession()` — tạo ACI, attach SBB, fire `HttpUssdBeginEvent`.
+
+### 8.2 GrpcMenuResourceAdaptor — gRPC RA
+
+**File:** `ra/GrpcMenuResourceAdaptor.java`
+
+| Thuộc tính | Giá trị |
+|------------|---------|
+| Upstream | `GrpcMenuClient` → `grpc.host:grpc.port` (default `127.0.0.1:9090`) |
+| Worker pool | Virtual threads (`newVirtualThreadPerTaskExecutor`) |
+
+**Method chính:** `requestMenu(sessionId, msisdn, ussdString)`
+
+```
+1. Lookup ACI theo sessionId
+2. routeEvent(GrpcMenuRequestEvent)  → GrpcClientSbb.onEvent() log/observe
+3. workerPool.submit → client.resolveMenu()  [async, không block SBB thread]
+4. routeEvent(GrpcMenuResponseEvent) → Ss7UssdIngressSbb.onEvent()
+```
+
+Đây là pattern RA điển hình: **fire event trước** (request), **gọi I/O bất đồng bộ**, **fire event sau** (response).
+
+### 8.3 RA lifecycle
+
+Cả hai RA đều bootstrap qua `RaBootstrapContextImpl`:
 
 ```java
-SimpleSbbLocalObject ss7 = c.registerSbb(ss7Id(sessionId), new Ss7UssdIngressSbb(this));
+RaBootstrapContextImpl ctx = new RaBootstrapContextImpl(container, "HttpIngressRA");
+ctx.setResourceAdaptor(httpRa);
+httpRa.setResourceAdaptorContext(ctx);
+httpRa.raConfigure();
+httpRa.raActive();   // HTTP RA: start HttpServer tại đây
 ```
 
-SBB nhận `UssdDemoRuntime` qua **constructor**, không qua `@Inject`.
-
-### 7.3 Ranh giới Quarkus vs SLEE
-
-| Thuộc Quarkus (CDI) | Thuộc SLEE (core) |
-|--------------------|-------------------|
-| `UssdDemoResource` REST | `MicroSleeContainer` |
-| `UssdSessionStore` | `EventRouter` |
-| `UssdCallbackDispatcher` | `VirtualThreadSbbEntityPool` |
-| `MockGrpcMenuClient` | `registerSbb`, `attach`, `routeEvent` |
-| `@ConfigProperty` | `InMemoryActivityContext` |
-
-**Chỉ `UssdDemoRuntime` nằm giữa hai thế giới.**
+Shutdown (`ShutdownEvent`): `raInactive()` → `raUnconfigure()` → `container.stop()`.
 
 ---
 
-## 8. Luồng end-to-end khi fire event
+## 9. Events — pipeline đầy đủ
 
-Scenario: Simulator gọi USSD `*123#` qua callback.
+Demo có **5 event types**. Chúng tạo thành pipeline một chiều:
+
+```
+HttpUssdBeginEvent
+    → Ss7UssdBeginEvent
+        → GrpcMenuRequestEvent  (RA fire, không qua SBB chain)
+        → GrpcMenuResponseEvent (RA fire sau gRPC)
+    → UssdCompleteEvent
+```
+
+### Bảng chi tiết
+
+| # | Event | Ai fire | Ai xử lý | Hành động |
+|---|-------|---------|----------|-----------|
+| 1 | `HttpUssdBeginEvent` | `UssdSbbWiring.beginUssdSession()` | `HttpServerSbb` | Log begin, **set session timer**, route sang SS7 leg |
+| 2 | `Ss7UssdBeginEvent` | `HttpServerSbb` | `Ss7UssdIngressSbb` | **CMP write**, gọi `grpcRa().requestMenu()` |
+| 3 | `GrpcMenuRequestEvent` | `GrpcMenuResourceAdaptor` | `GrpcClientSbb` | Log/observe (child SBB — RA thực hiện gRPC call) |
+| 4 | `GrpcMenuResponseEvent` | `GrpcMenuResourceAdaptor` | `Ss7UssdIngressSbb` | Ghép USSD text từ menu + tier → fire complete |
+| 5 | `UssdCompleteEvent` | `Ss7UssdIngressSbb` | `HttpServerSbb` | `completeSession()` → callback HTTP |
+
+### Code mẫu từng event
+
+**HttpUssdBeginEvent** — chứa profile tier đã resolve:
+
+```java
+// events/HttpUssdBeginEvent.java
+@EventType(name = "HttpUssdBegin", ...)
+public final class HttpUssdBeginEvent implements SleeEvent {
+    // sessionId, msisdn, ussdString, callbackUrl, menuTier
+}
+```
+
+**Ss7UssdBeginEvent** — internal MAP leg (không có callbackUrl):
+
+```java
+// HttpServerSbb.onHttpBegin()
+wiring.routeEvent(new Ss7UssdBeginEvent(
+    event.getSessionId(), event.getMsisdn(), event.getUssdString(),
+    event.getMenuTier()), aci);
+```
+
+**GrpcMenuResponseEvent → UssdCompleteEvent:**
+
+```java
+// Ss7UssdIngressSbb.onGrpcResponse()
+String ussdText = "USSD menu for session " + event.getSessionId()
+    + " (tier " + tier + "):\n" + menu;
+wiring.routeEvent(new UssdCompleteEvent(event.getSessionId(), ussdText), aci);
+```
+
+---
+
+## 10. SBBs — ai làm gì?
+
+### 10.1 HttpServerSbb — GW-facing entry
+
+**File:** `sbbs/HttpServerSbb.java`  
+**Priority:** 8 (cao nhất trên ACI)  
+**SBB ID per session:** `{sessionId}/http`
+
+| Event nhận | Hành động |
+|------------|-----------|
+| `HttpUssdBeginEvent` | Set timer qua `TimerPort`, route `Ss7UssdBeginEvent` |
+| `UssdCompleteEvent` | `wiring.completeSession()` → callback |
+| `TimerFiredEvent` | Session timeout → `failSession()` |
+
+Đây là SBB **đối diện với HTTP GW** — normalize session, quản lý timer, hoàn tất callback.
+
+### 10.2 Ss7UssdIngressSbb — internal MAP/USSD leg
+
+**File:** `sbbs/Ss7UssdIngressSbb.java`  
+**Priority:** 7  
+**SBB ID:** `{sessionId}/ss7`  
+**Extends:** `CmpBackedSbb` (CMP fields)
+
+| Event nhận | Hành động |
+|------------|-----------|
+| `Ss7UssdBeginEvent` | CMP write, delegate menu lookup tới gRPC RA |
+| `GrpcMenuResponseEvent` | Build USSD response text, fire `UssdCompleteEvent` |
+
+**Vai trò quan trọng:** Trong production, SBB này nhận event từ **SS7 RA** (`MAP-Open`, `MAP-Process-Unstructured-SS-Request`). Trong demo, nó nhận `Ss7UssdBeginEvent` từ `HttpServerSbb` vì GW bên ngoài chỉ gửi HTTP.
+
+```
+ussdgw-simulator  ≈  external SS7/USSD GW (HTTP only)
+HttpServerSbb     ≈  GW normalization layer
+Ss7UssdIngressSbb ≈  MAP USSD service logic (inside SLEE)
+```
+
+### 10.3 GrpcClientSbb — child SBB
+
+**File:** `sbbs/GrpcClientSbb.java`  
+**Priority:** 5  
+**SBB ID:** `{sessionId}/grpc`
+
+| Event nhận | Hành động |
+|------------|-----------|
+| `GrpcMenuRequestEvent` | Log/observe — **gRPC call thực tế do RA thực hiện** |
+
+Child SBB minh họa pattern JAIN SLEE: RA fire event, child SBB subscribe để audit/hook. Logic gRPC nằm trong `GrpcMenuResourceAdaptor`.
+
+### 10.4 Session wiring — attach 3 SBB trên một ACI
+
+**File:** `service/UssdSbbWiring.java` → `beginUssdSession()`
+
+```java
+InMemoryActivityContext aci = c.createActivityContext(sessionId);
+
+SimpleSbbLocalObject http  = c.registerSbb(sessionId + "/http",  new HttpServerSbb(this));
+SimpleSbbLocalObject ss7   = c.registerSbb(sessionId + "/ss7",   new Ss7UssdIngressSbb(this));
+SimpleSbbLocalObject grpc  = c.registerSbb(sessionId + "/grpc",  new GrpcClientSbb(this));
+http.setPriority(8);
+ss7.setPriority(7);
+grpc.setPriority(5);
+c.attach(sessionId, http);
+c.attach(sessionId, ss7);
+c.attach(sessionId, grpc);
+
+c.routeEvent(new HttpUssdBeginEvent(...), aci);
+```
+
+---
+
+## 11. Profile, timer, CMP
+
+### 11.1 Profile — UssdSubscriberProfile
+
+**File:** `profile/UssdSubscriberProfile.java`  
+**Table:** `ussd-subscriber`
+
+Bootstrap seed 2 subscriber:
+
+| MSISDN | menuTier | Ý nghĩa demo |
+|--------|----------|--------------|
+| `251911000001` | 1 (GOLD) | Tier cao |
+| `251911000002` | 2 (SILVER) | Tier thấp |
+
+```java
+// UssdDemoBootstrap.seedProfiles()
+ProfileLocalObject plo = facility.createProfile(TABLE_NAME, msisdn, ...);
+sub.setMenuTier(tier);
+wiring.seedMenuTier(msisdn, tier);  // cache cho beginUssdSession()
+```
+
+Khi session bắt đầu, `resolveMenuTier(msisdn)` đưa tier vào `HttpUssdBeginEvent` → SS7 SBB dùng trong response text.
+
+### 11.2 Timer — session timeout
+
+`HttpServerSbb` set timer khi nhận `HttpUssdBeginEvent`:
+
+```java
+long timerId = wiring.container().getTimerPort()
+    .setTimer(wiring.sessionTimeoutMs(), httpLocal);  // default 30s
+wiring.rememberTimer(sessionId, timerId);
+```
+
+Timeout → `TimerFiredEvent` → `HttpServerSbb.onTimer()` → `failSession("session timeout")`.
+
+Config: `ussd.session.timeout-ms=30000`
+
+### 11.3 CMP — Ss7UssdIngressSbb
+
+`Ss7UssdIngressSbb` extends `CmpBackedSbb` với 3 CMP fields:
+
+| Field | Type | Set khi |
+|-------|------|---------|
+| `sessionId` | String | `Ss7UssdBeginEvent` |
+| `msisdn` | String | `Ss7UssdBeginEvent` |
+| `menuTier` | int | `Ss7UssdBeginEvent` |
+
+```java
+cmpWrite(method("setSessionId", String.class), event.getSessionId());
+// ...
+Object tierObj = cmpRead(method("getMenuTier"));  // đọc lại khi build response
+```
+
+CMP persist state trên SBB entity — pattern giống Mobicents khi dialog MAP kéo dài nhiều bước.
+
+---
+
+## 12. Luồng end-to-end (sequence diagram)
+
+Scenario: `ussdgw-simulator` gọi USSD `*123#` qua callback.
 
 ```mermaid
 sequenceDiagram
     participant Sim as ussdgw-simulator
-    participant REST as UssdDemoResource
-    participant RT as UssdDemoRuntime
+    participant HRA as HttpIngress RA :8080
+    participant W as UssdSbbWiring
     participant C as MicroSleeContainer
     participant ER as EventRouter
+    participant HTTP as HttpServerSbb
     participant SS7 as Ss7UssdIngressSbb
-    participant GRPC as GrpcBackendSbb
+    participant GRA as GrpcMenu RA
+    participant GRPC as GrpcClientSbb
+    participant AS as grpc-simulator :9090
     participant CB as UssdCallbackDispatcher
 
-    Sim->>REST: POST /api/ussd/begin-callback?callbackUrl=...
-    REST->>RT: beginSession(sessionId, msisdn, ussd, callbackUrl)
-    RT->>RT: sessionStore.open(), attachCallback()
-    RT->>C: createActivityContext(sessionId)
-    RT->>C: registerSbb + attach (SS7 + gRPC)
-    RT->>C: routeEvent(UssdBeginEvent, aci)
-    C->>ER: routeEvent (Disruptor ring buffer)
-    REST-->>Sim: 202 Accepted
+    Sim->>HRA: POST /api/ussd/begin-callback?callbackUrl=...
+    HRA->>W: beginUssdSession(sessionId, msisdn, ussd, callbackUrl)
+    W->>C: createActivityContext + registerSbb×3 + attach
+    W->>C: routeEvent(HttpUssdBeginEvent)
+    HRA-->>Sim: 202 Accepted
 
-    ER->>SS7: onEvent(UssdBeginEvent) [VT thread, priority 8]
-    SS7->>RT: routeEvent(GrpcBackendRequestEvent)
-    RT->>C: routeEvent(...)
     C->>ER: routeEvent
-    ER->>GRPC: onEvent(GrpcBackendRequestEvent) [priority 5]
-    GRPC->>GRPC: MockGrpcMenuClient.fetchMenu()
-    GRPC->>RT: routeEvent(GrpcBackendResponseEvent)
-    RT->>C: routeEvent(...)
+    ER->>HTTP: onEvent(HttpUssdBeginEvent) [VT, priority 8]
+    HTTP->>HTTP: setTimer(30s)
+    HTTP->>W: routeEvent(Ss7UssdBeginEvent)
+    W->>C: routeEvent
     C->>ER: routeEvent
-    ER->>SS7: onEvent(GrpcBackendResponseEvent)
-    SS7->>RT: routeEvent(UssdResponseEvent)
-    SS7->>RT: completeSession(sessionId, text)
-    RT->>CB: dispatch(callbackUrl) [async HTTP POST]
-    CB-->>Sim: POST callback JSON
+    ER->>SS7: onEvent(Ss7UssdBeginEvent) [priority 7]
+    SS7->>SS7: CMP write
+    SS7->>GRA: requestMenu()
+
+    GRA->>C: routeEvent(GrpcMenuRequestEvent)
+    C->>ER: routeEvent
+    ER->>GRPC: onEvent(GrpcMenuRequestEvent) [priority 5]
+    GRA->>AS: gRPC ResolveMenu [async VT]
+    AS-->>GRA: MenuResponse
+    GRA->>C: routeEvent(GrpcMenuResponseEvent)
+    C->>ER: routeEvent
+    ER->>SS7: onEvent(GrpcMenuResponseEvent)
+    SS7->>W: routeEvent(UssdCompleteEvent)
+    W->>C: routeEvent
+    C->>ER: routeEvent
+    ER->>HTTP: onEvent(UssdCompleteEvent)
+    HTTP->>W: completeSession()
+    W->>CB: dispatch(callbackUrl) [async HTTP POST]
+    CB-->>Sim: callback JSON COMPLETED
 ```
-
-### 4 event types trong pipeline
-
-| # | Event | Ai fire | Ai xử lý | Hành động |
-|---|-------|---------|----------|-----------|
-| 1 | `UssdBeginEvent` | `UssdDemoRuntime.beginSession()` | `Ss7UssdIngressSbb` | Log MAP begin → fire request sang gRPC |
-| 2 | `GrpcBackendRequestEvent` | SS7 SBB | `GrpcBackendSbb` | Gọi mock gRPC menu |
-| 3 | `GrpcBackendResponseEvent` | gRPC SBB | SS7 SBB | Ghép USSD text → fire response |
-| 4 | `UssdResponseEvent` | SS7 SBB | (không SBB nào handle) | Event kết thúc pipeline |
 
 ---
 
-## 9. Khi fire event, code nào chạy? (call stack)
+## 13. Khi fire event, code nào chạy? (call stack)
 
-Giả sử SS7 SBB vừa nhận `UssdBeginEvent` và fire `GrpcBackendRequestEvent`:
+Giả sử `Ss7UssdIngressSbb` vừa nhận `GrpcMenuResponseEvent` và fire `UssdCompleteEvent`:
 
 ### Bước 1 — SBB fire event tiếp
 
 ```java
-// Ss7UssdIngressSbb.onUssdBegin()
-runtime.routeEvent(new GrpcBackendRequestEvent(...), aci);
+// Ss7UssdIngressSbb.onGrpcResponse()
+wiring.routeEvent(new UssdCompleteEvent(event.getSessionId(), ussdText), aci);
 ```
 
-### Bước 2 — Bridge chuyển sang container
+### Bước 2 — Wiring chuyển sang container
 
 ```java
-// UssdDemoRuntime.routeEvent()
+// UssdSbbWiring.routeEvent()
 container.routeEvent(event, aci);
 ```
 
-### Bước 3 — Container (optional InitialEventSelector) → EventRouter
+### Bước 3 — Container → EventRouter
 
 ```java
 // MicroSleeContainer.routeEvent()
-// Nếu ACI chưa có SBB attach → có thể auto-attach root SBB
 eventRouter.routeEvent(event, aci);
 ```
 
@@ -377,270 +617,268 @@ ringBuffer.next();
 wrapper.setEvent(event);
 wrapper.setAci(aci);
 ringBuffer.publish(sequence);
-// → Disruptor worker gọi dispatch(event, aci)
 ```
 
 ### Bước 5 — Dispatch tới SBB
 
 ```java
 // EventRouter.dispatchWithTransaction()
-1. Lấy danh sách SBB đã attach trên ACI
-2. Sort theo priority DESC (SS7=8 trước gRPC=5)
-3. EventMask filter — SBB không subscribe event type → skip
-4. deliverEvent() → submit Runnable lên virtual thread của SBB entity
-5. handler.onEvent(event, aci)  // ← GrpcBackendSbb.onEvent() chạy ở đây
-6. transaction.commit() nếu không lỗi
-```
-
-### Bước 6 — Virtual thread handoff
-
-```java
-// EventRouter.deliverEvent()
-entity.submit(() -> {
-    ScopedValue.where(CURRENT, transaction).run(() -> {
-        handler.onEvent(event, aci);  // SBB code
-    });
-});
-// EventRouter thread await latch (timeout 30s) — sync handoff
+1. Lấy SBB đã attach trên ACI
+2. Sort priority DESC (HTTP=8, SS7=7, gRPC child=5)
+3. EventMask filter
+4. deliverEvent() → submit Runnable lên VT của SBB entity
+5. handler.onEvent(event, aci)  // HttpServerSbb.onComplete()
 ```
 
 **Tóm tắt thread:**
 
 | Thread | Chạy gì |
 |--------|---------|
-| HTTP thread (Quarkus) | REST → `beginSession()` → fire event đầu |
+| HTTP RA VT | Nhận POST từ simulator |
 | Disruptor worker | `EventRouter.dispatch()` |
-| SBB virtual thread | `Ss7UssdIngressSbb.onEvent()`, `GrpcBackendSbb.onEvent()` |
+| SBB virtual thread | `HttpServerSbb`, `Ss7UssdIngressSbb`, `GrpcClientSbb` |
+| gRPC RA VT | `GrpcMenuClient.resolveMenu()` |
 | Callback VT | `UssdCallbackDispatcher.post()` |
 
 ---
 
-## 10. RA fire event ra sao? (demo vs production)
-
-### Production (Mobicents)
+## 14. Tích hợp Quarkus ↔ JAIN SLEE
 
 ```
-SS7 stack → SS7 RA → nhận MAP USSD Begin
-    → RA tạo/bind ACI
-    → RA gọi sleeContainer.fireEvent(ussdBeginEvent, aci)
-    → SBB root nhận onEvent()
+┌─────────────────────────────────────────────────────────────┐
+│ LỚP 1: Quarkus CDI                                          │
+│   UssdDemoBootstrap  →  UssdSbbWiring  →  UssdSessionStore    │
+│   HealthResource (:18080 admin only)                        │
+├─────────────────────────────────────────────────────────────┤
+│ LỚP 2: Resource Adaptors (trong example app)                │
+│   HttpIngressResourceAdaptor (:8080)                        │
+│   GrpcMenuResourceAdaptor → grpc-simulator:9090             │
+├─────────────────────────────────────────────────────────────┤
+│ LỚP 3: adapter-quarkus (CDI extension)                      │
+│   MicroJainsleeProcessor / MicroJainsleeRecorder            │
+│   → optional @Produces MicroSleeContainer                     │
+├─────────────────────────────────────────────────────────────┤
+│ LỚP 4: jainslee-core                                        │
+│   MicroSleeContainer → EventRouter → SBB.onEvent()          │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-RA implement interface `ResourceAdaptor`, được container bootstrap qua `bootstrapResourceAdaptor()`.
+### Config (`application.properties`)
 
-### Demo (example-quarkus)
+```properties
+# USSD traffic — HTTP RA (ussdgw-simulator targets this)
+ussd.http.port=8080
+ussd.session.timeout-ms=30000
 
-RA **không tồn tại** dưới dạng class Java riêng. Thay vào đó:
+# gRPC backend
+grpc.host=127.0.0.1
+grpc.port=9090
 
+# Quarkus admin only
+quarkus.http.port=18080
+
+# Container tuning
+microjainslee.buffer-size=2048
+microjainslee.prefer-virtual-threads=true
+microjainslee.sbb-pool-min=16
+microjainslee.sbb-pool-max=4096
 ```
-HTTP POST /api/ussd/begin-callback
-    → UssdDemoResource.beginCallback()
-    → UssdDemoRuntime.beginSession()
-    → container.routeEvent(UssdBeginEvent, aci)
-```
 
-**Tương đương chức năng:** HTTP entry = RA giả lập SS7 ingress.
+### Ranh giới Quarkus vs SLEE
 
-### Simulator (client phía ngoài)
+| Thuộc Quarkus (CDI) | Thuộc SLEE (core) |
+|--------------------|-------------------|
+| `UssdDemoBootstrap` | `MicroSleeContainer` |
+| `UssdSessionStore` | `EventRouter` |
+| `UssdCallbackDispatcher` | `registerSbb`, `attach`, `routeEvent` |
+| `HealthResource` | `InMemoryActivityContext`, `TimerPort` |
+| `@ConfigProperty` | `ProfileFacility` |
 
-`ussdgw-simulator/Ss7UssdSimulatorMain.java`:
-
-1. Start embedded `HttpServer` lắng `/cb` (nhận callback)
-2. `POST` tới server demo với `callbackUrl`
-3. `CountDownLatch.await()` chờ server POST kết quả về
-
-Pattern giống Mobicents **HttpClient RA callback** — 1 request ra, 0 polling.
+**`UssdSbbWiring`** là cầu nối chính giữa RA, SBB và container.
 
 ---
 
-## 11. SBB lifecycle và virtual thread
+## 15. SBB lifecycle và virtual thread
 
-### Mỗi SBB ID = 1 virtual thread
+Mỗi `registerSbb(id, ...)` tạo một **SbbEntity** với virtual thread riêng. Mọi `onEvent()` của SBB đó chạy **tuần tự** trên VT đó (đúng spec JAIN SLEE).
 
-`VirtualThreadSbbEntityPool`: mỗi `registerSbb(id, ...)` tạo một **SbbEntity** với queue riêng. Mọi `onEvent()` của SBB đó chạy **tuần tự** trên VT đó (đúng spec JAIN SLEE — single-threaded per SBB entity).
-
-### Priority
+### Priority trên ACI
 
 ```java
-ss7.setPriority(8);   // cao hơn → nhận event trước
-grpc.setPriority(5);
+http.setPriority(8);   // HttpServerSbb — nhận trước
+ss7.setPriority(7);    // Ss7UssdIngressSbb
+grpc.setPriority(5);   // GrpcClientSbb
 ```
 
-Khi cùng một event gửi tới nhiều SBB trên ACI, EventRouter sort priority **giảm dần**.
-
-### Per-session SBB ID (Quarkus)
+### Per-session SBB ID
 
 ```java
-"Ss7UssdIngress/" + sessionId
-"GrpcBackend/" + sessionId
+"{sessionId}/http"
+"{sessionId}/ss7"
+"{sessionId}/grpc"
 ```
 
-Tránh collision với SBB auto-deploy global từ APT khi nhiều session concurrent.
+Tránh collision khi nhiều session concurrent.
 
 ---
 
-## 12. APT auto-deploy lúc compile
+## 16. APT auto-deploy lúc compile
 
-Khi `mvn compile`, `jainslee-apt` scan:
-
-- `@SbbAnnotation` → SBB metadata
-- `@EventType` → event metadata  
-- `@DeployableUnit` → DU metadata
-
-Output: `target/classes/META-INF/microjainslee/sbb-index.properties`
+Khi `mvn compile`, `jainslee-apt` scan `@SbbAnnotation`, `@EventType`, `@DeployableUnit` → `sbb-index.properties`.
 
 Ví dụ:
 
 ```properties
-sbb.0.class=com.example.ussddemo.quarkus.sbbs.GrpcBackendSbb
-sbb.0.name=GrpcBackend
-eventType.2.class=...UssdBeginEvent
+sbb.0.class=...HttpServerSbb
+sbb.1.class=...Ss7UssdIngressSbb
+sbb.2.class=...GrpcClientSbb
+eventType.0.class=...HttpUssdBeginEvent
 du.0.class=...UssdGatewayDemoDu
 ```
 
-Lúc `container.start()` → `autoDeployFromClasspathIndex()` instantiate và `registerSbb`.
+`container.start()` → `autoDeployFromClasspathIndex()` instantiate global SBB instances.
 
-**Demo vẫn register SBB thủ công per-session** vì cần inject `UssdDemoRuntime` vào constructor — auto-deploy dùng no-arg ctor.
+**Demo vẫn register per-session** trong `beginUssdSession()` vì cần `UssdSbbWiring` qua constructor.
 
 ---
 
-## 13. Bản đồ file quan trọng
+## 17. Bản đồ file quan trọng
+
+### example-quarkus — đọc theo thứ tự
+
+| # | File | Đọc để hiểu |
+|---|------|-------------|
+| 1 | `bootstrap/UssdDemoBootstrap.java` | Startup: container, RA, profile, registerSbbType |
+| 2 | `service/UssdSbbWiring.java` | Session wiring, begin/complete/fail |
+| 3 | `ra/HttpIngressResourceAdaptor.java` | HTTP entry (port 8080) |
+| 4 | `ra/GrpcMenuResourceAdaptor.java` | gRPC async RA |
+| 5 | `sbbs/HttpServerSbb.java` | GW-facing SBB + timer |
+| 6 | `sbbs/Ss7UssdIngressSbb.java` | Internal MAP leg + CMP |
+| 7 | `sbbs/GrpcClientSbb.java` | Child SBB observe gRPC request |
+| 8 | `events/*.java` | 5 event types |
+| 9 | `profile/UssdSubscriberProfile.java` | Profile seed |
+| 10 | `service/UssdCallbackDispatcher.java` | Async HTTP callback |
 
 ### Core (engine)
 
 | File | Vai trò |
 |------|---------|
-| `jainslee-core/.../MicroSleeContainer.java` | Container chính: start/stop, registerSbb, attach, routeEvent |
-| `jainslee-core/.../EventRouter.java` | Disruptor router, dispatch, EventMask, deliverEvent |
+| `jainslee-core/.../MicroSleeContainer.java` | Container: start/stop, registerSbb, attach, routeEvent |
+| `jainslee-core/.../EventRouter.java` | Disruptor router, dispatch, priority |
 | `jainslee-core/.../VirtualThreadSbbEntityPool.java` | 1 VT / SBB id |
-| `jainslee-core/.../InMemoryActivityContext.java` | ACI implementation |
-| `jainslee-apt/.../MicroJainsleeAnnotationProcessor.java` | Generate sbb-index |
-
-### Quarkus adapter
-
-| File | Vai trò |
-|------|---------|
-| `adapter-quarkus/deployment/.../MicroJainsleeProcessor.java` | Quarkus build steps |
-| `adapter-quarkus/runtime/.../MicroJainsleeRecorder.java` | Create/start/stop container |
-| `adapter-quarkus/runtime/.../MicroJainsleeProducer.java` | CDI @Produces beans |
-
-### Example Quarkus (đọc theo thứ tự)
-
-| # | File | Đọc để hiểu |
-|---|------|-------------|
-| 1 | `rest/UssdDemoResource.java` | HTTP entry (giả RA) |
-| 2 | `quarkus/UssdDemoRuntime.java` | Bridge Quarkus ↔ SLEE |
-| 3 | `sbbs/Ss7UssdIngressSbb.java` | SBB ingress, fire event chain |
-| 4 | `sbbs/GrpcBackendSbb.java` | SBB backend gRPC |
-| 5 | `events/*.java` | 4 event types |
-| 6 | `service/UssdSessionStore.java` | Trạng thái session |
-| 7 | `service/UssdCallbackDispatcher.java` | HTTP callback async |
-| 8 | `du/UssdGatewayDemoDu.java` | Deployable unit marker |
-
-### Example Embedded (đơn giản nhất)
-
-| File | Vai trò |
-|------|---------|
-| `embedded/EmbeddedUssdMain.java` | **`main()` — đọc file này trước** |
-| `embedded/UssdDemoRuntime.java` | Bridge (constructor injection, không CDI) |
-| `embedded/UssdHttpServer.java` | HTTP handlers |
-| `sbbs/Ss7UssdIngressSbb.java` | Dùng `EmbeddedUssdMain.runtime()` |
+| `jainslee-core/.../RaBootstrapContextImpl.java` | RA bootstrap + `SleeEndpointPort` |
 
 ---
 
-## 14. Chạy thử nhanh
+## 18. Chạy thử nhanh
+
+### Full demo (3 terminal)
 
 ```bash
-# 1. Install micro-jainslee
+# 0. Install micro-jainslee + adapter (once)
 cd jain-slee/jain-slee
 mvn -B -ntp install -DskipTests \
   -pl jainslee-api,jainslee-scheduler,jainslee-core,jainslee-apt,adapters/adapter-quarkus -am
 
-# 2. Chạy embedded (có main() rõ ràng)
-cd example/example-embedded-j25
+# Terminal A — gRPC AS (bắt buộc)
+cd example/grpc-simulator
 mvn -B -ntp package
-java -jar target/example-embedded-j25.jar
+java -cp target/grpc-simulator.jar:$(mvn -q dependency:build-classpath -Dmdep.outputFile=/dev/stdout) \
+  com.example.grpcsimulator.GrpcSimulatorMain 9090
 
-# 3. Terminal khác — simulator
+# Terminal B — Quarkus (HTTP RA on 8080)
+cd example/example-quarkus
+mvn -B -ntp quarkus:dev -Dquarkus.build.skip=false
+
+# Terminal C — USSD GW simulator
 cd example/ussdgw-simulator
 mvn -B -ntp package
-java -cp target/ussdgw-simulator-1.0.0-SNAPSHOT.jar:$(mvn -q dependency:build-classpath -Dmdep.outputFile=/dev/stdout) \
-  com.example.ussdgw.Ss7UssdSimulatorMain http://127.0.0.1:8080 251911000001 '*123#'
+java -jar target/ussdgw-simulator-1.0.0-SNAPSHOT.jar \
+  http://127.0.0.1:8080 251911000001 '*123#'
 ```
 
-Test tự động:
+Kỳ vọng: `202 Accepted`, callback vài giây sau với `COMPLETED` và menu chứa `Balance`.
+
+### Chạy test (không cần grpc-simulator bên ngoài)
 
 ```bash
-cd example/example-quarkus && mvn -B -ntp test
-cd example/example-embedded-j25 && mvn -B -ntp test
+cd example/example-quarkus && mvn -B -ntp test    # 2 tests — HTTP RA E2E
+cd example/example-embedded-j25 && mvn -B -ntp test  # 7 tests
 ```
+
+Chi tiết EN/VI: xem `example/README.md` và README từng project.
 
 ---
 
-## 15. FAQ cho junior
+## 19. FAQ cho junior
+
+### Q: Tại sao không dùng Quarkus REST cho USSD?
+
+Để minh họa **Resource Adaptor pattern** đúng JAIN SLEE: HTTP vào SLEE qua RA, không qua REST layer gọi thẳng `routeEvent()`. Quarkus REST chỉ còn `HealthResource` trên port 18080.
+
+### Q: Ss7UssdIngressSbb có phải SS7 thật không?
+
+**Không.** Đây là SBB **logic MAP/USSD nội bộ**. Trong production nhận event từ SS7 RA. Demo nhận `Ss7UssdBeginEvent` từ `HttpServerSbb` vì GW bên ngoài (`ussdgw-simulator`) chỉ gửi HTTP.
+
+### Q: GrpcClientSbb làm gì nếu RA đã gọi gRPC?
+
+Child SBB **observe** `GrpcMenuRequestEvent` — pattern JAIN SLEE cho phép nhiều SBB subscribe cùng event. Logic I/O nằm trong RA; SBB có thể thêm audit, metrics, fallback.
 
 ### Q: SBB có được `@Inject` không?
 
-**Hiện tại trong demo:** SBB được `new` thủ công, nhận `UssdDemoRuntime` qua constructor. `GrpcBackendSbb` có `@Inject MockGrpcMenuClient` nhưng instance per-session phải set qua `setGrpcClientForTesting()` vì không đi qua Arc.
-
-**Hướng tương lai:** adapter-quarkus có thể scan `@SbbAnnotation` → synthetic CDI bean khi `microjainslee.deployment.scan.enabled=true`.
-
-### Q: Tại sao SBB không gọi trực tiếp SBB khác?
-
-Đúng spec JAIN SLEE — decouple, cho phép router áp priority, EventMask, transaction, concurrency lock trên ACI.
+Trong demo: SBB được `new` trong `beginUssdSession()`, nhận `UssdSbbWiring` qua constructor. CDI inject `UssdSbbWiring`, `UssdSessionStore` — không inject trực tiếp vào SBB instance.
 
 ### Q: `routeEvent` sync hay async?
 
-- Publish vào Disruptor: **async** (non-blocking cho caller HTTP)
-- `deliverEvent` **await** SBB xử l xong trên VT (sync handoff giữa router ↔ SBB, timeout 30s)
+- Publish vào Disruptor: **async** (non-blocking cho HTTP RA thread)
+- `deliverEvent` **await** SBB xử lý trên VT (sync handoff, timeout 30s)
+- gRPC call: **async** trên VT riêng của RA
 - Callback HTTP: **async** trên VT riêng
 
 ### Q: Quarkus example có `@QuarkusTest` không?
 
-Chưa — Quarkus 3.15.1 ASM chỉ đọc bytecode Java 21, `jainslee-core` compile Java 25. Test dùng **wiring test** reflect inject. Upgrade Quarkus 3.17+ để chạy full runtime.
+Chưa — Quarkus 3.15.1 ASM chỉ đọc bytecode Java 21. Test dùng wiring test boot container + HTTP RA trực tiếp. Upgrade Quarkus 3.17+ cho full runtime trên Java 25.
 
 ### Q: Khác gì `example-embedded-j25` vs `example-quarkus`?
 
 | | embedded-j25 | quarkus |
 |---|-------------|---------|
-| Entry | `EmbeddedUssdMain.main()` | Quarkus bootstrap |
+| Entry | `EmbeddedUssdMain.main()` | `UssdDemoBootstrap` + CDI |
 | DI | Constructor / static | CDI `@Inject` |
-| HTTP | JDK HttpServer | JAX-RS |
-| SBB reach runtime | `EmbeddedUssdMain.runtime()` | Constructor `UssdDemoRuntime` |
-| SBB id | Global (`Ss7UssdIngress`) | Per-session (`Ss7UssdIngress/{id}`) |
-| Business logic | **Giống nhau** (events, flow) | **Giống nhau** |
+| HTTP RA port | **8082** | **8080** |
+| Business flow | **Giống nhau** (3 SBB, 2 RA, 5 events) | **Giống nhau** |
 
 ---
 
 ## Sơ đồ tổng thể (1 trang)
 
 ```
-                    ┌──────────────────────────────────────┐
-  Simulator/Client  │         HOST APP (Quarkus)           │
-       HTTP POST    │  UssdDemoResource                    │
-  ─────────────────►│       │                              │
-                    │       ▼                              │
-                    │  UssdDemoRuntime (BRIDGE)            │
-                    │       │ beginSession()               │
-                    │       │ routeEvent()                   │
-                    │       ▼                              │
-                    │  ┌────────────────────────────────┐  │
-                    │  │ adapter-quarkus / @Produces    │  │
-                    │  │ MicroSleeContainer             │  │
-                    │  └──────────────┬─────────────────┘  │
-                    │                 │                    │
-                    │  ┌──────────────▼─────────────────┐  │
-                    │  │ jainslee-core                  │  │
-                    │  │ EventRouter (Disruptor)        │  │
-                    │  │   → Ss7UssdIngressSbb.onEvent  │  │
-                    │  │   → GrpcBackendSbb.onEvent     │  │
-                    │  └──────────────┬─────────────────┘  │
-                    │                 │ completeSession    │
-                    │                 ▼                    │
-                    │  UssdCallbackDispatcher ──POST──► Client
-                    └──────────────────────────────────────┘
+  ussdgw-simulator                grpc-simulator
+  (HTTP client)                   (gRPC AS :9090)
+       │                                ▲
+       │ POST :8080                     │ ResolveMenu
+       ▼                                │
+┌──────────────────────────────────────────────────────────┐
+│  Quarkus process                                         │
+│                                                          │
+│  UssdDemoBootstrap ──start──► MicroSleeContainer         │
+│         │                                                │
+│         ├── HttpIngressResourceAdaptor (HTTP RA)         │
+│         │        │ beginUssdSession()                    │
+│         │        ▼                                       │
+│         │   EventRouter ──► HttpServerSbb                │
+│         │                      │                         │
+│         │                      ▼                         │
+│         │                 Ss7UssdIngressSbb (CMP)        │
+│         │                      │                         │
+│         ├── GrpcMenuResourceAdaptor ◄── requestMenu()    │
+│         │        │                                       │
+│         │        └──► GrpcClientSbb (child observe)      │
+│         │                                                │
+│         └── UssdCallbackDispatcher ──POST──► simulator   │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-*Tài liệu này mô tả code tại branch `micro-jainslee` v1.1.0. Cập nhật: 2026-06-27.*
+*Tài liệu này mô tả code tại branch `micro-jainslee` v1.1.0 — kiến trúc RA-based USSD demo. Cập nhật: 2026-06-28.*

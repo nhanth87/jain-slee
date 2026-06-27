@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example.ussddemo</groupId>
+    <artifactId>example-spring</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>micro-jainslee example :: USSD Spring Boot (jainslee-spring-boot-starter)</name>
+    <description>Spring Boot 3 app that integrates micro-jainslee via the
+        in-tree com.microjainslee:jainslee-spring-boot-starter. The
+        MicroSleeContainer is built by the Spring Boot auto-configuration
+        and exposed as a regular @Bean; SBBs and the REST controller
+        inject it via @Autowired.</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!--
+             Spring Boot 3.3.0 + Java 25 caveat: Spring Boot 3.3.0 (the
+             version this starter is pinned to) supports Java 17+ as a
+             target. The starter pom says source=25/target=25, but
+             Spring Boot 3.4+ is needed for Java 25 as the *minimum
+             source level*. For the test path we keep <release>21
+             (Java 21 bytecode) to match what Spring Boot 3.3.0's
+             bytecode reader can parse. The runtime path is the same:
+             `mvn spring-boot:run` boots Spring Boot with the auto-config.
+        -->
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <maven.compiler.release>21</maven.compiler.release>
+        <spring-boot.version>3.3.0</spring-boot.version>
+        <microjainslee.version>1.1.0</microjainslee.version>
+        <surefire.version>3.5.4</surefire.version>
+        <log4j.version>2.23.1</log4j.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- Spring Boot web + auto-config -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-log4j2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JBoss Logging for the @SbbAnnotation loggers used by
+             our SBBs. Spring Boot's log4j2 starter doesn't pull it in. -->
+        <dependency>
+            <groupId>org.jboss.logging</groupId>
+            <artifactId>jboss-logging</artifactId>
+            <version>3.6.1.Final</version>
+        </dependency>
+        <!-- Jakarta annotation API for @PreDestroy in the dispatcher. -->
+        <dependency>
+            <groupId>jakarta.annotation</groupId>
+            <artifactId>jakarta.annotation-api</artifactId>
+            <version>2.1.1</version>
+        </dependency>
+
+        <!-- micro-jainslee runtime + Spring Boot starter -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-core</artifactId>
+            <version>${microjainslee.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-api</artifactId>
+            <version>${microjainslee.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-apt</artifactId>
+            <version>${microjainslee.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <!-- THE spring-boot starter that wires MicroSleeContainer,
+             EventRouter, TimerPort, InMemoryActivityContextNamingFacility
+             as Spring beans, plus a SmartLifecycle to start/stop the
+             container with the Spring context. -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-spring-boot-starter</artifactId>
+            <version>${microjainslee.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>21</release>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>com.microjainslee</groupId>
+                            <artifactId>jainslee-api</artifactId>
+                            <version>${microjainslee.version}</version>
+                        </path>
+                        <path>
+                            <groupId>com.microjainslee</groupId>
+                            <artifactId>jainslee-apt</artifactId>
+                            <version>${microjainslee.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.apache.logging.log4j</groupId>
+                            <artifactId>log4j-api</artifactId>
+                            <version>${log4j.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.apache.logging.log4j</groupId>
+                            <artifactId>log4j-core</artifactId>
+                            <version>${log4j.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${surefire.version}</version>
+                <configuration>
+                    <argLine>-Xmx512m -Dlog4j2.configurationFile=log4j2-test.xml</argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

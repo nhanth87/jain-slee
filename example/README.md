@@ -7,7 +7,8 @@ This directory contains runnable sample applications that show how to embed
 |---------|-------------|
 | [`example-embedded-j25/`](example-embedded-j25/) | **Plain Java 25** app that embeds `jainslee-core` directly (no Quarkus, no Spring). Uses the JDK's built-in `com.sun.net.httpserver.HttpServer` for the REST front-end. Demonstrates that micro-jainslee can run inside any JVM. |
 | [`example-quarkus/`](example-quarkus/) | **Quarkus 3** REST app that integrates micro-jainslee via the in-tree `com.microjainslee:adapter-quarkus` CDI extension. SBBs, REST resources, and facilities are all `@Inject`-driven. |
-| [`ussdgw-simulator/`](ussdgw-simulator/) | Standalone CLI JARs that simulate the USSD gateway firing SS7 USSD begin into either example. Two single-session entry points (`Ss7UssdSimulatorMain` + `HttpClientRaStyleMain`) plus `VirtualThreadUssdHammerMain` for load testing. All three use the callback pattern (1 outbound request, zero polling). |
+| [`example-spring/`](example-spring/) | **Spring Boot 3** app that integrates micro-jainslee via the in-tree `com.microjainslee:jainslee-spring-boot-starter`. SBBs, REST resources, and facilities are all `@Autowired`-driven. The starter exposes `MicroSleeContainer` as a Spring bean and uses `SmartLifecycle` to start/stop the container with the Spring context. |
+| [`ussdgw-simulator/`](ussdgw-simulator/) | Standalone CLI JARs that simulate the USSD gateway firing SS7 USSD begin into any of the three examples. Two single-session entry points (`Ss7UssdSimulatorMain` + `HttpClientRaStyleMain`) plus `VirtualThreadUssdHammerMain` for load testing. All three use the callback pattern (1 outbound request, zero polling). |
 
 ## Scenario
 
@@ -149,6 +150,66 @@ into the production classes (`UssdDemoRuntime`, `UssdSessionStore`,
 `GrpcBackendSbb`) and exercises the same callback + polling flows
 without booting Quarkus (see the Java 25 / Quarkus 3.15.1 note above).
 
+## 3b. Run the Spring Boot example
+
+```bash
+cd example/example-spring
+mvn -B -ntp package       # see note below
+java -jar target/example-spring-1.0.0-SNAPSHOT.jar
+```
+
+The Spring module uses `spring-boot-starter-web` (Spring MVC) +
+`spring-boot-starter-log4j2`. The `jainslee-spring-boot-starter`
+auto-configures a `MicroSleeContainer` bean and a `SmartLifecycle`
+that starts/stops the container with the Spring context. SBBs, the
+REST resource (`UssdDemoResource`), and the service layer
+(`UssdDemoRuntime`, `UssdSessionStore`, `UssdCallbackDispatcher`)
+are all `@Autowired`-wired. Configuration goes through
+`application.properties`:
+
+```properties
+# microjainslee configuration (consumed by MicroJainsleeProperties)
+microjainslee.event-router.buffer-size=2048
+microjainslee.event-router.prefer-virtual-threads=true
+microjainslee.sbb-pool.min=16
+microjainslee.sbb-pool.max=4096
+
+# Mock gRPC latency (consumed by MockGrpcMenuClient @Value)
+ussd.demo.grpc.latency-ms=10
+```
+
+> **Java 25 / Spring Boot 3.3.0 note:** Spring Boot 3.3.0 (the version
+> `jainslee-spring-boot-starter` is pinned to) supports Java 17+ as a
+> target, but its bytecode reader can parse class files up to Java 21
+> (v65). For now, the example uses a wiring test (no
+> `@SpringBootTest`) that exercises the production classes by hand,
+> without booting the Spring runtime. The project pom uses
+> `<release>21</release>` for the example sources so they fit under
+> that limit; upgrade to Spring Boot 3.4+ and remove the override to
+> use the full Spring runtime with Java 25.
+
+### Manual curl test (Spring Boot)
+
+```bash
+# Same flow as embedded / Quarkus, default port 8080:
+curl -s -X POST 'http://127.0.0.1:8080/api/ussd/begin-callback?callbackUrl=http://127.0.0.1:9999/cb' \
+  -H 'Content-Type: application/json' \
+  -d '{"msisdn":"251911000001","ussdString":"*123#"}'
+```
+
+### Run Spring Boot integration test
+
+```bash
+cd example/example-spring
+mvn -B -ntp test
+```
+
+Expected: 2 tests, 0 failures, 0 errors. The wiring test reflects
+into the production classes (`UssdDemoRuntime`, `UssdSessionStore`,
+`UssdCallbackDispatcher`, `MockGrpcMenuClient`, `Ss7UssdIngressSbb`,
+`GrpcBackendSbb`) and exercises the same callback + polling flows
+without booting Spring (see the Java 25 / Spring Boot 3.3.0 note above).
+
 ## 4. Run the USSD gateway simulator JARs
 
 In a third terminal (while one of the example servers is running):
@@ -241,9 +302,52 @@ example/
 |  |  +- du/UssdGatewayDemoDu.java
 |  +- src/test/java/.../QuarkusUssdSmokeTest.java
 |
++- example-spring/            # Spring Boot 3, jainslee-spring-boot-starter
+|  +- pom.xml
+|  +- src/main/java/com/example/ussddemo/spring/
+|  |  +- config/UssdDemoResource.java      # @RestController
+|  |  +- service/UssdDemoRuntime.java       # @Service bridge
+|  |  +- service/UssdSessionStore.java
+|  |  +- service/UssdCallbackDispatcher.java
+|  |  +- grpc/MockGrpcMenuClient.java      # @Value
+|  |  +- sbbs/Ss7UssdIngressSbb.java
+|  |  +- sbbs/GrpcBackendSbb.java
+|  |  +- rest/UssdBeginRequest.java
+|  |  +- rest/UssdSessionView.java
+|  |  +- events/*.java
+|  |  +- du/UssdGatewayDemoDu.java
+|  +- src/main/resources/application.properties
+|  +- src/test/java/.../SpringUssdSmokeTest.java
+|
 +- ussdgw-simulator/          # Standalone CLI callers
    +- ...
 ```
+
+## How the three examples differ
+
+The three modules share the same business logic (events, SBBs, services,
+gRPC mock) but differ only in how they wire `MicroSleeContainer` into
+the host runtime:
+
+| Aspect              | example-embedded-j25             | example-quarkus                          | example-spring                            |
+|---------------------|-----------------------------------|------------------------------------------|-------------------------------------------|
+| Host framework      | none (plain Java 25)              | Quarkus 3.15.1                           | Spring Boot 3.3.0                          |
+| DI mechanism        | direct method calls               | `@Inject` / CDI / ARC                    | `@Autowired`                               |
+| Container boot      | `MicroSleeContainer.start()` in `EmbeddedUssdMain` | Quarkus `SyntheticBeanBuildItem` + recorder | `SmartLifecycle` from starter           |
+| Container config    | builder (programmatic)            | `MicroJainsleeBuildConfig` (build-time)  | `MicroJainsleeProperties` (`@ConfigurationProperties`) |
+| SBB auto-deploy     | none                              | `META-INF/microjainslee/sbb-index.properties` (APT) | same APT                                |
+| REST front-end      | `com.sun.net.httpserver` (JDK)    | `quarkus-rest` (JAX-RS)                   | `spring-boot-starter-web` (Spring MVC)     |
+| Per-session SBB IDs | per-session unique IDs (avoid APT collision) | per-session unique IDs (same)        | per-session unique IDs (same)              |
+| Test approach       | plain JUnit 4 (main thread)      | JUnit 5 wiring test (no `@QuarkusTest`) | JUnit 5 wiring test (no `@SpringBootTest`) |
+| Tests               | 2 pass                            | 2 pass                                   | 2 pass                                    |
+| Runtime path        | `java -jar target/example-embedded-j25.jar` | `mvn quarkus:dev` / `quarkus:run` | `mvn spring-boot:run` / `java -jar ...` |
+| Run anywhere?       | any JVM (no deps)                  | needs Quarkus 3.17+ for Java 25 path     | needs Spring Boot 3.4+ for Java 25 path    |
+
+The wiring tests in all three cases reflect the production classes
+to validate the integration without booting the host framework.
+Once you upgrade to a host-framework version that supports Java 25
+class files, drop the wiring test and use the real
+`@QuarkusTest` / `@SpringBootTest` annotations.
 
 ## Production note
 

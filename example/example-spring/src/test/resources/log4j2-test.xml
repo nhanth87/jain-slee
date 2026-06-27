@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="console" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} %-5p [%t] %c{1.} - %m%n"/>
+        </Console>
+    </Appenders>
+    <Loggers>
+        <Logger name="com.microjainslee" level="WARN"/>
+        <Logger name="com.example.ussddemo" level="INFO"/>
+        <Logger name="org.springframework" level="WARN"/>
+        <Root level="WARN">
+            <AppenderRef ref="console"/>
+        </Root>
+    </Loggers>
+</Configuration>

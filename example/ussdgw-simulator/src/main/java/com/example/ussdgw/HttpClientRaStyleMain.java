@@ -33,8 +33,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * HttpClient RA-style simulator — the modern equivalent of
- * {@link Ss7UssdSimulatorMain} (which polls). This CLI:
+ * HttpClient RA-style simulator. Sibling of
+ * {@link Ss7UssdSimulatorMain} (same callback flow, different log
+ * prefix). This CLI:
  *
  * <ol>
  *   <li>Boots an embedded {@link HttpServer} on a random free port to act as

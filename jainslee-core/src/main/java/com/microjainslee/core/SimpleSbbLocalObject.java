@@ -48,6 +48,7 @@ public final class SimpleSbbLocalObject implements SbbLocalObject {
     private final SbbEntityState entityState = new SbbEntityState();
     private final Map<String, ChildRelationImpl> childRelations =
             new ConcurrentHashMap<String, ChildRelationImpl>();
+    private final boolean pooledEntity;
     private volatile int priority;
     private volatile boolean removed;
 
@@ -57,6 +58,11 @@ public final class SimpleSbbLocalObject implements SbbLocalObject {
 
     public SimpleSbbLocalObject(SbbID sbbID, Sbb sbb, VirtualThreadSbbEntityPool entityPool,
             RemovalListener removalListener, int priority) {
+        this(sbbID, sbb, entityPool, removalListener, priority, false);
+    }
+
+    public SimpleSbbLocalObject(SbbID sbbID, Sbb sbb, VirtualThreadSbbEntityPool entityPool,
+            RemovalListener removalListener, int priority, boolean pooledEntity) {
         if (sbbID == null || sbb == null) {
             throw new IllegalArgumentException("sbbID and sbb are required");
         }
@@ -65,6 +71,11 @@ public final class SimpleSbbLocalObject implements SbbLocalObject {
         this.entityPool = entityPool;
         this.removalListener = removalListener;
         this.priority = priority;
+        this.pooledEntity = pooledEntity;
+    }
+
+    public boolean isPooledEntity() {
+        return pooledEntity;
     }
 
     @Override
@@ -140,7 +151,9 @@ public final class SimpleSbbLocalObject implements SbbLocalObject {
                 removed = true;
                 entityState.markRemoved();
                 entityState.transitionTo(SbbLifecycleManager.State.DOES_NOT_EXIST);
-                sbb.sbbRemove();
+                if (!pooledEntity) {
+                    sbb.sbbRemove();
+                }
                 try {
                     sbb.unsetSbbContext();
                 } catch (RuntimeException ignored) {

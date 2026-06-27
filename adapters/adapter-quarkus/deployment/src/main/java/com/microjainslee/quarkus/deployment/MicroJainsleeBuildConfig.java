@@ -66,6 +66,21 @@ public interface MicroJainsleeBuildConfig {
     @WithDefault("true")
     boolean sbbPerVirtualThread();
 
+    @WithName("sbb-type-pool-min-idle")
+    @WithDefault("0")
+    int sbbTypePoolMinIdle();
+
+    @WithName("event-delivery")
+    @WithDefault("sync")
+    String eventDelivery();
+
+    /**
+     * Register discovered {@code @SbbAnnotation} types with the container pool at startup.
+     */
+    @WithName("deployment.register-sbb-types")
+    @WithDefault("true")
+    boolean registerSbbTypes();
+
     /**
      * Whether the deployment processor should scan for {@code @Sbb}-annotated classes and
      * register synthetic beans for them. Disable for very large code bases where scanning

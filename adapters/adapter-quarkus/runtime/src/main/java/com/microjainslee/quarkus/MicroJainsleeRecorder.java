@@ -79,6 +79,42 @@ public class MicroJainsleeRecorder {
         }
     }
 
+    /**
+     * Register pooled SBB types discovered at build time. Uses no-arg constructor
+     * for each class; applications with CDI-managed SBBs should also call
+     * {@code registerSbbType} manually with an Arc supplier if needed.
+     */
+    public void registerSbbTypes(java.util.List<String> classNames) {
+        if (container == null || classNames == null || classNames.isEmpty()) {
+            return;
+        }
+        for (String fqn : classNames) {
+            try {
+                Class<?> clazz = Class.forName(fqn);
+                if (!com.microjainslee.api.Sbb.class.isAssignableFrom(clazz)) {
+                    LOG.warn("Skipping non-Sbb type {}", fqn);
+                    continue;
+                }
+                @SuppressWarnings("unchecked")
+                Class<? extends com.microjainslee.api.Sbb> sbbClass =
+                        (Class<? extends com.microjainslee.api.Sbb>) clazz;
+                container.registerSbbType(sbbClass, new java.util.function.Supplier<com.microjainslee.api.Sbb>() {
+                    @Override
+                    public com.microjainslee.api.Sbb get() {
+                        try {
+                            return sbbClass.getDeclaredConstructor().newInstance();
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException("Cannot instantiate SBB " + fqn, e);
+                        }
+                    }
+                });
+                LOG.info("Registered pooled SBB type {}", fqn);
+            } catch (ClassNotFoundException e) {
+                LOG.warn("Failed to load SBB class {}: {}", fqn, e.getMessage());
+            }
+        }
+    }
+
     public RuntimeValue<MicroSleeContainer> containerRuntimeValue(MicroSleeConfiguration cfg) {
         return new RuntimeValue<MicroSleeContainer>(container);
     }

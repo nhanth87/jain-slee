@@ -19,11 +19,15 @@ public final class MicroSleeConfiguration {
     private static final int DEFAULT_SBB_POOL_MIN = 16;
     private static final int DEFAULT_SBB_POOL_MAX = 1024;
 
+    private static final int DEFAULT_SBB_TYPE_POOL_MIN_IDLE = 0;
+
     private final int eventRouterBufferSize;
     private final boolean preferVirtualThreads;
     private final int sbbPoolMin;
     private final int sbbPoolMax;
     private final boolean sbbPerVirtualThread;
+    private final int sbbTypePoolMinIdle;
+    private final EventDeliveryMode eventDeliveryMode;
 
     private MicroSleeConfiguration(Builder builder) {
         this.eventRouterBufferSize = builder.eventRouterBufferSize;
@@ -31,6 +35,8 @@ public final class MicroSleeConfiguration {
         this.sbbPoolMin = builder.sbbPoolMin;
         this.sbbPoolMax = builder.sbbPoolMax;
         this.sbbPerVirtualThread = builder.sbbPerVirtualThread;
+        this.sbbTypePoolMinIdle = builder.sbbTypePoolMinIdle;
+        this.eventDeliveryMode = builder.eventDeliveryMode;
     }
 
     public static Builder builder() {
@@ -61,12 +67,22 @@ public final class MicroSleeConfiguration {
         return sbbPerVirtualThread;
     }
 
+    public int getSbbTypePoolMinIdle() {
+        return sbbTypePoolMinIdle;
+    }
+
+    public EventDeliveryMode getEventDeliveryMode() {
+        return eventDeliveryMode;
+    }
+
     public static final class Builder {
         private int eventRouterBufferSize = DEFAULT_RING_BUFFER_SIZE;
         private boolean preferVirtualThreads = true;
         private int sbbPoolMin = DEFAULT_SBB_POOL_MIN;
         private int sbbPoolMax = DEFAULT_SBB_POOL_MAX;
         private boolean sbbPerVirtualThread = true;
+        private int sbbTypePoolMinIdle = DEFAULT_SBB_TYPE_POOL_MIN_IDLE;
+        private EventDeliveryMode eventDeliveryMode = EventDeliveryMode.SYNC;
 
         public Builder eventRouterBufferSize(int eventRouterBufferSize) {
             if (eventRouterBufferSize <= 0 || Integer.bitCount(eventRouterBufferSize) != 1) {
@@ -97,6 +113,18 @@ public final class MicroSleeConfiguration {
             return this;
         }
 
+        public Builder sbbTypePoolMinIdle(int sbbTypePoolMinIdle) {
+            this.sbbTypePoolMinIdle = sbbTypePoolMinIdle;
+            return this;
+        }
+
+        public Builder eventDeliveryMode(EventDeliveryMode eventDeliveryMode) {
+            if (eventDeliveryMode != null) {
+                this.eventDeliveryMode = eventDeliveryMode;
+            }
+            return this;
+        }
+
         public MicroSleeConfiguration build() {
             if (sbbPoolMin < 0) {
                 throw new IllegalArgumentException("sbbPoolMin must be >= 0 (was " + sbbPoolMin + ")");
@@ -107,6 +135,10 @@ public final class MicroSleeConfiguration {
             if (sbbPoolMin > sbbPoolMax) {
                 throw new IllegalArgumentException(
                         "sbbPoolMin (" + sbbPoolMin + ") must be <= sbbPoolMax (" + sbbPoolMax + ")");
+            }
+            if (sbbTypePoolMinIdle < 0) {
+                throw new IllegalArgumentException(
+                        "sbbTypePoolMinIdle must be >= 0 (was " + sbbTypePoolMinIdle + ")");
             }
             return new MicroSleeConfiguration(this);
         }

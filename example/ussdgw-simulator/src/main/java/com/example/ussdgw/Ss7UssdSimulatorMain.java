@@ -36,8 +36,12 @@ import java.util.regex.Pattern;
  * Standalone CLI that pretends to be the USSD gateway SS7 stack. It
  * issues {@code POST /api/ussd/begin-callback} with a caller-supplied
  * {@code callbackUrl}, suspends on a {@link CountDownLatch} hosted by an
- * embedded {@link HttpServer}, and prints the body the Quarkus demo
+ * embedded {@link HttpServer}, and prints the body the example server
  * pushes back once the SLEE pipeline finishes.
+ *
+ * <p>No dependency on example modules — pure JDK HTTP client + callback
+ * receiver. Example server ports: Quarkus {@code 8080}, Spring
+ * {@code 8081}, embedded-j25 {@code 8082}.
  *
  * <p>This is the callback equivalent of the legacy polling flow (which
  * fired {@code POST /begin} then looped on {@code GET /sessions/{id}}).
@@ -54,7 +58,15 @@ public final class Ss7UssdSimulatorMain {
     }
 
     public static void main(String[] args) throws Exception {
-        String baseUrl = args.length > 0 ? args[0] : "http://127.0.0.1:8080";
+        if (args.length == 0 || "-h".equals(args[0]) || "--help".equals(args[0])) {
+            System.out.println("Usage: Ss7UssdSimulatorMain <baseUrl> [msisdn] [ussdString]");
+            System.out.println("  baseUrl examples:");
+            System.out.println("    http://127.0.0.1:8080  (example-quarkus)");
+            System.out.println("    http://127.0.0.1:8081  (example-spring)");
+            System.out.println("    http://127.0.0.1:8082  (example-embedded-j25)");
+            System.exit(args.length == 0 ? 1 : 0);
+        }
+        String baseUrl = args[0];
         String msisdn = args.length > 1 ? args[1] : "251911000001";
         String ussd = args.length > 2 ? args[2] : "*123#";
 

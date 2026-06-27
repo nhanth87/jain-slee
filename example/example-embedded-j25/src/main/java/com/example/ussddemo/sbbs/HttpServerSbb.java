@@ -1,0 +1,112 @@
+/*
+ * micro-jainslee 1.1.0 -- example application (example-embedded-j25)
+ */
+
+package com.example.ussddemo.sbbs;
+
+import com.example.ussddemo.embedded.EmbeddedUssdMain;
+import com.example.ussddemo.events.HttpUssdBeginEvent;
+import com.example.ussddemo.events.Ss7UssdBeginEvent;
+import com.example.ussddemo.events.UssdResponseEvent;
+import com.microjainslee.api.ActivityContextInterface;
+import com.microjainslee.api.Sbb;
+import com.microjainslee.api.SbbLocalObject;
+import com.microjainslee.api.SleeEvent;
+import com.microjainslee.api.SleeEventHandler;
+import com.microjainslee.core.MicroSleeContainer;
+import com.microjainslee.core.SbbLifecycleManager;
+import com.microjainslee.core.SimpleSbbLocalObject;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+/**
+ * GW-facing HTTP entry SBB. Receives {@link HttpUssdBeginEvent} from the
+ * HTTP ingress RA, performs subscriber profile lookup, acquires the SS7
+ * ingress entity for the session, and routes {@link Ss7UssdBeginEvent}.
+ *
+ * <p>Registered at runtime via {@code registerSbbType} — not APT auto-deployed.
+ */
+public final class HttpServerSbb implements Sbb, SleeEventHandler {
+
+    private static final Logger LOG = LogManager.getLogger(HttpServerSbb.class);
+
+    private volatile SbbLocalObject self;
+
+    public void bindSelf(SbbLocalObject self) {
+        this.self = self;
+    }
+
+    @Override
+    public void sbbCreate() {
+        LOG.debug("HttpServerSbb created");
+    }
+
+    @Override
+    public void sbbActivate() {
+        LOG.debug("HttpServerSbb activated");
+    }
+
+    @Override
+    public void sbbPassivate() {
+    }
+
+    @Override
+    public void sbbRemove() {
+    }
+
+    @Override
+    public void onEvent(SleeEvent event, ActivityContextInterface aci) {
+        if (event instanceof HttpUssdBeginEvent) {
+            onHttpBegin((HttpUssdBeginEvent) event, aci);
+        } else if (event instanceof UssdResponseEvent) {
+            onUssdResponse((UssdResponseEvent) event, aci);
+        }
+    }
+
+    private void onHttpBegin(HttpUssdBeginEvent event, ActivityContextInterface aci) {
+        try {
+            String tier = lookupTier(event.getMsisdn());
+        LOG.info("[HTTP-server] begin session={} msisdn={} tier={}",
+                event.getSessionId(), event.getMsisdn(), tier);
+
+        MicroSleeContainer container = EmbeddedUssdMain.container();
+        String ss7Id = EmbeddedUssdMain.bootstrap().ss7EntityId(event.getSessionId());
+        SimpleSbbLocalObject ss7Lo = container.acquireEntity(ss7Id, Ss7UssdIngressSbb.class);
+        ss7Lo.setPriority(10);
+        Ss7UssdIngressSbb ss7Sbb = (Ss7UssdIngressSbb) ss7Lo.getSbb();
+        ss7Sbb.bindSelf(ss7Lo);
+        ss7Sbb.initCmp(event.getSessionId(), event.getMsisdn(), tier);
+        container.attach(event.getSessionId(), ss7Lo);
+        waitForActivation(ss7Lo);
+
+        container.routeEvent(new Ss7UssdBeginEvent(
+                event.getSessionId(), event.getMsisdn(), event.getUssdString(), tier), aci);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOG.error("Interrupted while activating SS7 ingress for session={}", event.getSessionId());
+        } catch (RuntimeException e) {
+            LOG.error("HTTP begin handling failed for session={}", event.getSessionId(), e);
+            EmbeddedUssdMain.runtime().failSession(event.getSessionId(), e.getMessage());
+        }
+    }
+
+    private void onUssdResponse(UssdResponseEvent event, ActivityContextInterface aci) {
+        LOG.info("[HTTP-server] USSD response ready session={}", event.getSessionId());
+        EmbeddedUssdMain.runtime().completeSession(event.getSessionId(), event.getResponseText());
+        EmbeddedUssdMain.bootstrap().releaseSession(event.getSessionId());
+    }
+
+    private static String lookupTier(String msisdn) {
+        return EmbeddedUssdMain.bootstrap().tierFor(msisdn);
+    }
+
+    private static void waitForActivation(SimpleSbbLocalObject lo) throws InterruptedException {
+        for (int i = 0; i < 50; i++) {
+            if (lo.getEntityState().getLifecycleState() == SbbLifecycleManager.State.READY) {
+                return;
+            }
+            Thread.sleep(10L);
+        }
+    }
+}

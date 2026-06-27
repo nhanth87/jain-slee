@@ -388,8 +388,11 @@ microjainslee.prefer-virtual-threads=true
 microjainslee.sbb-pool-min=64
 microjainslee.sbb-pool-max=100000
 microjainslee.sbb-per-virtual-thread=true
+microjainslee.sbb-type-pool-min-idle=512
+microjainslee.event-delivery=async-commit
 
-# Optional @SbbAnnotation classpath scan (default: enabled)
+# Auto-register @SbbAnnotation types into SbbTypePool (default: enabled)
+microjainslee.deployment.register-sbb-types=true
 microjainslee.deployment.scan.enabled=true
 microjainslee.deployment.scan.includes=com.example.ussd
 ```
@@ -399,11 +402,22 @@ microjainslee.deployment.scan.includes=com.example.ussd
 ## Resource Adaptors (RA)
 
 RAs in JAIN SLEE 1.1 are how external events (SIP messages, HTTP requests,
-diameter answers, …) enter the SLEE. The micro-jainslee adapter layer keeps
-them tiny: an RA just needs to call `MicroSleeContainer` to create ACIs,
-attach SBBs, and route events.
+diameter answers, …) enter the SLEE. micro-jainslee exposes
+{@link com.microjainslee.api.SleeEndpointPort} on {@code ResourceAdaptorContext}
+so RAs fire events without blocking the transport thread.
 
-### Minimal RA skeleton
+### HTTP callback RA (`ra-connectors`)
+
+```java
+RaBootstrapContextImpl ctx = RaBootstrap.activate(
+        container, HttpCallbackResourceAdaptor.class, "http-callback");
+HttpCallbackResourceAdaptor ra = (HttpCallbackResourceAdaptor) ctx.getResourceAdaptor();
+ra.onHttpBegin(sessionId, new UssdBeginEvent(...));
+// ...
+ra.onHttpEnd(sessionId);
+```
+
+### Minimal RA skeleton (direct container — legacy / tests)
 
 ```java
 public class SipResourceAdaptor implements ResourceAdaptor {
@@ -447,10 +461,27 @@ exercise the `ActivityContextInterface` contract without the real pool.
 
 ## SBB lifecycle
 
+### Pooled entities (recommended for production throughput)
+
+```java
+container.registerSbbType(UssdMenuSbb.class, () -> arcInstance(UssdMenuSbb.class));
+SbbLocalObject entity = container.acquireEntity(sessionId, UssdMenuSbb.class);
+container.attach(sessionId, entity);
+// ...
+container.releaseEntity(sessionId);  // returns SBB + VT slot to pool
+```
+
+`registerSbb(String, Sbb)` remains for backward compatibility. When the SBB
+class was registered via `registerSbbType`, the container borrows from
+`SbbTypePool` automatically.
+
+### Entity slot pool (virtual threads)
+
 The `VirtualThreadSbbEntityPool` enforces the full **create → pending → cancel**
 lifecycle the SLEE spec mandates for SBB entities. Every entity has exactly
 one parked virtual thread; events queued through `entity.submit(Runnable)`
-always land on that thread in submission order.
+always land on that thread in submission order. Slots are **recycled** when
+an entity is released — the VT is not torn down per session.
 
 ### Create
 
@@ -736,11 +767,11 @@ mvn -pl jainslee-core test -Dtest=SbbEntityPoolStressTest#create_100k_succeeds
 # All three stress scenarios in one go
 mvn -pl jainslee-core test -Dtest=SbbEntityPoolStressTest
 
-# Just Spring Boot starter
-mvn -pl jainslee-spring-boot-starter test
+# Just Spring Boot adapter
+mvn -pl adapters/adapter-springboot test
 
 # Build everything except the legacy Mobicents container/
-mvn -pl 'jainslee-api,jainslee-core,jainslee-apt,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee,jainslee-spring-boot-starter,ra-connectors' -am test
+mvn -pl 'jainslee-api,jainslee-core,jainslee-apt,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee,adapters/adapter-springboot,ra-connectors' -am test
 ```
 
 ### Module-by-module commands
@@ -752,8 +783,8 @@ mvn -pl jainslee-core test
 #   SbbEntityPoolStressTest:         3/3
 #   MicroSleeContainerTest:          1/1
 
-# 2. Spring Boot 3 starter
-mvn -pl jainslee-spring-boot-starter test
+# 2. Spring Boot 3 adapter
+mvn -pl adapters/adapter-springboot test
 #   MicroJainsleeAutoConfigurationTest: 1/1
 
 # 3. Quarkus adapter
@@ -1001,7 +1032,7 @@ micro-jainslee/
 │   └── src/main/java/com/microjainslee/apt/MicroJainsleeAnnotationProcessor.java
 │   └── src/main/resources/META-INF/services/javax.annotation.processing.Processor
 │
-├── jainslee-spring-boot-starter/              ← Spring Boot 3 auto-config
+├── adapters/adapter-springboot/               ← Spring Boot 3 auto-config
 │   └── src/main/java/com/microjainslee/spring/
 │       ├── MicroJainsleeAutoConfiguration.java
 │       ├── MicroJainsleeProperties.java
@@ -1049,7 +1080,7 @@ table below before copying, modifying, or distributing any source.
 | `jainslee-api/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** (choose one) | Spec interfaces (`Sbb`, `TimerPort`, `ResourceAdaptor`, annotations) |
 | `jainslee-core/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | `MicroSleeContainer`, `EventRouter`, `VirtualThreadSbbEntityPool`, timer bridge |
 | `jainslee-apt/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Build-time `@SbbAnnotation` annotation processor |
-| `jainslee-spring-boot-starter/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Spring Boot 3 auto-configuration |
+| `adapters/adapter-springboot/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Spring Boot 3 auto-configuration |
 | `adapters/adapter-quarkus/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Quarkus 3 extension (deployment + runtime) |
 | `adapters/adapter-jakartaee/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Jakarta EE 9 EJB bootstrap |
 | `ra-connectors/` | Tran Nhan (2026) | **Dual: GPLv3 *or* Commercial** | Mock RA for tests |

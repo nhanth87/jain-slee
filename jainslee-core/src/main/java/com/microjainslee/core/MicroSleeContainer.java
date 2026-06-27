@@ -13,6 +13,7 @@ package com.microjainslee.core;
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.CreateException;
 import com.microjainslee.api.InitialEventSelector;
+import com.microjainslee.api.PoolableSbb;
 import com.microjainslee.api.ProfileFacility;
 import com.microjainslee.api.ResourceAdaptor;
 import com.microjainslee.api.Sbb;
@@ -48,9 +49,13 @@ public final class MicroSleeContainer {
     private final InMemoryActivityContextNamingFacility activityContextNamingFacility;
     private final EventRouter eventRouter;
     private final TimerPortImpl timerPort;
-    private VirtualThreadSbbEntityPool sbbEntityPool;
+    private volatile VirtualThreadSbbEntityPool sbbEntityPool;
     private final SbbObjectPool sbbObjectPool;
     private final ActivityContextPool aciPool;
+    private final SbbTypeRegistry sbbTypeRegistry;
+    private final EntityIdAllocator entityIdAllocator = new EntityIdAllocator();
+    private final ConcurrentHashMap<String, Class<? extends Sbb>> entityTypesById =
+            new ConcurrentHashMap<String, Class<? extends Sbb>>();
     private final ServiceRegistry serviceRegistry = new ServiceRegistry();
     private final InMemoryCmpFieldStore cmpFieldStore = new InMemoryCmpFieldStore();
     private final InMemoryProfileFacility profileFacility = new InMemoryProfileFacility();
@@ -74,9 +79,12 @@ public final class MicroSleeContainer {
         this.activityContextNamingFacility = new InMemoryActivityContextNamingFacility();
         this.eventRouter = new EventRouter(configuration.getEventRouterBufferSize(),
                 configuration.isPreferVirtualThreads(),
-                configuration.isSbbPerVirtualThread());
+                configuration.isSbbPerVirtualThread(),
+                configuration.getEventDeliveryMode());
         this.timerPort = TimerPortImpl.create(eventRouter);
         this.sbbEntityPool = newSbbEntityPool();
+        this.sbbTypeRegistry = new SbbTypeRegistry(sbbLifecycleManager,
+                configuration.getSbbPoolMax());
         this.eventRouter.bindSbbEntityPool(this.sbbEntityPool);
         this.eventRouter.bindTransactionSupport(timerPort.getBridge(),
                 new DefaultErrorHandlingPolicy(timerPort.getBridge()));
@@ -161,6 +169,7 @@ public final class MicroSleeContainer {
         eventRouter.shutdown();
         activityContextNamingFacility.clear();
         sbbs.clear();
+        entityTypesById.clear();
         CmpFieldStoreLocator.set(null);
         profileFacility.shutdown();
         state = State.STOPPED;
@@ -202,36 +211,82 @@ public final class MicroSleeContainer {
         if (sbbs.containsKey(id)) {
             return sbbs.get(id);
         }
+        if (sbb != null && sbbTypeRegistry.isRegistered(sbb.getClass())) {
+            @SuppressWarnings("unchecked")
+            Class<? extends Sbb> type = (Class<? extends Sbb>) sbb.getClass();
+            return acquireEntity(id, type, mask, serviceID);
+        }
+        return registerLegacySbb(id, sbb, mask, serviceID);
+    }
+
+    /**
+     * Register a pooled SBB type for {@link #acquireEntity(String, Class)}.
+     */
+    public void registerSbbType(Class<? extends Sbb> type, java.util.function.Supplier<Sbb> factory) {
+        registerSbbType(type, SbbTypePoolConfig.builder(factory)
+                .minIdle(configuration.getSbbTypePoolMinIdle())
+                .maxActive(configuration.getSbbPoolMax())
+                .build());
+    }
+
+    public void registerSbbType(Class<? extends Sbb> type, SbbTypePoolConfig config) {
+        if (type == null || config == null) {
+            throw new IllegalArgumentException("type and config are required");
+        }
+        sbbTypeRegistry.register(type, config);
+        LOG.info("Registered pooled SBB type {} (maxActive={})", type.getName(), config.getMaxActive());
+    }
+
+    public SimpleSbbLocalObject acquireEntity(String id, Class<? extends Sbb> type) {
+        return acquireEntity(id, type, EventMask.ACCEPT_ALL,
+                new ServiceID(id, "com.microjainslee", "1.0"));
+    }
+
+    public SimpleSbbLocalObject acquireEntity(String id, Class<? extends Sbb> type,
+            EventMask mask, ServiceID serviceID) {
+        if (state != State.STARTED) {
+            throw new IllegalStateException("Container must be started before acquiring SBB entities");
+        }
+        if (id == null || type == null) {
+            throw new IllegalArgumentException("id and type are required");
+        }
+        if (sbbs.containsKey(id)) {
+            return sbbs.get(id);
+        }
+        final SbbTypePool typePool = sbbTypeRegistry.require(type);
+        final EventMask effectiveMask = mask != null ? mask : typePool.getDefaultEventMask();
+        final Sbb sbb = typePool.borrow();
+        final boolean pooledReuse = typePool.isPooledReuse(sbb);
+        final long entityId = entityIdAllocator.allocate();
+        final VirtualThreadSbbEntityPool.SbbEntity entity =
+                sbbEntityPool.acquire(id, entityId, sbb);
+        final SbbID sbbID = new SbbID(id);
+        final SimpleSbbLocalObject localObject = buildLocalObject(
+                id, sbbID, sbb, entity, type, true, effectiveMask, serviceID);
+        entityTypesById.put(id, type);
+        activateEntity(id, serviceID, sbbID, localObject, entity, sbb, pooledReuse);
+        sbbs.put(id, localObject);
+        return localObject;
+    }
+
+    public void releaseEntity(String id) {
+        SimpleSbbLocalObject localObject = sbbs.get(id);
+        if (localObject != null && !localObject.isRemoved()) {
+            localObject.remove();
+        }
+    }
+
+    public SbbTypeRegistry getSbbTypeRegistry() {
+        return sbbTypeRegistry;
+    }
+
+    private SimpleSbbLocalObject registerLegacySbb(String id, Sbb sbb, EventMask mask,
+            ServiceID serviceID) {
         final EventMask effectiveMask = mask != null ? mask : EventMask.ACCEPT_ALL;
         final VirtualThreadSbbEntityPool.SbbEntity entity = sbbEntityPool.acquire(id, () -> sbb);
         final SbbID sbbID = new SbbID(id);
-        final SimpleSbbLocalObject localObject = new SimpleSbbLocalObject(
-                sbbID,
-                entity.getSbb(),
-                sbbEntityPool,
-                new SimpleSbbLocalObject.RemovalListener() {
-                    @Override
-                    public void onRemoved(SimpleSbbLocalObject removedObject) {
-                        detachFromAllActivityContexts(removedObject);
-                        sbbs.remove(id);
-                        sbbEntityPool.release(entity);
-                        // Persist any in-flight CMP mutations the SBB did
-                        // through CmpAccessorInvoker before sbbRemove ran,
-                        // then drop the persistent representation. CmpBackedSbb
-                        // subclasses can override cmpPersist() to flush custom
-                        // state into the store before we drop the entity.
-                        Sbb sbbInstance = removedObject.getSbb();
-                        if (sbbInstance instanceof CmpBackedSbb) {
-                            try {
-                                ((CmpBackedSbb) sbbInstance).cmpPersist();
-                            } catch (RuntimeException ignored) {
-                                // best effort
-                            }
-                        }
-                        cmpFieldStore.remove(id);
-                    }
-                },
-                0);
+        final SimpleSbbLocalObject localObject = buildLocalObject(
+                id, sbbID, entity.getSbb(), entity, null, false, effectiveMask, serviceID);
         // §8.6 — bind the event mask onto the entity's state BEFORE returning
         // to the caller, so any subsequent routeEvent() sees the filter.
         localObject.getEntityState().setEventMask(effectiveMask);
@@ -649,5 +704,130 @@ public final class MicroSleeContainer {
                 return createChildSbb(parentSbbId, childId, childSupplier);
             }
         };
+    }
+
+    /**
+     * Child-relation factory that acquires pooled entities for the given type
+     * when registered, otherwise falls back to legacy {@link #registerSbb}.
+     */
+    public ChildRelationFactory getChildRelationFactory(final Class<? extends Sbb> childType) {
+        if (childType == null) {
+            throw new IllegalArgumentException("childType is required");
+        }
+        return new ChildRelationFactory() {
+            @Override
+            public SbbLocalObject createChild(String parentSbbId) {
+                String childId = parentSbbId + ".child." + java.util.UUID.randomUUID();
+                if (sbbTypeRegistry.isRegistered(childType)) {
+                    return acquireEntity(childId, childType);
+                }
+                return createChildSbb(parentSbbId, childId, null);
+            }
+        };
+    }
+
+    private SimpleSbbLocalObject buildLocalObject(
+            final String id,
+            final SbbID sbbID,
+            final Sbb sbb,
+            final VirtualThreadSbbEntityPool.SbbEntity entity,
+            final Class<? extends Sbb> pooledType,
+            final boolean pooled,
+            final EventMask effectiveMask,
+            final ServiceID serviceID) {
+        final SimpleSbbLocalObject localObject = new SimpleSbbLocalObject(
+                sbbID,
+                sbb,
+                sbbEntityPool,
+                new SimpleSbbLocalObject.RemovalListener() {
+                    @Override
+                    public void onRemoved(SimpleSbbLocalObject removedObject) {
+                        detachFromAllActivityContexts(removedObject);
+                        sbbs.remove(id);
+                        entityTypesById.remove(id);
+                        Sbb sbbInstance = removedObject.getSbb();
+                        if (pooled && pooledType != null) {
+                            SbbTypePool typePool = sbbTypeRegistry.find(pooledType);
+                            if (typePool != null) {
+                                if (sbbInstance instanceof CmpBackedSbb) {
+                                    try {
+                                        ((CmpBackedSbb) sbbInstance).cmpPersist();
+                                    } catch (RuntimeException ignored) {
+                                        // best effort
+                                    }
+                                }
+                                sbbLifecycleManager.passivate(sbbInstance,
+                                        removedObject.getEntityState().getCmpFields());
+                                if (sbbInstance instanceof PoolableSbb) {
+                                    try {
+                                        ((PoolableSbb) sbbInstance).resetForReuse(id);
+                                    } catch (RuntimeException ignored) {
+                                        // best effort
+                                    }
+                                }
+                                typePool.release(sbbInstance);
+                            }
+                        } else if (sbbInstance instanceof CmpBackedSbb) {
+                            try {
+                                ((CmpBackedSbb) sbbInstance).cmpPersist();
+                            } catch (RuntimeException ignored) {
+                                // best effort
+                            }
+                        }
+                        sbbEntityPool.release(entity);
+                        cmpFieldStore.remove(id);
+                    }
+                },
+                0,
+                pooled);
+        localObject.getEntityState().setEventMask(effectiveMask);
+        if (sbb instanceof CmpBackedSbb) {
+            CmpBackedSbb backed = (CmpBackedSbb) sbb;
+            backed.setSbbEntityId(id);
+            backed.setCmpFieldStore(cmpFieldStore);
+        }
+        return localObject;
+    }
+
+    private void activateEntity(final String id, final ServiceID serviceID, final SbbID sbbID,
+            final SimpleSbbLocalObject localObject,
+            final VirtualThreadSbbEntityPool.SbbEntity entity,
+            final Sbb sbbInstance, final boolean pooledReuse) {
+        entity.submit(new Runnable() {
+            @Override
+            public void run() {
+                SimpleSbbContext ctx = new SimpleSbbContext(serviceID, localObject, sbbID, timerPort,
+                        activityContextNamingFacility, profileFacility, alarmFacility);
+                try {
+                    if (pooledReuse) {
+                        sbbInstance.setSbbContext(ctx);
+                        Map<String, Object> cmpState = cmpFieldStore.load(id);
+                        localObject.getEntityState().getCmpFields().putAll(cmpState);
+                        sbbLifecycleManager.activate(sbbInstance, cmpState);
+                    } else {
+                        sbbLifecycleManager.create(sbbInstance, ctx, null);
+                        sbbLifecycleManager.postCreate(sbbInstance);
+                        Map<String, Object> cmpState = cmpFieldStore.load(id);
+                        localObject.getEntityState().getCmpFields().putAll(cmpState);
+                        sbbLifecycleManager.activate(sbbInstance, cmpState);
+                    }
+                    localObject.getEntityState().transitionTo(SbbLifecycleManager.State.READY);
+                } catch (CreateException ce) {
+                    LOG.warn("SBB {} failed sbbCreate/sbbPostCreate: {}", id, ce.getMessage());
+                    sbbLifecycleManager.removeEntity(sbbInstance);
+                    sbbs.remove(id);
+                    entityTypesById.remove(id);
+                    sbbEntityPool.release(entity);
+                    cmpFieldStore.remove(id);
+                    throw new RuntimeException(ce);
+                } catch (RuntimeException re) {
+                    LOG.error("SBB {} activation failed: {}", id, re.getMessage(), re);
+                    sbbs.remove(id);
+                    entityTypesById.remove(id);
+                    cmpFieldStore.remove(id);
+                    throw re;
+                }
+            }
+        });
     }
 }

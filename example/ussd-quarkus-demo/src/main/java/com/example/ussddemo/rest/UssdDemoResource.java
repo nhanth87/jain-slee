@@ -19,6 +19,7 @@ import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
@@ -42,8 +43,30 @@ public final class UssdDemoResource {
     @Path("/begin")
     @Consumes(MediaType.APPLICATION_JSON)
     public Response begin(UssdBeginRequest request) {
-        UssdSessionView view = sessionService.begin(request);
+        UssdSessionView view = sessionService.begin(request, null);
         return Response.accepted(view).build();
+    }
+
+    /**
+     * HttpClient RA-style begin: returns 202 Accepted with a {@code Location}
+     * header pointing at the per-session callback URL. When the SLEE pipeline
+     * finishes, the server POSTs the {@link UssdSessionView} body to that URL
+     * — equivalent to Mobicents' {@code HttpClientSbb.execute()} callback flow.
+     */
+    @POST
+    @Path("/begin-callback")
+    @Consumes(MediaType.APPLICATION_JSON)
+    public Response beginCallback(UssdBeginRequest request,
+                                  @QueryParam("callbackUrl") String callbackUrl) {
+        if (callbackUrl == null || callbackUrl.isEmpty()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("callbackUrl is required")
+                    .build();
+        }
+        UssdSessionView view = sessionService.begin(request, callbackUrl);
+        return Response.accepted(view)
+                .header("Location", callbackUrl + "?sessionId=" + view.sessionId)
+                .build();
     }
 
     @GET

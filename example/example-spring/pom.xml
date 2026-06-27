@@ -9,9 +9,9 @@
     <version>1.0.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>micro-jainslee example :: USSD Spring Boot (jainslee-spring-boot-starter)</name>
+    <name>micro-jainslee example :: USSD Spring Boot (adapter-springboot)</name>
     <description>Spring Boot 3 app that integrates micro-jainslee via the
-        in-tree com.microjainslee:jainslee-spring-boot-starter. The
+        in-tree com.microjainslee:adapter-springboot. The
         MicroSleeContainer is built by the Spring Boot auto-configuration
         and exposed as a regular @Bean; SBBs and the REST controller
         inject it via @Autowired.</description>
@@ -102,7 +102,7 @@
              container with the Spring context. -->
         <dependency>
             <groupId>com.microjainslee</groupId>
-            <artifactId>jainslee-spring-boot-starter</artifactId>
+            <artifactId>adapter-springboot</artifactId>
             <version>${microjainslee.version}</version>
         </dependency>
     </dependencies>

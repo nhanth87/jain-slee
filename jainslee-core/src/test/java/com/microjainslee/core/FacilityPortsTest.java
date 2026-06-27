@@ -52,6 +52,20 @@ public class FacilityPortsTest {
     }
 
     @Test
+    public void simpleAlarmFacilityRaisesClearsAndSnapshots() {
+        SimpleAlarmFacility facility = new SimpleAlarmFacility();
+        facility.raise("link-down", "ss7-as-1", AlarmLevel.CRITICAL, "M3UA down");
+        facility.raise("queue-full", "smsc-1", AlarmLevel.MAJOR, "Pending queue overflow");
+
+        assertEquals(AlarmLevel.CRITICAL, facility.snapshot().get("link-down::ss7-as-1"));
+        assertEquals(AlarmLevel.MAJOR, facility.snapshot().get("queue-full::smsc-1"));
+
+        facility.clear("link-down", "ss7-as-1");
+        assertNull(facility.snapshot().get("link-down::ss7-as-1"));
+        assertEquals(1, facility.snapshot().size());
+    }
+
+    @Test
     public void inMemoryProfileTableFindsByPrimaryKey() {
         InMemoryProfileTablePort profiles = new InMemoryProfileTablePort();
         Map<String, Object> row = new HashMap<String, Object>();

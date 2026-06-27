@@ -58,6 +58,20 @@ public interface SbbContext {
     UsagePort getUsageFacility();
 
     /**
+     * JAIN-SLEE 1.1 §11 — alarm facility access.
+     * <p>
+     * micro-jainslee exposes this as a default that returns {@code null}
+     * because the underlying alarm sink is pluggable; concrete contexts
+     * must override when an alarm backend is configured.
+     *
+     * @return the alarm facility, or {@code null} when no alarm backend
+     *         is installed
+     */
+    default AlarmFacility getAlarmFacility() {
+        return null;
+    }
+
+    /**
      * JAIN-SLEE 1.1 §10 — profile facility access.
      * <p>
      * micro-jainslee exposes this as a default that returns {@code null}

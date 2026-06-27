@@ -7,7 +7,7 @@ This directory contains runnable sample applications that show how to embed
 |---------|-------------|
 | [`example-embedded-j25/`](example-embedded-j25/) | **Plain Java 25** app that embeds `jainslee-core` directly (no Quarkus, no Spring). Uses the JDK's built-in `com.sun.net.httpserver.HttpServer` for the REST front-end. Demonstrates that micro-jainslee can run inside any JVM. |
 | [`example-quarkus/`](example-quarkus/) | **Quarkus 3** REST app that integrates micro-jainslee via the in-tree `com.microjainslee:adapter-quarkus` CDI extension. SBBs, REST resources, and facilities are all `@Inject`-driven. |
-| [`example-spring/`](example-spring/) | **Spring Boot 3** app that integrates micro-jainslee via the in-tree `com.microjainslee:jainslee-spring-boot-starter`. SBBs, REST resources, and facilities are all `@Autowired`-driven. The starter exposes `MicroSleeContainer` as a Spring bean and uses `SmartLifecycle` to start/stop the container with the Spring context. |
+| [`example-spring/`](example-spring/) | **Spring Boot 3** app that integrates micro-jainslee via the in-tree `com.microjainslee:adapter-springboot`. SBBs, REST resources, and facilities are all `@Autowired`-driven. The starter exposes `MicroSleeContainer` as a Spring bean and uses `SmartLifecycle` to start/stop the container with the Spring context. |
 | [`ussdgw-simulator/`](ussdgw-simulator/) | Standalone CLI JARs that simulate the USSD gateway firing SS7 USSD begin into any of the three examples. Two single-session entry points (`Ss7UssdSimulatorMain` + `HttpClientRaStyleMain`) plus `VirtualThreadUssdHammerMain` for load testing. All three use the callback pattern (1 outbound request, zero polling). |
 
 ## Scenario

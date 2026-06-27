@@ -8,7 +8,7 @@
  * Contact: nhanth87@gmail.com
  */
 
-package com.microjainslee.spring;
+package com.microjainslee.springboot;
 
 import com.microjainslee.core.MicroSleeContainer;
 import org.apache.logging.log4j.LogManager;

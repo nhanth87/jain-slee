@@ -8,7 +8,7 @@
  * Contact: nhanth87@gmail.com
  */
 
-package com.microjainslee.spring;
+package com.microjainslee.springboot;
 
 import com.microjainslee.api.TimerPort;
 import com.microjainslee.core.EventRouter;

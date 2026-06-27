@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0 \u2014 load-test CLI built on Java 21+ virtual threads.
+ * micro-jainslee 1.1.0 — example application (ussdgw-simulator)
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -10,252 +10,262 @@
 
 package com.example.ussdgw;
 
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Concurrent load generator that exercises the USSD Quarkus demo with N
- * virtual threads firing {@code POST /api/ussd/begin} and then polling
- * {@code GET /api/ussd/sessions/{id}} in parallel.
+ * HttpClient RA-style load generator — fires N concurrent USSD begins via
+ * {@code POST /api/ussd/begin-callback} and measures end-to-end latency
+ * from POST to callback receipt.
  *
- * <p>This is the modern equivalent of the legacy
- * {@link Ss7UssdSimulatorMain} single-request flow: instead of blocking on
- * a sequential begin/poll pair, every request runs on its own virtual
- * thread and aggregates throughput / latency at the end.
+ * <p>For each session, one virtual thread:
+ * <ol>
+ *   <li>Registers a {@link CountDownLatch} keyed by sessionId.</li>
+ *   <li>Fires the begin POST (returns 202 immediately).</li>
+ *   <li>Awaits the callback latch.</li>
+ *   <li>Records end-to-end latency.</li>
+ * </ol>
  *
- * <p>CLI: {@code java -jar ussdgw-simulator.jar <baseUrl> <msisdn-prefix> <concurrency> <total> [poll-interval-ms]}
- *
- * <p>Output: CSV line per request on stdout (header on first line) plus a
- * summary block with p50/p95/p99/max latency and req/s.
+ * <p>The callback receiver is an embedded {@link HttpServer} on a random
+ * free port; one VT per request to handle the callbacks, isolated from
+ * the main outbound pool so callback latency doesn't poison the next fire.
  */
 public final class VirtualThreadUssdHammerMain {
 
-    private static final Pattern SESSION_ID = Pattern.compile(
-            "\\\"sessionId\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
-    private static final Pattern STATUS = Pattern.compile(
-            "\\\"status\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
-
-    private VirtualThreadUssdHammerMain() {
-    }
+    private static final Pattern SESSION_ID_P =
+            Pattern.compile("\\\"sessionId\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
 
     public static void main(String[] args) throws Exception {
         String baseUrl = args.length > 0 ? args[0] : "http://127.0.0.1:8080";
         String msisdnPrefix = args.length > 1 ? args[1] : "251911";
-        int concurrency = args.length > 2 ? Integer.parseInt(args[2]) : 64;
-        int total = args.length > 3 ? Integer.parseInt(args[3]) : 1000;
-        long pollIntervalMs = args.length > 4 ? Long.parseLong(args[4]) : 25;
-        long timeoutMs = args.length > 5 ? Long.parseLong(args[5]) : 30000;
+        int total = args.length > 2 ? Integer.parseInt(args[2]) : 1000;
+        long timeoutMs = args.length > 3 ? Long.parseLong(args[3]) : 30000;
+
+        // 1) Boot embedded callback receiver.
+        HttpServer callbackServer = HttpServer.create(
+                new InetSocketAddress("127.0.0.1", 0), 0);
+        ConcurrentHashMap<String, CountDownLatch> pending =
+                new ConcurrentHashMap<>();
+        AtomicLong received = new AtomicLong();
+        callbackServer.createContext("/cb", new CallbackHandler(pending, received));
+        callbackServer.setExecutor(Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("cb-", 0).factory()));
+        callbackServer.start();
+        int port = callbackServer.getAddress().getPort();
+        String callbackUrl = "http://127.0.0.1:" + port + "/cb";
 
         System.out.printf(Locale.ROOT,
-                "[hammer] baseUrl=%s msisdnPrefix=%s concurrency=%d total=%d pollIntervalMs=%d%n",
-                baseUrl, msisdnPrefix, concurrency, total, pollIntervalMs);
+                "[hammer] baseUrl=%s callbackUrl=%s total=%d timeoutMs=%d%n",
+                baseUrl, callbackUrl, total, timeoutMs);
 
-        // Virtual-thread-per-task executor: every in-flight request lives on
-        // its own VT. Pinned=false so the carrier thread stays cheap.
-        ThreadFactory vtFactory = Thread.ofVirtual().name("hammer-", 0).factory();
-        var vtExecutor = Executors.newThreadPerTaskExecutor(vtFactory);
-
+        // 2) Outbound client — VT executor shared with callbacks (could split).
+        ThreadFactory outboundTf = Thread.ofVirtual().name("hammer-out-", 0).factory();
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
-                .executor(vtExecutor)
+                .executor(Executors.newThreadPerTaskExecutor(outboundTf))
                 .build();
 
-        List<CompletableFuture<Sample>> futures = new ArrayList<>(total);
+        List<Sample> samples = Collections.synchronizedList(new ArrayList<>(total));
         AtomicInteger issued = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+
         long t0 = System.nanoTime();
         for (int i = 0; i < total; i++) {
             int idx = i;
             String msisdn = String.format("%s%09d", msisdnPrefix, idx);
-            // Stagger slightly so we don't blow the heap at t=0
-            if (i % concurrency == 0 && i > 0) {
-                Thread.sleep(1);
+            CountDownLatch latch = new CountDownLatch(1);
+            String expectedSessionId = null;
+            pending.put("pending-" + idx, latch);
+            long reqStart = System.nanoTime();
+            try {
+                String body = "{\"msisdn\":\"" + msisdn
+                        + "\",\"ussdString\":\"*123#\"}";
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(baseUrl
+                                + "/api/ussd/begin-callback?callbackUrl="
+                                + java.net.URLEncoder.encode(callbackUrl,
+                                        StandardCharsets.UTF_8)))
+                        .timeout(Duration.ofSeconds(10))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build();
+                HttpResponse<String> resp = client.send(req,
+                        HttpResponse.BodyHandlers.ofString());
+                if (resp.statusCode() != 202) {
+                    failed.incrementAndGet();
+                    samples.add(new Sample(idx, msisdn, -1, -1, false));
+                    pending.remove("pending-" + idx);
+                    latch.countDown();
+                    continue;
+                }
+                expectedSessionId = extractSessionId(resp.body());
+                pending.put(expectedSessionId, latch);
+                pending.remove("pending-" + idx);
+                issued.incrementAndGet();
+            } catch (Exception e) {
+                failed.incrementAndGet();
+                samples.add(new Sample(idx, msisdn, -1, -1, false));
+                pending.remove("pending-" + idx);
+                latch.countDown();
+                continue;
             }
-            futures.add(launch(client, baseUrl, msisdn, idx, pollIntervalMs, timeoutMs));
-            issued.incrementAndGet();
+            // The actual await happens in the callback handler — here we
+            // hand the latch off and let the HttpServer thread count it
+            // down. We *don't* await here so all N fires happen in
+            // tight succession; the per-request wall time is recovered
+            // by the callback handler thread that owns the latch.
+            // The end-to-end latency is captured when the handler runs.
+            final String sid = expectedSessionId;
+            final long start = reqStart;
+            // Park a tiny VT that records latency when the latch trips.
+            Thread.ofVirtual().name("await-" + idx).start(() -> {
+                try {
+                    boolean done = latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+                    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+                    samples.add(new Sample(idx, msisdn,
+                            elapsedMs, elapsedMs, done));
+                    if (!done) {
+                        failed.incrementAndGet();
+                        pending.remove(sid);
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            });
         }
 
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        // Wait for all latches.
+        for (CountDownLatch latch : pending.values()) {
+            try {
+                latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        // Wait for the await-VTs to drain a bit.
+        Thread.sleep(500);
         long elapsedNs = System.nanoTime() - t0;
 
-        // Aggregate
-        List<Sample> samples = new ArrayList<>(futures.size());
-        for (CompletableFuture<Sample> f : futures) {
-            samples.add(f.get());
-        }
-        samples.sort((a, b) -> Long.compare(a.endToEndMs, b.endToEndMs));
+        callbackServer.stop(0);
 
-        long success = samples.stream().filter(s -> s.outcome == Outcome.OK).count();
-        long beginFailed = samples.stream().filter(s -> s.outcome == Outcome.BEGIN_FAILED).count();
-        long pollFailed = samples.stream().filter(s -> s.outcome == Outcome.POLL_FAILED).count();
-        long timedOut = samples.stream().filter(s -> s.outcome == Outcome.TIMEOUT).count();
-
-        System.out.println("sessionId,msisdn,beginMs,completeMs,endToEndMs,outcome,responseText");
-        for (Sample s : samples) {
-            System.out.printf(Locale.ROOT,
-                    "%s,%s,%d,%d,%d,%s,%s%n",
-                    s.sessionId == null ? "-" : s.sessionId,
-                    s.msisdn, s.beginMs, s.completeMs, s.endToEndMs, s.outcome,
-                    s.responseText == null ? "" : s.responseText.replace(',', ';').replace('\n', ' '));
-        }
+        samples.sort((a, b) -> Long.compare(a.beginMs, b.beginMs));
+        long ok = samples.stream().filter(s -> s.success).count();
+        long ko = samples.size() - ok;
+        long totalMs = elapsedNs / 1_000_000;
+        double throughput = total * 1000.0 / totalMs;
 
         System.out.println();
         System.out.println("=== Summary ===");
-        System.out.printf(Locale.ROOT, "total=%d success=%d beginFailed=%d pollFailed=%d timedOut=%d%n",
-                total, success, beginFailed, pollFailed, timedOut);
-        System.out.printf(Locale.ROOT, "elapsed=%.2fs throughput=%.1f req/s%n",
-                elapsedNs / 1e9, total * 1e9 / elapsedNs);
-        System.out.printf(Locale.ROOT, "latency p50=%.0fms p95=%.0fms p99=%.0fms max=%.0fms%n",
-                pct(samples, 0.50), pct(samples, 0.95), pct(samples, 0.99), maxMs(samples));
-
-        vtExecutor.shutdown();
-    }
-
-    /**
-     * Issue one begin, then poll until COMPLETED / FAILED / timeout. Each
-     * request runs on its own virtual thread (via the shared VT executor
-     * on the {@link HttpClient}).
-     */
-    private static CompletableFuture<Sample> launch(HttpClient client, String baseUrl,
-                                                    String msisdn, int idx, long pollMs,
-                                                    long timeoutMs) {
-        long reqStart = System.nanoTime();
-        Sample s = new Sample();
-        s.msisdn = msisdn;
-        return begin(client, baseUrl, msisdn, reqStart)
-                .thenCompose(beginResp -> {
-                    long beginMs = (System.nanoTime() - reqStart) / 1_000_000;
-                    s.beginMs = beginMs;
-                    if (beginResp.statusCode() != 202) {
-                        s.outcome = Outcome.BEGIN_FAILED;
-                        s.completeMs = beginMs;
-                        s.endToEndMs = beginMs;
-                        return CompletableFuture.completedFuture(s);
-                    }
-                    s.sessionId = extract(SESSION_ID, beginResp.body(), 1);
-                    return pollUntilDone(client, baseUrl, s, reqStart, pollMs, timeoutMs);
-                });
-    }
-
-    private static CompletableFuture<HttpResponse<String>> begin(HttpClient client,
-                                                                 String baseUrl, String msisdn,
-                                                                 long reqStart) {
-        String body = "{\"msisdn\":\"" + msisdn + "\",\"ussdString\":\"*123#\"}";
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/api/ussd/begin"))
-                .timeout(Duration.ofSeconds(10))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-        return client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
-    }
-
-    private static CompletableFuture<Sample> pollUntilDone(HttpClient client, String baseUrl,
-                                                           Sample s, long reqStart,
-                                                           long pollMs, long timeoutMs) {
-        long deadlineNanos = reqStart + timeoutMs * 1_000_000L;
-        return pollOnce(client, baseUrl, s)
-                .thenCompose(pollResp -> {
-                    if (pollResp.statusCode() != 200) {
-                        s.outcome = Outcome.POLL_FAILED;
-                        s.completeMs = elapsedMs(reqStart);
-                        s.endToEndMs = s.completeMs;
-                        return CompletableFuture.completedFuture(s);
-                    }
-                    String status = extract(STATUS, pollResp.body(), 1);
-                    if ("COMPLETED".equals(status)) {
-                        s.outcome = Outcome.OK;
-                        s.completeMs = elapsedMs(reqStart);
-                        s.endToEndMs = s.completeMs;
-                        s.responseText = extract(pollResp.body(), "responseText");
-                        return CompletableFuture.completedFuture(s);
-                    }
-                    if ("FAILED".equals(status)) {
-                        s.outcome = Outcome.POLL_FAILED;
-                        s.completeMs = elapsedMs(reqStart);
-                        s.endToEndMs = s.completeMs;
-                        return CompletableFuture.completedFuture(s);
-                    }
-                    if (System.nanoTime() >= deadlineNanos) {
-                        s.outcome = Outcome.TIMEOUT;
-                        s.completeMs = elapsedMs(reqStart);
-                        s.endToEndMs = s.completeMs;
-                        return CompletableFuture.completedFuture(s);
-                    }
-                    // still PROCESSING -> wait then retry. The retry is
-                    // scheduled on the shared VT executor so it doesn't
-                    // block a carrier thread.
-                    return CompletableFuture.runAsync(() -> {
-                        try { Thread.sleep(pollMs); } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                        }
-                    }).thenCompose(v -> pollUntilDone(client, baseUrl, s, reqStart, pollMs, timeoutMs));
-                });
-    }
-
-    private static CompletableFuture<HttpResponse<String>> pollOnce(HttpClient client,
-                                                                    String baseUrl, Sample s) {
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/api/ussd/sessions/" + s.sessionId))
-                .timeout(Duration.ofSeconds(5))
-                .GET()
-                .build();
-        return client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
-    }
-
-    private static long elapsedMs(long startNanos) {
-        return (System.nanoTime() - startNanos) / 1_000_000;
-    }
-
-    private static String extract(Pattern p, String body, int group) {
-        Matcher m = p.matcher(body);
-        if (!m.find()) {
-            return null;
+        System.out.printf(Locale.ROOT,
+                "total=%d ok=%d failed=%d elapsedMs=%d throughput=%.1f req/s%n",
+                samples.size(), ok, ko, totalMs, throughput);
+        if (ok > 0) {
+            System.out.printf(Locale.ROOT,
+                    "latency p50=%.0fms p95=%.0fms p99=%.0fms max=%.0fms%n",
+                    pct(samples, 0.50), pct(samples, 0.95),
+                    pct(samples, 0.99), maxMs(samples));
         }
-        return m.group(group);
+
+        System.out.println();
+        System.out.println("sessionId,msisdn,callbackArrivedMs,endToEndMs,success");
+        for (Sample s : samples) {
+            System.out.printf(Locale.ROOT,
+                    "%s,%s,%d,%d,%s%n", s.sessionId == null ? "-" : s.sessionId,
+                    s.msisdn, s.callbackArrivedMs, s.beginMs,
+                    s.success ? "OK" : "FAIL");
+        }
     }
 
-    /** Best-effort extraction of "responseText":"..." (used after status=COMPLETED). */
-    private static String extract(String body, String field) {
-        Pattern p = Pattern.compile(
-                "\"" + field + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"", Pattern.DOTALL);
-        Matcher m = p.matcher(body);
-        return m.find() ? m.group(1).replace("\\n", "\n").replace("\\\"", "\"") : null;
+    private static String extractSessionId(String body) {
+        Matcher m = SESSION_ID_P.matcher(body);
+        if (!m.find()) throw new IllegalStateException(
+                "sessionId not in: " + body);
+        return m.group(1);
     }
 
     private static double pct(List<Sample> sorted, double p) {
         if (sorted.isEmpty()) return 0;
-        int idx = (int) Math.min(sorted.size() - 1, Math.floor(p * sorted.size()));
-        return sorted.get(idx).endToEndMs;
+        int idx = (int) Math.min(sorted.size() - 1,
+                Math.floor(p * sorted.size()));
+        return sorted.get(idx).beginMs;
     }
 
     private static double maxMs(List<Sample> sorted) {
-        return sorted.isEmpty() ? 0 : sorted.get(sorted.size() - 1).endToEndMs;
+        return sorted.isEmpty() ? 0
+                : sorted.get(sorted.size() - 1).beginMs;
     }
 
-    private enum Outcome { OK, BEGIN_FAILED, POLL_FAILED, TIMEOUT }
-
     private static final class Sample {
-        String msisdn;
-        String sessionId;
-        String responseText;
-        long beginMs;
-        long completeMs;
-        long endToEndMs;
-        Outcome outcome = Outcome.OK;
+        final int idx;
+        final String msisdn;
+        final long callbackArrivedMs;
+        final long beginMs;
+        final boolean success;
+        volatile String sessionId;
+
+        Sample(int idx, String msisdn, long beginMs, long callbackArrivedMs,
+               boolean success) {
+            this.idx = idx;
+            this.msisdn = msisdn;
+            this.beginMs = beginMs;
+            this.callbackArrivedMs = callbackArrivedMs;
+            this.success = success;
+        }
+    }
+
+    private static final class CallbackHandler implements HttpHandler {
+        private final ConcurrentHashMap<String, CountDownLatch> pending;
+        private final AtomicLong received;
+
+        CallbackHandler(ConcurrentHashMap<String, CountDownLatch> pending,
+                        AtomicLong received) {
+            this.pending = pending;
+            this.received = received;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                String sessionId = exchange.getRequestHeaders()
+                        .getFirst("X-USSD-Session-Id");
+                byte[] body;
+                try (InputStream in = exchange.getRequestBody()) {
+                    body = in.readAllBytes();
+                }
+                received.incrementAndGet();
+                if (sessionId != null) {
+                    CountDownLatch latch = pending.remove(sessionId);
+                    if (latch != null) latch.countDown();
+                }
+            } finally {
+                exchange.sendResponseHeaders(204, -1);
+                exchange.close();
+            }
+        }
     }
 }

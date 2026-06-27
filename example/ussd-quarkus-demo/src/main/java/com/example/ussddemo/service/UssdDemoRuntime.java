@@ -38,16 +38,31 @@ public final class UssdDemoRuntime {
     @Inject
     UssdSessionStore sessionStore;
 
+    @Inject
+    UssdCallbackDispatcher callbackDispatcher;
+
     public void routeEvent(SleeEvent event, ActivityContextInterface aci) {
         microJainslee.container().routeEvent(event, aci);
     }
 
     public void completeSession(String sessionId, String responseText) {
         sessionStore.complete(sessionId, responseText);
+        // HttpClient RA-style async callback: when the session reaches
+        // COMPLETED, fire an HTTP POST to the URL the caller registered.
+        UssdSessionStore.SessionRecord record = sessionStore.get(sessionId);
+        if (record != null && record.getCallbackUrl() != null) {
+            callbackDispatcher.dispatch(record.getCallbackUrl(), sessionId, "COMPLETED",
+                    responseText, null);
+        }
     }
 
     public void failSession(String sessionId, String message) {
         sessionStore.fail(sessionId, message);
+        UssdSessionStore.SessionRecord record = sessionStore.get(sessionId);
+        if (record != null && record.getCallbackUrl() != null) {
+            callbackDispatcher.dispatch(record.getCallbackUrl(), sessionId, "FAILED",
+                    null, message);
+        }
     }
 
     public InMemoryActivityContext createSessionActivityContext(String sessionId) {

@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0 — example application (ussd-quarkus-demo)
+ * micro-jainslee 1.1.0 -- example application (example-embedded-j25)
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -8,17 +8,16 @@
  * Contact: nhanth87@gmail.com
  */
 
-package com.example.ussddemo.service;
-
-import jakarta.enterprise.context.ApplicationScoped;
+package com.example.ussddemo.embedded;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * In-memory session state exposed to the REST API and SBBs.
+ * Plain in-memory session store, no CDI / no @ApplicationScoped.
+ * Safe for concurrent access because every field on {@link SessionRecord}
+ * is {@code volatile}.
  */
-@ApplicationScoped
 public final class UssdSessionStore {
 
     public enum Status {
@@ -50,7 +49,8 @@ public final class UssdSessionStore {
         }
     }
 
-    private final Map<String, SessionRecord> sessions = new ConcurrentHashMap<String, SessionRecord>();
+    private final Map<String, SessionRecord> sessions =
+            new ConcurrentHashMap<String, SessionRecord>();
 
     public SessionRecord open(String sessionId) {
         SessionRecord record = new SessionRecord();
@@ -62,7 +62,7 @@ public final class UssdSessionStore {
         return sessions.get(sessionId);
     }
 
-    /** HttpClient RA callback URL — null means polling-only mode. */
+    /** HttpClient RA callback URL -- null means polling-only mode. */
     public void attachCallback(String sessionId, String callbackUrl) {
         SessionRecord record = sessions.get(sessionId);
         if (record != null) {

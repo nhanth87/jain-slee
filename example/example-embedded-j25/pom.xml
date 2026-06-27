@@ -5,52 +5,31 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.example.ussddemo</groupId>
-    <artifactId>ussd-quarkus-demo</artifactId>
+    <artifactId>example-embedded-j25</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>micro-jainslee example :: USSD Quarkus demo</name>
-    <description>Quarkus + micro-jainslee USSD gateway demo (SS7 ingress SBB, gRPC backend SBB)</description>
+    <name>micro-jainslee example :: USSD gateway embedded (plain Java 25, no Quarkus)</name>
+    <description>Plain-Java 25 example that embeds micro-jainslee-core directly
+        and exposes the HttpClient RA-style callback REST API via the JDK's
+        com.sun.net.httpserver. Demonstrates that micro-jainslee can run
+        inside any JVM, with no JEE/Spring/Quarkus dependency required.
+        For the Quarkus-native variant that uses the adapter-quarkus CDI
+        extension, see example-quarkus instead.</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
-        <quarkus.platform.version>3.15.1</quarkus.platform.version>
+        <maven.compiler.release>25</maven.compiler.release>
         <microjainslee.version>1.1.0</microjainslee.version>
         <surefire.version>3.5.4</surefire.version>
+        <log4j.version>2.23.1</log4j.version>
+        <disruptor.version>3.4.2</disruptor.version>
     </properties>
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>io.quarkus.platform</groupId>
-                <artifactId>quarkus-bom</artifactId>
-                <version>${quarkus.platform.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
-
     <dependencies>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-rest</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-rest-jackson</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-arc</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-logging-json</artifactId>
-        </dependency>
-
+        <!-- micro-jainslee runtime — embedded directly, no adapter -->
         <dependency>
             <groupId>com.microjainslee</groupId>
             <artifactId>jainslee-core</artifactId>
@@ -68,41 +47,45 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Logging (Log4j2 — the same Log4j 2.23.1 used by jainslee-core) -->
         <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-junit5</artifactId>
-            <scope>test</scope>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>${log4j.version}</version>
         </dependency>
         <dependency>
-            <groupId>io.rest-assured</groupId>
-            <artifactId>rest-assured</artifactId>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>${log4j.version}</version>
+        </dependency>
+
+        <!-- Disruptor is transitive of jainslee-core but we pin it here so the
+             dependency graph is self-documenting. -->
+        <dependency>
+            <groupId>com.lmax</groupId>
+            <artifactId>disruptor</artifactId>
+            <version>${disruptor.version}</version>
+        </dependency>
+
+        <!-- Test scope: JUnit 4 (matching jainslee-core test suite convention),
+             plus the JDK's built-in HttpServer for the callback receiver. -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
 
     <build>
+        <finalName>example-embedded-j25</finalName>
         <plugins>
-            <plugin>
-                <groupId>io.quarkus.platform</groupId>
-                <artifactId>quarkus-maven-plugin</artifactId>
-                <version>${quarkus.platform.version}</version>
-                <extensions>true</extensions>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>build</goal>
-                            <goal>generate-code</goal>
-                            <goal>generate-code-tests</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
                 <configuration>
-                    <release>17</release>
+                    <release>25</release>
                     <annotationProcessorPaths>
                         <path>
                             <groupId>com.microjainslee</groupId>
@@ -117,24 +100,46 @@
                         <path>
                             <groupId>org.apache.logging.log4j</groupId>
                             <artifactId>log4j-api</artifactId>
-                            <version>2.23.1</version>
+                            <version>${log4j.version}</version>
                         </path>
                         <path>
                             <groupId>org.apache.logging.log4j</groupId>
                             <artifactId>log4j-core</artifactId>
-                            <version>2.23.1</version>
+                            <version>${log4j.version}</version>
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
             </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>com.example.ussddemo.embedded.EmbeddedUssdMain</mainClass>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <mainClass>com.example.ussddemo.embedded.EmbeddedUssdMain</mainClass>
+                </configuration>
+            </plugin>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${surefire.version}</version>
                 <configuration>
-                    <systemPropertyVariables>
-                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                    </systemPropertyVariables>
+                    <!-- Same flags the jainslee-core test suite uses -->
+                    <argLine>-Xmx512m -Dlog4j2.configurationFile=log4j2-test.xml</argLine>
                 </configuration>
             </plugin>
         </plugins>

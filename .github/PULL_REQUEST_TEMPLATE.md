@@ -19,7 +19,6 @@ One-paragraph description of the change.
 - [ ] `jainslee-spring-boot-starter`
 - [ ] `adapter-quarkus`
 - [ ] `adapter-jakartaee`
-- [ ] `ra-connectors`
 - [ ] `docs/`
 - [ ] `pom.xml` / build
 - [ ] `.github/` / CI

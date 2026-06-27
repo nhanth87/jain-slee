@@ -111,7 +111,7 @@
 ## Test coverage
 
 ```
-mvn -pl jainslee-api,jainslee-scheduler,jainslee-core,jainslee-apt,ra-connectors,adapters/adapter-quarkus/runtime -am test
+mvn -pl jainslee-api,jainslee-scheduler,jainslee-core,jainslee-apt,adapters/adapter-quarkus/runtime -am test
 → 62+ tests, BUILD SUCCESS
 ```
 

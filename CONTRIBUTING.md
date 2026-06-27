@@ -95,7 +95,7 @@ Now you can run any other module.
 ### Full reactor build + test (~17 seconds on a 4-core machine)
 
 ```bash
-mvn -pl jainslee-api,jainslee-core,jainslee-apt,jainslee-spring-boot-starter,ra-connectors,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee -am test
+mvn -pl jainslee-api,jainslee-core,jainslee-apt,jainslee-spring-boot-starter,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee -am test
 ```
 
 ### Stress test (Java 25 only — virtual threads required)
@@ -189,7 +189,7 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 
 Pick one of: `jainslee-api`, `jainslee-core`, `jainslee-apt`,
 `jainslee-spring-boot-starter`, `adapter-quarkus`, `adapter-jakartaee`,
-`ra-connectors`, `docs`, `ci`, `pom`.
+`docs`, `ci`, `pom`.
 
 ### Examples
 
@@ -235,7 +235,7 @@ agreed.
 2. **Make focused commits** — one logical change per commit, with a
    Conventional Commits subject.
 3. **Run the full local test suite** before pushing:
-   `mvn -pl jainslee-api,jainslee-core,jainslee-apt,jainslee-spring-boot-starter,ra-connectors,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee -am test -DargLine="-Xmx4g"`
+   `mvn -pl jainslee-api,jainslee-core,jainslee-apt,jainslee-spring-boot-starter,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee -am test -DargLine="-Xmx4g"`
 4. **Add new tests** for any bug fix or new behavior.
 5. **Update docs** if your change affects the public API or the
    `README.md` quickstart.

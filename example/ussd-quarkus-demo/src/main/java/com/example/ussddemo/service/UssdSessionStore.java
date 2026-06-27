@@ -31,6 +31,7 @@ public final class UssdSessionStore {
         private volatile Status status = Status.PROCESSING;
         private volatile String responseText;
         private volatile String errorMessage;
+        private volatile String callbackUrl;
 
         public Status getStatus() {
             return status;
@@ -42,6 +43,10 @@ public final class UssdSessionStore {
 
         public String getErrorMessage() {
             return errorMessage;
+        }
+
+        public String getCallbackUrl() {
+            return callbackUrl;
         }
     }
 
@@ -55,6 +60,14 @@ public final class UssdSessionStore {
 
     public SessionRecord get(String sessionId) {
         return sessions.get(sessionId);
+    }
+
+    /** HttpClient RA callback URL — null means polling-only mode. */
+    public void attachCallback(String sessionId, String callbackUrl) {
+        SessionRecord record = sessions.get(sessionId);
+        if (record != null) {
+            record.callbackUrl = callbackUrl;
+        }
     }
 
     public void complete(String sessionId, String responseText) {

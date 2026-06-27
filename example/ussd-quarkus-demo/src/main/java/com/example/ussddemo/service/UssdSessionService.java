@@ -35,6 +35,16 @@ public final class UssdSessionService {
     UssdSessionStore sessionStore;
 
     public UssdSessionView begin(UssdBeginRequest request) {
+        return begin(request, null);
+    }
+
+    /**
+     * HttpClient RA-style begin: returns 202 immediately, then POSTs the
+     * response back to {@code callbackUrl} when the SLEE pipeline finishes.
+     * If {@code callbackUrl} is {@code null}, the caller falls back to
+     * polling {@code /sessions/{id}} — both paths produce the same result.
+     */
+    public UssdSessionView begin(UssdBeginRequest request, String callbackUrl) {
         if (request == null || request.msisdn == null || request.msisdn.trim().isEmpty()) {
             throw new IllegalArgumentException("msisdn is required");
         }
@@ -44,11 +54,16 @@ public final class UssdSessionService {
 
         String sessionId = UUID.randomUUID().toString();
         sessionStore.open(sessionId);
+        // Stash the callback URL alongside the session record so the runtime
+        // can fire it on completeSession().
+        sessionStore.attachCallback(sessionId, callbackUrl);
 
         InMemoryActivityContext aci = runtime.createSessionActivityContext(sessionId);
         runtime.attachDemoSbbs(sessionId);
 
-        LOG.infof("Firing UssdBeginEvent session=%s msisdn=%s", sessionId, request.msisdn);
+        LOG.infof("Firing UssdBeginEvent session=%s msisdn=%s callback=%s",
+                sessionId, request.msisdn,
+                callbackUrl == null ? "<polling>" : callbackUrl);
         runtime.routeEvent(
                 new UssdBeginEvent(sessionId, request.msisdn.trim(), request.ussdString.trim()),
                 aci);

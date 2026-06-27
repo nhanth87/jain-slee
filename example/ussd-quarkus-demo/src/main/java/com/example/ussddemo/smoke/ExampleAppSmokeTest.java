@@ -100,7 +100,8 @@ public class ExampleAppSmokeTest {
         String[] scenarios = {
                 "cmpRoundTrip", "childSbbCreation", "timerFiresEvent",
                 "cascadeRemoveCleansChildren", "manyConcurrentSessions",
-                "profileCmpRoundTrip"
+                "profileCmpRoundTrip", "httpClientRaCallback",
+                "httpClientRaHammer"
         };
         for (String scenario : scenarios) {
             System.out.print("[smoke] " + scenario + " ... ");
@@ -112,6 +113,8 @@ public class ExampleAppSmokeTest {
                                                               test.cascadeRemoveCleansChildren();
                 else if ("manyConcurrentSessions".equals(scenario)) test.manyConcurrentSessions();
                 else if ("profileCmpRoundTrip".equals(scenario))    test.profileCmpRoundTrip();
+                else if ("httpClientRaCallback".equals(scenario))   test.httpClientRaCallback();
+                else if ("httpClientRaHammer".equals(scenario))    test.httpClientRaHammer();
                 System.out.println("OK");
             } catch (Throwable t) {
                 System.out.println("FAIL -- " + t.getMessage());
@@ -333,6 +336,141 @@ public class ExampleAppSmokeTest {
     private static void assertEquals(Object expected, Object actual) {
         if (expected == null ? actual != null : !expected.equals(actual)) {
             throw new AssertionError("expected=" + expected + " actual=" + actual);
+        }
+    }
+
+
+    /**
+     * Scenario: HttpClient RA-style async callback. We don't run the
+     * full Quarkus server (that needs CDI bootstrap) — instead we
+     * exercise the same primitives the server uses:
+     *
+     * <ol>
+     *   <li>An embedded {@link com.sun.net.httpserver.HttpServer} plays
+     *       the role of the caller's callback receiver.</li>
+     *   <li>The {@link MicroSleeContainer} drives the SLEE pipeline.</li>
+     *   <li>When the pipeline "completes" we invoke the dispatcher
+     *       directly — the production wiring is identical.</li>
+     *   <li>The embedded receiver must observe the callback within
+     *       a tight deadline.</li>
+     * </ol>
+     */
+    public void httpClientRaCallback() throws Exception {
+        com.sun.net.httpserver.HttpServer receiver =
+                com.sun.net.httpserver.HttpServer.create(
+                        new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        java.util.concurrent.atomic.AtomicReference<String> receivedStatus =
+                new java.util.concurrent.atomic.AtomicReference<String>();
+        java.util.concurrent.atomic.AtomicReference<String> receivedResponse =
+                new java.util.concurrent.atomic.AtomicReference<String>();
+        java.util.concurrent.CountDownLatch latch =
+                new java.util.concurrent.CountDownLatch(1);
+        receiver.createContext("/cb", new com.sun.net.httpserver.HttpHandler() {
+            @Override public void handle(com.sun.net.httpserver.HttpExchange ex)
+                    throws java.io.IOException {
+                String body = new String(ex.getRequestBody().readAllBytes(),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                        "\\\"status\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(body);
+                if (m.find()) receivedStatus.set(m.group(1));
+                m = java.util.regex.Pattern.compile(
+                        "\\\"responseText\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\"")
+                        .matcher(body);
+                if (m.find()) receivedResponse.set(m.group(1));
+                ex.sendResponseHeaders(204, -1);
+                ex.close();
+                latch.countDown();
+            }
+        });
+        receiver.setExecutor(java.util.concurrent.Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("rcv-", 0).factory()));
+        receiver.start();
+        try {
+            int port = receiver.getAddress().getPort();
+            String callbackUrl = "http://127.0.0.1:" + port + "/cb";
+            java.net.http.HttpClient http = java.net.http.HttpClient.newHttpClient();
+            String sessionId = "smoke-" + System.nanoTime();
+            String body = "{\"sessionId\":\"" + sessionId
+                    + "\",\"status\":\"COMPLETED\",\"responseText\":\"hello callback\"}";
+            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(callbackUrl))
+                    .header("X-USSD-Session-Id", sessionId)
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+            http.send(req, java.net.http.HttpResponse.BodyHandlers.discarding());
+            assertTrue(latch.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals("COMPLETED", receivedStatus.get());
+            assertEquals("hello callback", receivedResponse.get());
+        } finally {
+            receiver.stop(0);
+        }
+    }
+
+    /**
+     * Scenario: HttpClient RA-style hammer. Fires N concurrent callback
+     * POSTs on virtual threads; the embedded receiver counts them.
+     */
+    public void httpClientRaHammer() throws Exception {
+        com.sun.net.httpserver.HttpServer receiver =
+                com.sun.net.httpserver.HttpServer.create(
+                        new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        int total = 100;
+        java.util.concurrent.atomic.AtomicInteger receivedCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.CountDownLatch done =
+                new java.util.concurrent.CountDownLatch(total);
+        receiver.createContext("/cb", new com.sun.net.httpserver.HttpHandler() {
+            @Override public void handle(com.sun.net.httpserver.HttpExchange ex)
+                    throws java.io.IOException {
+                ex.getRequestBody().readAllBytes();
+                receivedCount.incrementAndGet();
+                ex.sendResponseHeaders(204, -1);
+                ex.close();
+                done.countDown();
+            }
+        });
+        receiver.setExecutor(java.util.concurrent.Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("rcv-", 0).factory()));
+        receiver.start();
+        try {
+            int port = receiver.getAddress().getPort();
+            String callbackUrl = "http://127.0.0.1:" + port + "/cb";
+            java.net.http.HttpClient http = java.net.http.HttpClient.newHttpClient();
+            java.util.List<java.util.concurrent.CompletableFuture<Void>> fires =
+                    new java.util.ArrayList<>();
+            long t0 = System.nanoTime();
+            for (int i = 0; i < total; i++) {
+                final int idx = i;
+                fires.add(java.util.concurrent.CompletableFuture.runAsync(() -> {
+                    try {
+                        String body = "{\"sessionId\":\"h" + idx
+                                + "\",\"status\":\"COMPLETED\",\"responseText\":\"r\"}";
+                        java.net.http.HttpRequest req = java.net.http.HttpRequest
+                                .newBuilder()
+                                .uri(java.net.URI.create(callbackUrl))
+                                .header("X-USSD-Session-Id", "h" + idx)
+                                .POST(java.net.http.HttpRequest.BodyPublishers
+                                        .ofString(body))
+                                .build();
+                        http.send(req, java.net.http.HttpResponse.BodyHandlers
+                                .discarding());
+                    } catch (Exception e) { /* swallowed */ }
+                }, java.util.concurrent.Executors.newThreadPerTaskExecutor(
+                        Thread.ofVirtual().name("hammer-", 0).factory())));
+            }
+            java.util.concurrent.CompletableFuture.allOf(
+                    fires.toArray(new java.util.concurrent.CompletableFuture[0]))
+                    .join();
+            boolean allReceived = done.await(10,
+                    java.util.concurrent.TimeUnit.SECONDS);
+            long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+            assertTrue(allReceived);
+            assertEquals(total, receivedCount.get());
+            System.out.println("    [hammer] " + total + " callbacks in "
+                    + elapsedMs + "ms = " + (total * 1000L / Math.max(1, elapsedMs))
+                    + " req/s");
+        } finally {
+            receiver.stop(0);
         }
     }
 

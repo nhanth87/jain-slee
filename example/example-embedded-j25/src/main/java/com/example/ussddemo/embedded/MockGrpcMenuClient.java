@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0 — example application (ussd-quarkus-demo)
+ * micro-jainslee 1.1.0 -- example application (example-embedded-j25)
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -8,27 +8,27 @@
  * Contact: nhanth87@gmail.com
  */
 
-package com.example.ussddemo.grpc;
+package com.example.ussddemo.embedded;
 
-import io.quarkus.arc.Unremovable;
-import jakarta.enterprise.context.ApplicationScoped;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 /**
- * Stand-in for a real gRPC billing/menu backend invoked by {@code GrpcBackendSbb}.
+ * Stand-in for a real gRPC billing/menu backend. Plain Java (no CDI)
+ * with constructor-injected latency instead of {@code @ConfigProperty}.
  */
-@ApplicationScoped
-@Unremovable
 public final class MockGrpcMenuClient {
 
-    private static final Logger LOG = Logger.getLogger(MockGrpcMenuClient.class);
+    private static final Logger LOG = LogManager.getLogger(MockGrpcMenuClient.class);
 
-    @ConfigProperty(name = "ussd.demo.grpc.latency-ms", defaultValue = "50")
-    long latencyMs;
+    private final long latencyMs;
+
+    public MockGrpcMenuClient(long latencyMs) {
+        this.latencyMs = latencyMs;
+    }
 
     public String fetchMenu(String msisdn, String ussdString) {
-        LOG.infof("[mock-gRPC] ResolveMenu msisdn=%s ussd=%s", msisdn, ussdString);
+        LOG.info("[mock-gRPC] ResolveMenu msisdn={} ussd={}", msisdn, ussdString);
         if (latencyMs > 0L) {
             try {
                 Thread.sleep(latencyMs);

@@ -11,7 +11,9 @@
 package com.microjainslee.quarkus.deployment;
 
 import com.microjainslee.api.TimerPort;
+import com.microjainslee.api.Sbb;
 import com.microjainslee.api.annotations.SbbAnnotation;
+import com.microjainslee.core.EventDeliveryMode;
 import com.microjainslee.core.EventRouter;
 import com.microjainslee.core.InMemoryActivityContextNamingFacility;
 import com.microjainslee.core.MicroSleeConfiguration;
@@ -66,6 +68,8 @@ public class MicroJainsleeProcessor {
                 .sbbPoolMin(config.sbbPoolMin())
                 .sbbPoolMax(config.sbbPoolMax())
                 .sbbPerVirtualThread(config.sbbPerVirtualThread())
+                .sbbTypePoolMinIdle(config.sbbTypePoolMinIdle())
+                .eventDeliveryMode(EventDeliveryMode.parse(config.eventDelivery()))
                 .build();
     }
 
@@ -80,6 +84,39 @@ public class MicroJainsleeProcessor {
     @Record(ExecutionTime.RUNTIME_INIT)
     void startContainer(MicroJainsleeRecorder recorder) {
         recorder.startContainer();
+    }
+
+    @BuildStep
+    @Record(ExecutionTime.RUNTIME_INIT)
+    void registerDiscoveredSbbTypes(MicroJainsleeRecorder recorder,
+                                    CombinedIndexBuildItem indexBuildItem,
+                                    MicroJainsleeBuildConfig config) {
+        if (!config.registerSbbTypes()) {
+            return;
+        }
+        IndexView index = indexBuildItem.getIndex();
+        java.util.List<String> types = new java.util.ArrayList<String>();
+        for (org.jboss.jandex.AnnotationInstance ai : index.getAnnotations(SBB_ANNOTATION)) {
+            if (ai.target() == null || !ai.target().kind().equals(org.jboss.jandex.AnnotationTarget.Kind.CLASS)) {
+                continue;
+            }
+            org.jboss.jandex.ClassInfo ci = ai.target().asClass();
+            if (ci == null || ci.name() == null) {
+                continue;
+            }
+            String fqn = ci.name().toString();
+            if (implementsSbb(ci)) {
+                types.add(fqn);
+            }
+        }
+        recorder.registerSbbTypes(types);
+    }
+
+    private static final org.jboss.jandex.DotName SBB_INTERFACE =
+            org.jboss.jandex.DotName.createSimple(Sbb.class.getName());
+
+    private static boolean implementsSbb(org.jboss.jandex.ClassInfo ci) {
+        return ci.interfaceNames().contains(SBB_INTERFACE);
     }
 
     @BuildStep
@@ -150,7 +187,11 @@ public class MicroJainsleeProcessor {
         Set<String> excludes = splitCsv(config.scanExcludes());
 
         int registered = 0;
-        for (ClassInfo ci : index.getAllKnownImplementors(SBB_ANNOTATION)) {
+        for (org.jboss.jandex.AnnotationInstance ai : index.getAnnotations(SBB_ANNOTATION)) {
+            if (ai.target() == null || !ai.target().kind().equals(org.jboss.jandex.AnnotationTarget.Kind.CLASS)) {
+                continue;
+            }
+            org.jboss.jandex.ClassInfo ci = ai.target().asClass();
             if (ci == null || ci.name() == null) {
                 continue;
             }

@@ -10,7 +10,9 @@
     <packaging>jar</packaging>
 
     <name>micro-jainslee example :: USSD gateway simulator</name>
-    <description>CLI jar that simulates SS7 USSD ingress by calling the Quarkus demo REST API</description>
+    <description>Standalone HTTP client that simulates USSD gateway ingress via
+        POST /api/ussd/begin-callback. Embeds a JDK HttpServer callback receiver
+        on a random port. No dependency on example modules.</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -25,7 +27,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
                 <configuration>
-                    <release>17</release>
+                    <release>21</release>
                 </configuration>
             </plugin>
             <plugin>

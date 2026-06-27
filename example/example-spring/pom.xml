@@ -10,24 +10,12 @@
     <packaging>jar</packaging>
 
     <name>micro-jainslee example :: USSD Spring Boot (adapter-springboot)</name>
-    <description>Spring Boot 3 app that integrates micro-jainslee via the
-        in-tree com.microjainslee:adapter-springboot. The
-        MicroSleeContainer is built by the Spring Boot auto-configuration
-        and exposed as a regular @Bean; SBBs and the REST controller
-        inject it via @Autowired.</description>
+    <description>Spring Boot 3 app integrating micro-jainslee via adapter-springboot.
+        HTTP ingress and gRPC egress use JAIN SLEE Resource Adaptors; SBB chain:
+        HttpServerSbb -&gt; Ss7UssdIngressSbb -&gt; GrpcClientSbb / GrpcMenu RA.</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!--
-             Spring Boot 3.3.0 + Java 25 caveat: Spring Boot 3.3.0 (the
-             version this starter is pinned to) supports Java 17+ as a
-             target. The starter pom says source=25/target=25, but
-             Spring Boot 3.4+ is needed for Java 25 as the *minimum
-             source level*. For the test path we keep <release>21
-             (Java 21 bytecode) to match what Spring Boot 3.3.0's
-             bytecode reader can parse. The runtime path is the same:
-             `mvn spring-boot:run` boots Spring Boot with the auto-config.
-        -->
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
         <maven.compiler.release>21</maven.compiler.release>
@@ -35,6 +23,11 @@
         <microjainslee.version>1.1.0</microjainslee.version>
         <surefire.version>3.5.4</surefire.version>
         <log4j.version>2.23.1</log4j.version>
+        <grpc.version>1.82.1</grpc.version>
+        <protobuf.version>4.35.1</protobuf.version>
+        <protoc.version>4.35.1</protoc.version>
+        <protoc_artifact>com.google.protobuf:protoc:${protoc.version}</protoc_artifact>
+        <protoc_grpc_artifact>io.grpc:protoc-gen-grpc-java:${grpc.version}</protoc_grpc_artifact>
     </properties>
 
     <dependencyManagement>
@@ -50,10 +43,15 @@
     </dependencyManagement>
 
     <dependencies>
-        <!-- Spring Boot web + auto-config -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <artifactId>spring-boot-starter</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -65,21 +63,38 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- JBoss Logging for the @SbbAnnotation loggers used by
-             our SBBs. Spring Boot's log4j2 starter doesn't pull it in. -->
         <dependency>
             <groupId>org.jboss.logging</groupId>
             <artifactId>jboss-logging</artifactId>
             <version>3.6.1.Final</version>
         </dependency>
-        <!-- Jakarta annotation API for @PreDestroy in the dispatcher. -->
         <dependency>
             <groupId>jakarta.annotation</groupId>
             <artifactId>jakarta.annotation-api</artifactId>
             <version>2.1.1</version>
         </dependency>
 
-        <!-- micro-jainslee runtime + Spring Boot starter -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+            <version>${grpc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-protobuf</artifactId>
+            <version>${grpc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-stub</artifactId>
+            <version>${grpc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>${protobuf.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>com.microjainslee</groupId>
             <artifactId>jainslee-core</artifactId>
@@ -96,10 +111,6 @@
             <version>${microjainslee.version}</version>
             <optional>true</optional>
         </dependency>
-        <!-- THE spring-boot starter that wires MicroSleeContainer,
-             EventRouter, TimerPort, InMemoryActivityContextNamingFacility
-             as Spring beans, plus a SmartLifecycle to start/stop the
-             container with the Spring context. -->
         <dependency>
             <groupId>com.microjainslee</groupId>
             <artifactId>adapter-springboot</artifactId>
@@ -108,6 +119,13 @@
     </dependencies>
 
     <build>
+        <extensions>
+            <extension>
+                <groupId>kr.motd.maven</groupId>
+                <artifactId>os-maven-plugin</artifactId>
+                <version>1.7.1</version>
+            </extension>
+        </extensions>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -140,9 +158,52 @@
                 </configuration>
             </plugin>
             <plugin>
+                <groupId>org.xolstice.maven.plugins</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
+                <version>0.6.1</version>
+                <configuration>
+                    <protocArtifact>${protoc_artifact}:exe:${os.detected.classifier}</protocArtifact>
+                    <pluginId>grpc-java</pluginId>
+                    <pluginArtifact>${protoc_grpc_artifact}:exe:${os.detected.classifier}</pluginArtifact>
+                    <protoSourceRoot>${project.basedir}/src/main/proto</protoSourceRoot>
+                    <outputDirectory>${project.build.directory}/generated-sources/protobuf/java</outputDirectory>
+                    <clearOutputDirectory>false</clearOutputDirectory>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>compile</goal>
+                            <goal>compile-custom</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>add-protobuf-generated-sources</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.build.directory}/generated-sources/protobuf/java</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <version>${spring-boot.version}</version>
+                <configuration>
+                    <mainClass>com.example.ussddemo.spring.UssdSpringBootApplication</mainClass>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

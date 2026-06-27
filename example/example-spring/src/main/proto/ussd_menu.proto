@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package com.example.ussddemo.spring;
+
+option java_package = "com.example.ussddemo.spring.proto";
+option java_multiple_files = true;
+
+service UssdMenuService {
+  rpc ResolveMenu(MenuRequest) returns (MenuResponse);
+}
+
+message MenuRequest {
+  string msisdn = 1;
+  string ussd_string = 2;
+  string session_id = 3;
+}
+
+message MenuResponse {
+  string session_id = 1;
+  string status = 2;
+  string menu_text = 3;
+  string error = 4;
+}

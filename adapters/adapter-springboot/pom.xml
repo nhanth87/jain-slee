@@ -27,6 +27,8 @@
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
         <spring-boot.version>3.3.0</spring-boot.version>
+        <junit.version>4.13.2</junit.version>
+        <hamcrest.version>2.2</hamcrest.version>
     </properties>
 
     <dependencies>
@@ -46,16 +48,32 @@
             <version>${spring-boot.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <version>${spring-boot.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
             <groupId>com.microjainslee</groupId>
             <artifactId>jainslee-apt</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>
+        </dependency>
+        <!--
+             Test scope: JUnit 4 (NOT 5) + plain Hamcrest matchers, NOT
+             spring-boot-starter-test. The full Spring test slice pulls
+             in @SpringBootTest + ApplicationContextRunner + JUnit
+             Jupiter, but the first one breaks on Java 25 v69 (Spring
+             Boot 3.3.0's ASM can only read up to v65). We test the
+             wiring with plain reflection so no ASM scanning is
+             triggered; the same assertions, no Spring classpath
+             scan. Upgrade to Spring Boot 3.4+ to restore @SpringBootTest.
+        -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.hamcrest</groupId>
+            <artifactId>hamcrest</artifactId>
+            <version>${hamcrest.version}</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>

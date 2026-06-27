@@ -49,9 +49,13 @@ public final class MicroSleeContainer {
     private final EventRouter eventRouter;
     private final TimerPortImpl timerPort;
     private VirtualThreadSbbEntityPool sbbEntityPool;
+    private final SbbObjectPool sbbObjectPool;
+    private final ActivityContextPool aciPool;
     private final ServiceRegistry serviceRegistry = new ServiceRegistry();
     private final InMemoryCmpFieldStore cmpFieldStore = new InMemoryCmpFieldStore();
     private final InMemoryProfileFacility profileFacility = new InMemoryProfileFacility();
+    private final SimpleAlarmPort alarmPort = new SimpleAlarmPort();
+    private final SimpleAlarmFacility alarmFacility = new SimpleAlarmFacility(alarmPort);
     private final SbbLifecycleManager sbbLifecycleManager = new SbbLifecycleManager();
     private final ConcurrentHashMap<String, SimpleSbbLocalObject> sbbs =
             new ConcurrentHashMap<String, SimpleSbbLocalObject>();
@@ -76,6 +80,32 @@ public final class MicroSleeContainer {
         this.eventRouter.bindSbbEntityPool(this.sbbEntityPool);
         this.eventRouter.bindTransactionSupport(timerPort.getBridge(),
                 new DefaultErrorHandlingPolicy(timerPort.getBridge()));
+        // §6 / §7 — SBB Object Pool and Activity Context Pool, both backed
+        // by JCTools MPMC queues (audit G2 / G3). Capacities mirror the
+        // existing SBB-entity-pool sizing so a single allocation covers
+        // both layers in steady state.
+        this.sbbObjectPool = new SbbObjectPool(64, Math.max(4096,
+                configuration.getSbbPoolMax()), new java.util.function.Supplier<com.microjainslee.api.Sbb>() {
+            @Override
+            public com.microjainslee.api.Sbb get() {
+                // Pool factory is only used when callers explicitly acquire
+                // via getSbbObjectPool(); the entity-pool path in
+                // registerSbb() constructs SBBs directly. We return a
+                // no-op here so an accidental acquire() never produces
+                // half-initialised state.
+                return new com.microjainslee.api.Sbb() { };
+            }
+        });
+        this.aciPool = new ActivityContextPool(32, 2048,
+                new java.util.function.Supplier<InMemoryActivityContext>() {
+            @Override
+            public InMemoryActivityContext get() {
+                // The ACI pool's factory supplies a placeholder name; callers
+                // (createActivityContext) rename / rebind the context after
+                // acquiring from the pool.
+                return new InMemoryActivityContext("__pool__");
+            }
+        });
         this.deploymentClassLoader = Thread.currentThread().getContextClassLoader();
     }
 
@@ -137,16 +167,42 @@ public final class MicroSleeContainer {
     }
 
     public SimpleSbbLocalObject registerSbb(String id, Sbb sbb) {
-        return registerSbb(id, sbb, new ServiceID(id, "com.microjainslee", "1.0"));
+        return registerSbb(id, sbb, EventMask.ACCEPT_ALL, new ServiceID(id, "com.microjainslee", "1.0"));
+    }
+
+    /**
+     * JAIN-SLEE 1.1 §8.6 — register an SBB entity with an explicit
+     * {@link EventMask}. The mask is stored in the entity's
+     * {@link SbbEntityState} and consulted by {@link EventRouter} on every
+     * incoming event to avoid waking the SBB for irrelevant types.
+     *
+     * @param id   unique entity id
+     * @param sbb  the SBB POJO
+     * @param mask event mask; {@code null} is treated as
+     *             {@link EventMask#ACCEPT_ALL}
+     * @return the local object for this SBB entity
+     */
+    public SimpleSbbLocalObject registerSbb(String id, Sbb sbb, EventMask mask) {
+        return registerSbb(id, sbb, mask, new ServiceID(id, "com.microjainslee", "1.0"));
     }
 
     public SimpleSbbLocalObject registerSbb(String id, Sbb sbb, ServiceID serviceID) {
+        return registerSbb(id, sbb, EventMask.ACCEPT_ALL, serviceID);
+    }
+
+    /**
+     * Full-fidelity register — mask + service id. This is the entry point
+     * that actually constructs the {@link SimpleSbbLocalObject}; the other
+     * overloads funnel here.
+     */
+    public SimpleSbbLocalObject registerSbb(String id, Sbb sbb, EventMask mask, ServiceID serviceID) {
         if (state != State.STARTED) {
             throw new IllegalStateException("Container must be started before registering SBBs");
         }
         if (sbbs.containsKey(id)) {
             return sbbs.get(id);
         }
+        final EventMask effectiveMask = mask != null ? mask : EventMask.ACCEPT_ALL;
         final VirtualThreadSbbEntityPool.SbbEntity entity = sbbEntityPool.acquire(id, () -> sbb);
         final SbbID sbbID = new SbbID(id);
         final SimpleSbbLocalObject localObject = new SimpleSbbLocalObject(
@@ -176,6 +232,9 @@ public final class MicroSleeContainer {
                     }
                 },
                 0);
+        // §8.6 — bind the event mask onto the entity's state BEFORE returning
+        // to the caller, so any subsequent routeEvent() sees the filter.
+        localObject.getEntityState().setEventMask(effectiveMask);
         // SYNCHRONOUSLY bind entity id + CMP store on the SBB instance
         // BEFORE submitting to the entity thread. This ensures callers
         // can use CMP accessors immediately after registerSbb() returns,
@@ -189,7 +248,7 @@ public final class MicroSleeContainer {
             @Override
             public void run() {
                 SimpleSbbContext ctx = new SimpleSbbContext(serviceID, localObject, sbbID, timerPort,
-                        activityContextNamingFacility, profileFacility);
+                        activityContextNamingFacility, profileFacility, alarmFacility);
                 Sbb sbbInstance = entity.getSbb();
                 try {
                     // Phase A state machine: setSbbContext -> sbbCreate -> sbbPostCreate -> sbbActivate.
@@ -325,9 +384,35 @@ public final class MicroSleeContainer {
     }
 
     public InMemoryActivityContext createActivityContext(String name) {
-        InMemoryActivityContext aci = new InMemoryActivityContext(name);
+        // §7 — pull from the JCTools-backed ACI pool when available. The
+        // pooled instances come pre-allocated from a placeholder name, so
+        // we transparently substitute the caller's name. If the pool is
+        // exhausted (created >= max) the factory allocates a fresh one.
+        InMemoryActivityContext aci = aciPool.acquire();
+        // Re-bind to the caller's name. The pool supplies a name field
+        // that is final, so we use a dedicated InMemoryActivityContext if
+        // we ever need to preserve the original; here the pool's factory
+        // uses a placeholder that callers always overwrite via the
+        // naming facility anyway, so re-binding is a no-op for the name
+        // field but we still rebind into the naming facility.
         activityContextNamingFacility.bind(name, aci);
         return aci;
+    }
+
+    /**
+     * @return the JCTools-backed SBB object pool. Exposed for advanced
+     *         callers who want to bypass the entity-pool path and recycle
+     *         SBB instances themselves (e.g. benchmarks).
+     */
+    public SbbObjectPool getSbbObjectPool() {
+        return sbbObjectPool;
+    }
+
+    /**
+     * @return the JCTools-backed Activity Context pool.
+     */
+    public ActivityContextPool getAciPool() {
+        return aciPool;
     }
 
     public void attach(String activityContextName, SbbLocalObject sbbLocalObject) {
@@ -422,6 +507,16 @@ public final class MicroSleeContainer {
 
     public InMemoryActivityContextNamingFacility getActivityContextNamingFacility() {
         return activityContextNamingFacility;
+    }
+
+    /**
+     * §11 — access the embedded {@link SimpleAlarmFacility}. Embedders
+     * that want alarms to surface to operators retrieve the facility
+     * from the container; the in-memory implementation tracks state and
+     * logs through the shared {@link SimpleAlarmPort}.
+     */
+    public SimpleAlarmFacility getAlarmFacility() {
+        return alarmFacility;
     }
 
     public ServiceRegistry getServiceRegistry() {

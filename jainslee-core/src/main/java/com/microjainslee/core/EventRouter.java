@@ -63,7 +63,14 @@ public class EventRouter {
 
     public EventRouter(int bufferSize, boolean preferVirtualThreads, boolean perVirtualThread) {
         this.executor = MicroSleeExecutors.newEventExecutor(preferVirtualThreads);
-        this.disruptor = new Disruptor<EventWrapper>(
+        // Disruptor 3.4.2 still uses the (factory, ringSize, executor,
+        // producerType, waitStrategy) constructor — the builder API
+        // `Disruptor.<T>newBuilder()` only landed in Disruptor 3.4.4+.
+        // The 5-arg ctor is marked @Deprecated in newer versions as a
+        // forward-compat hint; suppress here because we cannot yet
+        // bump the dep without breaking the other disruptor users.
+        @SuppressWarnings("deprecation")
+        Disruptor<EventWrapper> built = new Disruptor<EventWrapper>(
                 new EventFactory<EventWrapper>() {
                     @Override
                     public EventWrapper newInstance() {
@@ -74,6 +81,7 @@ public class EventRouter {
                 executor,
                 ProducerType.MULTI,
                 new YieldingWaitStrategy());
+        this.disruptor = built;
         this.disruptor.handleEventsWith(new EventHandler<EventWrapper>() {
             @Override
             public void onEvent(EventWrapper wrapper, long sequence, boolean endOfBatch) {

@@ -58,8 +58,8 @@
         <module>jainslee-scheduler</module>
         <module>jainslee-core</module>
         <module>jainslee-apt</module>
-        <module>jainslee-spring-boot-starter</module>
         <module>adapters/adapter-quarkus</module>
+        <module>adapters/adapter-springboot</module>
         <module>ra-connectors</module>
         <module>adapters/adapter-jakartaee</module>
     </modules>

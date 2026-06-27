@@ -98,8 +98,8 @@ That's it. No XML, no annotation scanning, no deployment descriptors.
 | `jainslee-api` | `com.microjainslee:jainslee-api:1.1.0` | ~240 | Stable — JAIN SLEE 1.1 interfaces |
 | `jainslee-core` | `com.microjainslee:jainslee-core:1.1.0` | ~1100 | Stable — embedded container |
 | `jainslee-apt` | `com.microjainslee:jainslee-apt:1.1.0` | ~240 | Stable — annotation processor |
-| `jainslee-spring-boot-starter` | `com.microjainslee:jainslee-spring-boot-starter:1.1.0` | ~270 | Stable — Spring Boot 3 auto-config |
 | `adapter-quarkus` | `com.microjainslee:adapter-quarkus:1.1.0` | ~520 | Stable — Quarkus 3 extension |
+| `adapter-springboot` | `com.microjainslee:adapter-springboot:1.1.0` | ~270 | Stable — Spring Boot 3 auto-config |
 | `adapter-jakartaee` | `com.microjainslee:adapter-jakartaee:1.1.0` | ~250 | Stable — Jakarta EE 9 EJB |
 | `ra-connectors` | `com.microjainslee:ra-connectors:1.1.0` | ~80 | Stable — mock RA for tests |
 

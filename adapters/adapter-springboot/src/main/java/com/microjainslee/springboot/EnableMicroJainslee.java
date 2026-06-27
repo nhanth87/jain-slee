@@ -8,7 +8,7 @@
  * Contact: nhanth87@gmail.com
  */
 
-package com.microjainslee.spring;
+package com.microjainslee.springboot;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

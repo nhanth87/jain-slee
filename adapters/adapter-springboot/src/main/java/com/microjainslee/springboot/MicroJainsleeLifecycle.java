@@ -24,15 +24,23 @@ public class MicroJainsleeLifecycle implements SmartLifecycle {
 
     public MicroJainsleeLifecycle(MicroSleeContainer container) {
         this.container = container;
+        // Defensive: production code always passes a non-null container,
+        // but the unit test (lifecycleIsNullSafe) and any future misuse
+        // should not NPE the ctor. Log a warning marker instead.
         LOG.debug("MicroJainsleeLifecycle created (phase={}, container={})",
-                Integer.MIN_VALUE + 100, container.getState());
+                Integer.MIN_VALUE + 100,
+                container != null ? container.getState() : "null");
     }
 
     @Override public boolean isAutoStartup() { return true; }
 
     @Override
     public void start() {
-        LOG.info("SmartLifecycle.start() — starting MicroSleeContainer (current state={})", container.getState());
+        if (container == null) {
+            LOG.warn("SmartLifecycle.start() called but no container wired; skipping");
+            return;
+        }
+        LOG.info("SmartLifecycle.start() - starting MicroSleeContainer (current state={})", container.getState());
         container.start();
         running = true;
         LOG.info("MicroSleeContainer started via SmartLifecycle (phase={})", getPhase());
@@ -40,7 +48,12 @@ public class MicroJainsleeLifecycle implements SmartLifecycle {
 
     @Override
     public void stop() {
-        LOG.info("SmartLifecycle.stop() — stopping MicroSleeContainer (current state={})", container.getState());
+        if (container == null) {
+            LOG.warn("SmartLifecycle.stop() called but no container wired; skipping");
+            running = false;
+            return;
+        }
+        LOG.info("SmartLifecycle.stop() - stopping MicroSleeContainer (current state={})", container.getState());
         try {
             container.stop();
             running = false;

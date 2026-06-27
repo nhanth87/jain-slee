@@ -74,13 +74,15 @@ public class SbbTransactionContextTest {
         InMemoryActivityContext aci = new InMemoryActivityContext("registry-ac");
         FakeLocalObject sbb = new FakeLocalObject("registry-sbb");
         SbbTransactionContext tx = ActivityContextTransactionRegistry.begin(aci, timerBridge);
-        try {
-            aci.attach(sbb);
-            assertTrue(aci.getAttachedSbbs().contains(sbb));
-            tx.rollback();
-        } finally {
-            ActivityContextTransactionRegistry.clear(tx);
-        }
+        // Wrap the body in a ScopedValue.where so that InMemoryActivityContext.attach
+        // can resolve CURRENT via ScopedValue (the new VT-safe contract).
+        ActivityContextTransactionRegistry.runInTransaction(tx, new Runnable() {
+            @Override public void run() {
+                aci.attach(sbb);
+                assertTrue(aci.getAttachedSbbs().contains(sbb));
+                tx.rollback();
+            }
+        });
         assertFalse(aci.getAttachedSbbs().contains(sbb));
     }
 

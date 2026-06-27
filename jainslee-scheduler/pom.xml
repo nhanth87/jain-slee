@@ -18,8 +18,8 @@
     </description>
 
     <properties>
-        <maven.compiler.source>8</maven.compiler.source>
-        <maven.compiler.target>8</maven.compiler.target>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
         <netty.version>4.2.11.Final</netty.version>
     </properties>
 

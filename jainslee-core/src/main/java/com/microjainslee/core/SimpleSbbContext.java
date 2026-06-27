@@ -11,6 +11,7 @@
 package com.microjainslee.core;
 
 import com.microjainslee.api.ActivityContextNamingFacility;
+import com.microjainslee.api.AlarmFacility;
 import com.microjainslee.api.ProfileFacility;
 import com.microjainslee.api.ProfileTablePort;
 import com.microjainslee.api.SbbContext;
@@ -35,18 +36,19 @@ public final class SimpleSbbContext implements SbbContext {
     private final TimerPort timerPort;
     private final ActivityContextNamingFacility namingFacility;
     private final ProfileFacility profileFacility;
+    private final AlarmFacility alarmFacility;
     private final UsagePort usagePort = new SimpleUsagePort();
     private volatile boolean rollbackOnly;
 
     public SimpleSbbContext(ServiceID serviceID, SbbLocalObject localObject, TimerPort timerPort,
             ActivityContextNamingFacility namingFacility) {
-        this(serviceID, localObject, null, timerPort, namingFacility, null);
+        this(serviceID, localObject, null, timerPort, namingFacility, null, null);
     }
 
     public SimpleSbbContext(ServiceID serviceID, SbbLocalObject localObject,
             SbbID sbbID, TimerPort timerPort,
             ActivityContextNamingFacility namingFacility) {
-        this(serviceID, localObject, sbbID, timerPort, namingFacility, null);
+        this(serviceID, localObject, sbbID, timerPort, namingFacility, null, null);
     }
 
     /**
@@ -59,6 +61,19 @@ public final class SimpleSbbContext implements SbbContext {
             SbbID sbbID, TimerPort timerPort,
             ActivityContextNamingFacility namingFacility,
             ProfileFacility profileFacility) {
+        this(serviceID, localObject, sbbID, timerPort, namingFacility, profileFacility, null);
+    }
+
+    /**
+     * Full-arg constructor including the alarm facility. The container uses
+     * this variant to install the {@link SimpleAlarmFacility} it created
+     * during {@link MicroSleeContainer} start-up.
+     */
+    public SimpleSbbContext(ServiceID serviceID, SbbLocalObject localObject,
+            SbbID sbbID, TimerPort timerPort,
+            ActivityContextNamingFacility namingFacility,
+            ProfileFacility profileFacility,
+            AlarmFacility alarmFacility) {
         if (serviceID == null) {
             throw new IllegalArgumentException("serviceID is required");
         }
@@ -68,6 +83,7 @@ public final class SimpleSbbContext implements SbbContext {
         this.timerPort = timerPort;
         this.namingFacility = namingFacility;
         this.profileFacility = profileFacility;
+        this.alarmFacility = alarmFacility;
     }
 
     @Override
@@ -102,6 +118,11 @@ public final class SimpleSbbContext implements SbbContext {
     @Override
     public UsagePort getUsageFacility() {
         return usagePort;
+    }
+
+    @Override
+    public AlarmFacility getAlarmFacility() {
+        return alarmFacility;
     }
 
     /**

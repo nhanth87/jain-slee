@@ -88,6 +88,13 @@ public final class MicroSleeContainer {
         this.eventRouter.bindSbbEntityPool(this.sbbEntityPool);
         this.eventRouter.bindTransactionSupport(timerPort.getBridge(),
                 new DefaultErrorHandlingPolicy(timerPort.getBridge()));
+        // Production P1.2 — wire the optional Narayana JTA transaction
+        // context. Created reflectively so the jainslee-core compile classpath
+        // does NOT depend on jainslee-tx. When txEnabled=false the kernel
+        // behaves exactly as before — NoOpTransactionManager is a true
+        // no-op and the EventRouter wrapper sees null.
+        this.eventRouter.bindJtaTransactionContext(
+                createJtaTransactionContext(configuration.isTxEnabled()));
         // §6 / §7 — SBB Object Pool and Activity Context Pool, both backed
         // by JCTools MPMC queues (audit G2 / G3). Capacities mirror the
         // existing SBB-entity-pool sizing so a single allocation covers
@@ -127,6 +134,60 @@ public final class MicroSleeContainer {
                 configuration.getSbbPoolMin(),
                 configuration.getSbbPoolMax(),
                 configuration.isSbbPerVirtualThread());
+    }
+
+    /**
+     * Production P1.2 — reflectively construct the JTA transaction context
+     * bound to the {@link EventRouter}.
+     *
+     * <p>Why reflection? {@code jainslee-core} MUST NOT depend on
+     * {@code jainslee-tx} (compile-time). The two modules connect only at
+     * runtime, when {@code jainslee-tx} is on the classpath.
+     *
+     * <ul>
+     *   <li>{@code txEnabled = false} → instantiates
+     *       {@code com.microjainslee.tx.NoOpTransactionManager} if available;
+     *       otherwise returns {@code null} so the EventRouter skips wrapping.</li>
+     *   <li>{@code txEnabled = true}  → instantiates
+     *       {@code com.microjainslee.tx.JtaTransactionManager}; throws
+     *       {@link IllegalStateException} at construction time (so the user
+     *       sees the error at {@code new MicroSleeContainer(...)} rather than
+     *       on the first event) if the JTA module is missing from the
+     *       classpath.</li>
+     * </ul>
+     */
+    private static Object createJtaTransactionContext(boolean txEnabled) {
+        if (!txEnabled) {
+            return createInstanceOrNull("com.microjainslee.tx.NoOpTransactionManager");
+        }
+        return createInstanceOrFail("com.microjainslee.tx.JtaTransactionManager");
+    }
+
+    private static Object createInstanceOrNull(String className) {
+        try {
+            Class<?> cls = Class.forName(className);
+            return cls.getDeclaredConstructor().newInstance();
+        } catch (Throwable t) {
+            // NoOpTransactionManager is best-effort. When the tx module is
+            // absent the EventRouter sees null and behaves exactly like the
+            // pre-P1.2 R&D code path.
+            return null;
+        }
+    }
+
+    private static Object createInstanceOrFail(String className) {
+        try {
+            Class<?> cls = Class.forName(className);
+            return cls.getDeclaredConstructor().newInstance();
+        } catch (ClassNotFoundException cnfe) {
+            throw new IllegalStateException(
+                    "MicroSleeConfiguration.txEnabled = true but the JTA module "
+                            + "(com.microjainslee:jainslee-tx) is not on the classpath. "
+                            + "Add it to your dependencies or set txEnabled(false).", cnfe);
+        } catch (ReflectiveOperationException roe) {
+            throw new IllegalStateException(
+                    "Failed to instantiate JTA transaction context: " + className, roe);
+        }
     }
 
     public synchronized void start() {

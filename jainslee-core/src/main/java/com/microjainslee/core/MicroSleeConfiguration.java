@@ -28,6 +28,7 @@ public final class MicroSleeConfiguration {
     private final boolean sbbPerVirtualThread;
     private final int sbbTypePoolMinIdle;
     private final EventDeliveryMode eventDeliveryMode;
+    private final boolean txEnabled;
 
     private MicroSleeConfiguration(Builder builder) {
         this.eventRouterBufferSize = builder.eventRouterBufferSize;
@@ -37,6 +38,7 @@ public final class MicroSleeConfiguration {
         this.sbbPerVirtualThread = builder.sbbPerVirtualThread;
         this.sbbTypePoolMinIdle = builder.sbbTypePoolMinIdle;
         this.eventDeliveryMode = builder.eventDeliveryMode;
+        this.txEnabled = builder.txEnabled;
     }
 
     public static Builder builder() {
@@ -75,6 +77,17 @@ public final class MicroSleeConfiguration {
         return eventDeliveryMode;
     }
 
+    /**
+     * Production P1.2 — when {@code true}, the container looks up
+     * {@code com.microjainslee.tx.JtaTransactionManager} reflectively on
+     * classpath and wraps each SBB event delivery in a JTA transaction.
+     * Default {@code false} preserves the R&D behaviour (logical undo stack
+     * in {@link SbbTransactionContext}, no JTA).
+     */
+    public boolean isTxEnabled() {
+        return txEnabled;
+    }
+
     public static final class Builder {
         private int eventRouterBufferSize = DEFAULT_RING_BUFFER_SIZE;
         private boolean preferVirtualThreads = true;
@@ -83,6 +96,7 @@ public final class MicroSleeConfiguration {
         private boolean sbbPerVirtualThread = true;
         private int sbbTypePoolMinIdle = DEFAULT_SBB_TYPE_POOL_MIN_IDLE;
         private EventDeliveryMode eventDeliveryMode = EventDeliveryMode.SYNC;
+        private boolean txEnabled = false;
 
         public Builder eventRouterBufferSize(int eventRouterBufferSize) {
             if (eventRouterBufferSize <= 0 || Integer.bitCount(eventRouterBufferSize) != 1) {
@@ -122,6 +136,18 @@ public final class MicroSleeConfiguration {
             if (eventDeliveryMode != null) {
                 this.eventDeliveryMode = eventDeliveryMode;
             }
+            return this;
+        }
+
+        /**
+         * Production P1.2 — enable JTA transaction wrapping for SBB event
+         * delivery. Requires {@code com.microjainslee:jainslee-tx} on the
+         * classpath at runtime; the container will throw
+         * {@link IllegalStateException} at {@code start()} time if
+         * {@code txEnabled = true} but the JTA module is missing.
+         */
+        public Builder txEnabled(boolean txEnabled) {
+            this.txEnabled = txEnabled;
             return this;
         }
 

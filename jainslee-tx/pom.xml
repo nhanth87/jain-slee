@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>micro-jainslee</artifactId>
+        <version>1.1.0</version>
+    </parent>
+
+    <artifactId>jainslee-tx</artifactId>
+    <packaging>jar</packaging>
+
+    <name>micro-jainslee :: tx (Narayana JTA integration)</name>
+    <description>
+        Production P1.2 — Narayana JTA 7.0 transaction manager for micro-jainslee.
+        Isolated from jainslee-core so the R&amp;D kernel stays JBoss-/JTA-free.
+    </description>
+
+    <properties>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <maven.compiler.release>25</maven.compiler.release>
+        <narayana.version>7.0.0.Final</narayana.version>
+        <jakarta.transaction.api.version>2.0.1</jakarta.transaction.api.version>
+        <junit.jupiter.version>5.11.4</junit.jupiter.version>
+        <assertj.version>3.26.3</assertj.version>
+    </properties>
+
+    <dependencies>
+        <!--
+          Narayana JTA uber-jar (ArjunaJTA). Wraps com.arjuna.ats.jta.TransactionManager
+          + jakarta.transaction.* APIs. Pulled as a compile dep — never exposed to
+          jainslee-core (kernel stays JTA-free).
+        -->
+        <dependency>
+            <groupId>org.jboss.narayana.jta</groupId>
+            <artifactId>narayana-jta</artifactId>
+            <version>${narayana.version}</version>
+        </dependency>
+
+        <!--
+          Narayana 7.0 logs through JBoss Logging; the shaded uber-jar does NOT
+          bundle it. Required at runtime for jtaLogger initialisation.
+        -->
+        <dependency>
+            <groupId>org.jboss.logging</groupId>
+            <artifactId>jboss-logging</artifactId>
+            <version>3.6.1.Final</version>
+        </dependency>
+
+        <!--
+          Public SPI for the kernel — `jainslee-core` provides api/jar without JTA.
+          Provided because we never re-export it; callers always go through the core.
+        -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!--
+          Logging facade used by the Narayana wrapper for diagnostic logs
+          (begin / rollback / commit failures). API only; the runtime brings
+          the backend via whichever adapter embeds jainslee-tx.
+        -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>2.23.1</version>
+        </dependency>
+
+        <!--
+          jainslee-core is provided so we can reference SbbTransactionContext et al.
+          when wiring the kernel facade. The runtime classpath already has core via
+          whatever embeds jainslee-tx.
+        -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-core</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Tests -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.23.1</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <!--
+                      Force tests to run on a platform thread; Narayana 7.0 contains
+                      synchronized blocks (see production-roadmap §5.1). Running on
+                      virtual threads is fine on Linux x86_64 thanks to -Djdk.tracePinnedThreads,
+                      but we keep platform for the unit tests so they don't depend
+                      on pinning-tolerant Narayana builds.
+                    -->
+                    <argLine>-Xss1m</argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

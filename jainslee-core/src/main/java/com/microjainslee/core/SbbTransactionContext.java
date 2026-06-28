@@ -13,6 +13,8 @@ package com.microjainslee.core;
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.SbbLocalObject;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.Deque;
 
@@ -30,6 +32,21 @@ public final class SbbTransactionContext {
     private final Deque<Runnable> undoActions = new ArrayDeque<Runnable>();
     private boolean active;
 
+    /**
+     * Production P1.2 — optional external (JTA) transaction context. Typed
+     * as {@link Object} so the kernel stays JTA-free. When bound, the
+     * external context wraps every {@code deliverEvent} call (see
+     * {@link EventRouter}) and this class can query the live tx status
+     * via {@link #currentExternalStatus()} for diagnostic logging.
+     */
+    private volatile Object externalTransactionContext;
+
+    /**
+     * Cached reflective handle for {@code externalTransactionContext.currentStatus()}.
+     * {@code null} when no external context is bound.
+     */
+    private volatile Method currentStatusMethod;
+
     public SbbTransactionContext(InMemoryActivityContext activityContext,
             SleeTimerSchedulerBridge timerBridge) {
         if (activityContext == null) {
@@ -41,6 +58,66 @@ public final class SbbTransactionContext {
 
     public InMemoryActivityContext getActivityContext() {
         return activityContext;
+    }
+
+    /**
+     * Production P1.2 — bind an external JTA {@code TransactionContext} so
+     * status queries / diagnostics can inspect the live tx. The logical
+     * undo stack ({@link #begin()} / {@link #recordAttach(SbbLocalObject)} /
+     * {@link #rollback()}) is preserved regardless — this method only adds
+     * observability, it does NOT change commit / rollback semantics.
+     *
+     * <p>The {@code txContext} MUST expose a public method
+     * {@code int currentStatus()} for status lookup; otherwise an
+     * {@link IllegalArgumentException} is raised.
+     */
+    public void setExternalTransactionContext(Object txContext) {
+        if (txContext == null) {
+            this.externalTransactionContext = null;
+            this.currentStatusMethod = null;
+            return;
+        }
+        Method m;
+        try {
+            m = txContext.getClass().getMethod("currentStatus");
+        } catch (NoSuchMethodException nsme) {
+            throw new IllegalArgumentException(
+                    "external transaction context must expose currentStatus(): "
+                            + txContext.getClass().getName(), nsme);
+        }
+        this.externalTransactionContext = txContext;
+        this.currentStatusMethod = m;
+    }
+
+    /**
+     * @return {@code true} when a JTA {@code TransactionContext} has been
+     *         bound via {@link #setExternalTransactionContext(Object)}.
+     */
+    public boolean isJtaBacked() {
+        return externalTransactionContext != null && currentStatusMethod != null;
+    }
+
+    /**
+     * @return the external tx status code ({@code jakarta.transaction.Status}
+     *         numeric values: 0 active, 1 marked rollback, 6 no tx, ...),
+     *         or {@code -1} when no external context is bound or status
+     *         lookup fails. Pure observation — does not affect undo stack.
+     */
+    public int currentExternalStatus() {
+        Object ctx = externalTransactionContext;
+        Method m = currentStatusMethod;
+        if (ctx == null || m == null) {
+            return -1;
+        }
+        try {
+            Object result = m.invoke(ctx);
+            if (result instanceof Integer) {
+                return (Integer) result;
+            }
+            return -1;
+        } catch (IllegalAccessException | InvocationTargetException iae) {
+            return -1;
+        }
     }
 
     public boolean isActive() {

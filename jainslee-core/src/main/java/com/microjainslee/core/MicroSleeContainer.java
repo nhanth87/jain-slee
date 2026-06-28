@@ -17,6 +17,7 @@ import com.microjainslee.api.InitialEventSelector;
 import com.microjainslee.api.PoolableSbb;
 import com.microjainslee.api.ProfileFacility;
 import com.microjainslee.api.ResourceAdaptor;
+import com.microjainslee.ra.RaEntityStateMachine;
 import com.microjainslee.api.Sbb;
 import com.microjainslee.api.SbbID;
 import com.microjainslee.api.SbbLocalObject;
@@ -540,6 +541,15 @@ public final class MicroSleeContainer {
             }
         }
         resourceAdaptors.clear();
+        // Perfect Core S5 — tear down S5-wired entities through their
+        // state machine + endpoint, which routes the stop sequence
+        // through RaEntityStateMachine (instead of skipping to
+        // raUnconfigure). Idempotent and side-effect free when no S5
+        // entity was registered.
+        for (String raEntityName : java.util.List.copyOf(raEntities.keySet())) {
+            stopRA(raEntityName);
+        }
+        raEntities.clear();
         sbbEntityPool.shutdown();
         timerPort.getBridge().shutdown();
         eventRouter.shutdown();
@@ -807,6 +817,144 @@ public final class MicroSleeContainer {
         return context;
     }
 
+    // ──────────────────────────────────────────────────────────
+    // Perfect Core S5 — full RA wiring with state machine + endpoint + context
+    // ──────────────────────────────────────────────────────────
+
+    /**
+     * RA-entity record stored in {@link #raEntities}. Holds the
+     * {@link com.microjainslee.ra.ResourceAdaptorContextImpl} plus the
+     * state machine and endpoint so {@link #stopRA(String)} can drive
+     * the spec-mandated Active -> Stopping -> Inactive sequence.
+     */
+    private final ConcurrentHashMap<String, RaEntity> raEntities = new ConcurrentHashMap<>();
+
+    /**
+     * Perfect Core S5 — register a {@link ResourceAdaptor} with full
+     * lifecycle wiring per JAIN SLEE 1.1 §12.4.
+     *
+     * <p>Lifecycle:
+     * <pre>
+     *   1. create state machine (INACTIVE)
+     *   2. create SleeEndpointImpl with full validation
+     *   3. create ResourceAdaptorContextImpl with all six facilities
+     *   4. ra.setResourceAdaptorContext(ctx) + ra.raConfigure()
+     *   5. stateMachine.activate() -> ACTIVE -> ra.raActive()
+     * </pre>
+     *
+     * <p>Stopping:
+     * <pre>
+     *   1. stateMachine.deactivate() -> STOPPING -> ra.raStopping()
+     *   2. RA drains, then calls endpoint.stopComplete()
+     *   3. stateMachine.stopComplete() -> INACTIVE -> ra.raInactive()
+     * </pre>
+     *
+     * <p>Both the legacy {@link #bootstrapResourceAdaptor(String, String)}
+     * (reflection-based, used by the deployable-unit index) and the
+     * modern {@link #registerResourceAdaptor(String, ResourceAdaptor)}
+     * are kept. The modern path is the one embedders should use for
+     * new code.
+     *
+     * @param raEntityName unique entity name (used as the ACNF key prefix
+     *                     and the resourceAdaptor index key)
+     * @param ra           the resource adaptor instance
+     * @return the wired {@link com.microjainslee.ra.ResourceAdaptorContextImpl}
+     */
+    public synchronized com.microjainslee.ra.ResourceAdaptorContextImpl registerResourceAdaptor(
+            String raEntityName, ResourceAdaptor ra) {
+        if (state != State.STARTED) {
+            throw new IllegalStateException(
+                    "Container must be started before registering RAs (state=" + state + ")");
+        }
+        if (raEntityName == null || raEntityName.isEmpty()) {
+            throw new IllegalArgumentException("raEntityName is required");
+        }
+        if (ra == null) {
+            throw new IllegalArgumentException("ra is required");
+        }
+        if (raEntities.containsKey(raEntityName)) {
+            RaEntity existing = raEntities.get(raEntityName);
+            return existing.context();
+        }
+
+        // 1+2+3 — build state machine, endpoint, and context through the
+        // kernel-side factory. ResourceAdaptorContextBuilder wires
+        // every facility against the live container so the RA can
+        // actually exercise its spec surface.
+        com.microjainslee.core.ra.ResourceAdaptorContextBuilder.Built built =
+                com.microjainslee.core.ra.ResourceAdaptorContextBuilder.build(
+                        this, ra, raEntityName);
+        com.microjainslee.ra.ResourceAdaptorContextImpl ctx = built.context();
+
+        // 4 — bind RA into context, then run raConfigure().
+        ra.setResourceAdaptorContext(ctx);
+        try {
+            ra.raConfigure();
+        } catch (RuntimeException re) {
+            LOG.error("raConfigure() failed for [{}]: {}", raEntityName, re.getMessage(), re);
+            throw re;
+        }
+
+        // 5 — activate (INACTIVE -> ACTIVE -> raActive()).
+        built.stateMachine().activate();
+
+        raEntities.put(raEntityName, new RaEntity(ra, ctx, built.stateMachine(), built.endpoint()));
+        LOG.info("Registered resource adaptor entity [{}] (S5 wiring)", raEntityName);
+        return ctx;
+    }
+
+    /**
+     * Perfect Core S5 — drive the spec-mandated Stop sequence for a
+     * registered RA. Idempotent: calling on an already-stopped entity
+     * is a no-op.
+     */
+    public synchronized void stopRA(String raEntityName) {
+        if (raEntityName == null) return;
+        RaEntity entry = raEntities.remove(raEntityName);
+        if (entry == null) {
+            LOG.debug("stopRA({}) -- entity not registered, ignoring", raEntityName);
+            return;
+        }
+        RaEntityStateMachine.State current = entry.stateMachine().getState();
+        if (current == RaEntityStateMachine.State.INACTIVE) {
+            LOG.debug("stopRA({}) -- already INACTIVE, ignoring", raEntityName);
+            return;
+        }
+        if (current == RaEntityStateMachine.State.ACTIVE) {
+            entry.stateMachine().deactivate(); // ACTIVE -> STOPPING -> raStopping()
+        }
+        // STOPPING -> INACTIVE -> raInactive() (synchronous — no
+        // real in-flight events to drain in R&D; production path
+        // would await the RA's async stopComplete()).
+        if (entry.stateMachine().getState() == RaEntityStateMachine.State.STOPPING) {
+            entry.stateMachine().stopComplete();
+        }
+        try {
+            entry.ra().raUnconfigure();
+        } catch (RuntimeException re) {
+            LOG.warn("raUnconfigure() failed for [{}]: {}", raEntityName, re.getMessage(), re);
+        }
+        entry.ra().unsetResourceAdaptorContext();
+        LOG.info("Stopped resource adaptor entity [{}] (S5 wiring)", raEntityName);
+    }
+
+    /** @return the S5-wired context for an entity, or {@code null} when unknown. */
+    public com.microjainslee.ra.ResourceAdaptorContextImpl getRaContext(String raEntityName) {
+        RaEntity entry = raEntities.get(raEntityName);
+        return entry != null ? entry.context() : null;
+    }
+
+    /** @return the set of S5-wired RA entity names. */
+    public java.util.Set<String> getRegisteredRaEntities() {
+        return java.util.Collections.unmodifiableSet(raEntities.keySet());
+    }
+
+    /** Internal record holding the S5-wired objects for a single RA entity. */
+    private record RaEntity(ResourceAdaptor ra,
+                            com.microjainslee.ra.ResourceAdaptorContextImpl context,
+                            com.microjainslee.ra.RaEntityStateMachine stateMachine,
+                            com.microjainslee.ra.SleeEndpointImpl endpoint) {}
+
     private <T> T instantiateComponent(String className, Class<T> expectedType) {
         try {
             Class<?> clazz = Class.forName(className, true, deploymentClassLoader);
@@ -967,6 +1115,17 @@ public final class MicroSleeContainer {
 
     public TimerPort getTimerPort() {
         return timerPort;
+    }
+
+    /**
+     * Perfect Core S5 — return the {@link SleeTimerSchedulerBridge}
+     * backing the embedded {@link TimerPort}. RAs that need the
+     * bridge directly (e.g. when building a {@link
+     * com.microjainslee.api.TimerFacility}) call this instead of
+     * unwrapping the port themselves.
+     */
+    public SleeTimerSchedulerBridge getTimerBridge() {
+        return timerPort != null ? timerPort.getBridge() : null;
     }
 
     public AcnfBackend getActivityContextNamingFacility() {

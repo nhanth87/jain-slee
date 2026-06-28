@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>micro-jainslee</artifactId>
+        <version>1.1.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>jainslee-adapter</artifactId>
+    <packaging>pom</packaging>
+    <name>micro-jainslee :: adapter suite</name>
+    <description>
+        Aggregator for the framework-specific adapter sub-modules. Each sub-module
+        exposes the same MicroSleeContainer, EventRouter, TimerPort and ACNF beans
+        through the host framework's DI container:
+          - adapter-quarkus      (Quarkus 3.x extension — deployment + runtime)
+          - adapter-springboot   (Spring Boot 3 starter)
+          - adapter-jakartaee    (Jakarta EE 9 @Singleton @Startup EJB)
+
+        Applications pick exactly one adapter at deploy time. Production USSD
+        builds typically use adapter-springboot; edge / R&amp;D builds typically
+        use adapter-quarkus; legacy Jakarta EE clients use adapter-jakartaee.
+    </description>
+
+    <modules>
+        <module>adapter-quarkus</module>
+        <module>adapter-springboot</module>
+        <module>adapter-jakartaee</module>
+    </modules>
+</project>

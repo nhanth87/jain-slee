@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>micro-jainslee</artifactId>
+        <version>1.1.0</version>
+    </parent>
+    <artifactId>vendor-ras</artifactId>
+    <packaging>pom</packaging>
+    <name>micro-jainslee :: Resource Adaptors</name>
+
+    <properties>
+        <okhttp.version>4.12.0</okhttp.version>
+        <grpc.version>1.68.2</grpc.version>
+        <gson.version>2.11.0</gson.version>
+    </properties>
+
+    <modules>
+        <!--
+            Phase 1 (in progress) — flat leaves with code + tests.
+
+            The original v2 design had the spec-aligned 4-module decomposition
+            here (ras/{http,grpc}/.../{ratype,ra,events,library}) but those
+            nested subdirs are all empty in working tree (audit 2026-06-28),
+            so they would not contribute to a reactor build. Plan §11.1
+            reconciles to a 4-module shape per RA. Until that lands, these
+            flat leaves are the only RA artifacts that actually have code.
+
+            See docs/micro-jainslee-compact-design.md §7 and §11.1.
+        -->
+        <module>ra-grpc-client</module>
+        <module>ra-http-ingress</module>
+        <!-- Phase 3+: <module>ra-map-jss7</module>, <module>ra-sip</module>, <module>ra-diameter</module> -->
+        <!-- Phase 4+: <module>ra-camel</module> -->
+    </modules>
+</project>

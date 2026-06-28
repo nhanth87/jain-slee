@@ -12,6 +12,8 @@ package com.microjainslee.core;
 
 import com.microjainslee.api.Sbb;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -66,13 +68,50 @@ public final class VirtualThreadSbbEntityPool {
 
     private final ConcurrentHashMap<String, SbbEntity> entities =
             new ConcurrentHashMap<String, SbbEntity>();
+    /**
+     * Production P1.4 (S2) — cache of generated concrete SBB classes
+     * keyed by the abstract SBB class. Populated lazily on first
+     * {@link #acquireByClass(String, Class)} call when the codegen module
+     * is reachable; stays empty in the reflection fallback mode.
+     */
+    private final ConcurrentHashMap<Class<?>, Class<?>> concreteClassCache =
+            new ConcurrentHashMap<Class<?>, Class<?>>();
     private final EntitySlotPool slotPool;
     private final int min;
     private final int max;
     private final ExecutorService executor;
+    /**
+     * Reflection-resolved helper instance (lazily bound). {@code null} when
+     * the codegen module is absent or {@link #codegenDisabled()} returns
+     * {@code true}.
+     */
+    private volatile Object codegenHelper;
+    /**
+     * Class name used for the reflective lookup of the codegen helper.
+     * Held in a {@code static final} field so it can be swapped out by
+     * tests via {@link #setCodegenHelperClassName(String)} without
+     * touching the production wiring.
+     */
+    private static volatile String codegenHelperClassName =
+            "com.microjainslee.codegen.JavassistDeployTimeCodegen";
+    private final Path deployDir;
     private volatile boolean shuttingDown;
 
     public VirtualThreadSbbEntityPool(int min, int max, boolean perVirtualThread) {
+        this(min, max, perVirtualThread, defaultDeployDir());
+    }
+
+    /**
+     * Production P1.4 (S2) constructor — accepts an explicit deploy
+     * directory so the pool's codegen helper writes {@code .class} files
+     * to the configured location instead of the JVM default temp dir.
+     *
+     * @param min               minimum number of warm slots
+     * @param max               maximum number of slots
+     * @param perVirtualThread  when {@code true} run tasks on virtual threads
+     * @param deployDir         directory for generated .class files
+     */
+    public VirtualThreadSbbEntityPool(int min, int max, boolean perVirtualThread, Path deployDir) {
         if (min < 0) {
             throw new IllegalArgumentException("min must be >= 0");
         }
@@ -93,6 +132,19 @@ public final class VirtualThreadSbbEntityPool {
         }
         this.executor = chosen;
         this.slotPool = new EntitySlotPool(min, max, executor);
+        this.deployDir = deployDir == null ? defaultDeployDir() : deployDir;
+    }
+
+    /**
+     * Default deploy directory — respects the {@code jainslee.deploy.dir}
+     * system property, falling back to {@code ${java.io.tmpdir}/slee-deploy}.
+     */
+    private static Path defaultDeployDir() {
+        String sysProp = System.getProperty("jainslee.deploy.dir");
+        if (sysProp != null && !sysProp.isBlank()) {
+            return Paths.get(sysProp);
+        }
+        return Paths.get(System.getProperty("java.io.tmpdir"), "slee-deploy");
     }
 
     public SbbEntity acquire(String sbbId, Supplier<Sbb> factory) {
@@ -215,6 +267,202 @@ public final class VirtualThreadSbbEntityPool {
             Thread.currentThread().interrupt();
         }
         entities.clear();
+    }
+
+    // ----------------------------------------------------------------
+    //  Production P1.4 (S2) — Javassist CMP codegen wiring
+    // ----------------------------------------------------------------
+
+    /**
+     * Acquire an entity backed by a concrete SBB class generated from the
+     * supplied abstract {@code sbbClass} via the Javassist codegen helper.
+     *
+     * <p>The concrete class is generated on first call and cached in
+     * {@link #concreteClassCache}. Subsequent calls reuse the cached
+     * class, so the hot path stays at {@code O(1)}.
+     */
+    public SbbEntity acquireByClass(String sbbId, Class<? extends Sbb> sbbClass) {
+        if (shuttingDown) {
+            throw new IllegalStateException("SbbEntityPool is shutting down");
+        }
+        if (sbbId == null || sbbClass == null) {
+            throw new IllegalArgumentException("sbbId and sbbClass are required");
+        }
+        SbbEntity existing = entities.get(sbbId);
+        if (existing != null) {
+            return existing;
+        }
+        Sbb sbb = instantiateSbb(sbbClass);
+        EntitySlot slot = slotPool.borrow();
+        slot.bind(sbbId, 0L, sbb);
+        SbbEntity fresh = new SbbEntity(slot, sbbId, sbb);
+        SbbEntity prior = entities.putIfAbsent(sbbId, fresh);
+        if (prior != null) {
+            slot.unbind();
+            slotPool.release(slot);
+            return prior;
+        }
+        return fresh;
+    }
+
+    /**
+     * Instantiate the SBB class, preferring the codegen-generated concrete
+     * class when the {@code jainslee-codegen} module is reachable.
+     */
+    private Sbb instantiateSbb(Class<? extends Sbb> sbbClass) {
+        Class<?> concrete = concreteClassCache.get(sbbClass);
+        if (concrete == null) {
+            concrete = resolveConcreteClass(sbbClass);
+            if (concrete != null) {
+                concreteClassCache.put(sbbClass, concrete);
+            }
+        }
+        try {
+            if (concrete != null) {
+                return (Sbb) concrete.getDeclaredConstructor().newInstance();
+            }
+            return sbbClass.getDeclaredConstructor().newInstance();
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("Failed to instantiate SBB: " + sbbClass.getName()
+                    + (concrete != null ? " (concrete=" + concrete.getName() + ")" : ""), e);
+        }
+    }
+
+    /**
+     * Resolve the concrete SBB class for {@code sbbClass}. Returns
+     * {@code null} when the codegen module is not on the classpath or
+     * has been disabled via {@link #setCodegenDisabled(boolean)}.
+     */
+    private Class<?> resolveConcreteClass(Class<? extends Sbb> sbbClass) {
+        if (codegenDisabled) {
+            return null;
+        }
+        Object helper = codegenHelper;
+        if (helper == null) {
+            helper = tryLoadCodegenHelper();
+            codegenHelper = helper;
+        }
+        if (helper == null) {
+            // Module absent; cache the negative result so we don't keep probing.
+            return null;
+        }
+        try {
+            java.lang.reflect.Method getOrGenerate = helper.getClass()
+                    .getMethod("getOrGenerate", Class.class, java.nio.file.Path.class);
+            @SuppressWarnings("unchecked")
+            Class<? extends Sbb> generated =
+                    (Class<? extends Sbb>) getOrGenerate.invoke(helper, sbbClass, deployDir);
+            return generated;
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("Codegen helper failed for " + sbbClass.getName(), e);
+        }
+    }
+
+    /**
+     * Reflectively probe for the codegen helper class. Returns {@code null}
+     * when the helper is not on the runtime classpath.
+     */
+    private Object tryLoadCodegenHelper() {
+        final String className = codegenHelperClassName;
+        if (className == null) {
+            return null;
+        }
+        try {
+            Class<?> helperClass = Class.forName(className, true,
+                    Thread.currentThread().getContextClassLoader());
+            return helperClass.getDeclaredConstructor().newInstance();
+        } catch (ClassNotFoundException e) {
+            return null;
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("Unable to instantiate codegen helper " + className, e);
+        }
+    }
+
+    private static volatile boolean codegenDisabled = false;
+
+    /**
+     * Hook for embedders and tests: force the codegen helper off even if
+     * the module is on the runtime classpath. Default {@code false}.
+     */
+    public static void setCodegenDisabled(boolean disabled) {
+        codegenDisabled = disabled;
+    }
+
+    /**
+     * Test hook: replace the codegen helper class name. Production code
+     * should leave this alone.
+     */
+    public static void setCodegenHelperClassName(String name) {
+        codegenHelperClassName = name;
+    }
+
+    /**
+     * Test hook: drop the concrete-class cache so the next acquire
+     * regenerates. Visible for {@code MicroSleeContainer} integration
+     * tests that redeploy.
+     */
+    public void invalidateConcreteClassCache() {
+        concreteClassCache.clear();
+        codegenHelper = null;
+    }
+
+    /**
+     * Return the directory where generated .class files are persisted.
+     */
+    public Path getDeployDir() {
+        return deployDir;
+    }
+
+    // ----------------------------------------------------------------
+    //  S4 — ChildRelation wiring (com.microjainslee.core.child)
+    // ----------------------------------------------------------------
+
+    /**
+     * Create (or fetch the cached) child relation bound to {@code parentEntityId}
+     * for child SBB local-interface class {@code childClass}. Used by the
+     * container-side wiring so each parent entity owns one
+     * {@link com.microjainslee.core.child.ChildRelationImpl} per child type.
+     *
+     * <p>The supplied {@code factory} must be non-null; if it is {@code null}
+     * this method returns {@code null} (callers can check + fall back).
+     *
+     * @param parentEntityId id of the parent SBB entity
+     * @param childClass     SBB local-interface class this relation spawns
+     * @param factory       {@link com.microjainslee.core.child.ChildRelationFactory}
+     *                       that owns the {@link com.microjainslee.core.child.CascadeRemover}
+     * @return the cached relation, or {@code null} when {@code factory} is null
+     */
+    public <T extends com.microjainslee.api.SbbLocalObject>
+            com.microjainslee.core.child.ChildRelationImpl<T> createChildRelation(
+                    String parentEntityId,
+                    Class<T> childClass,
+                    com.microjainslee.core.child.ChildRelationFactory factory) {
+        if (factory == null) {
+            return null;
+        }
+        return factory.createChildRelation(parentEntityId, childClass);
+    }
+
+    /**
+     * Build a {@link com.microjainslee.core.child.CascadeRemover.EntityLookup}
+     * bound to this pool. Returned lookup delegates {@link
+     * #findEntity(String)} + {@link #releaseById(String)} so cascade
+     * removal drives the entity lifecycle through the pool.
+     */
+    public com.microjainslee.core.child.CascadeRemover.EntityLookup asEntityLookup() {
+        final VirtualThreadSbbEntityPool self = this;
+        return new com.microjainslee.core.child.CascadeRemover.EntityLookup() {
+            @Override
+            public Sbb getSbb(String entityId) {
+                SbbEntity e = entities.get(entityId);
+                return e != null ? e.getSbb() : null;
+            }
+
+            @Override
+            public void releaseEntity(String entityId) {
+                self.releaseById(entityId);
+            }
+        };
     }
 
     private static final class NoopSbb implements Sbb { }

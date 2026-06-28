@@ -29,7 +29,8 @@ import com.microjainslee.api.ProfileLocalObject;
 import com.microjainslee.api.ProfileFacility;
 import com.microjainslee.core.InMemoryProfileFacility;
 import com.microjainslee.core.MicroSleeContainer;
-import com.microjainslee.core.RaBootstrapContextImpl;
+import com.microjainslee.core.ies.InitialEventSelectorDispatcher;
+import com.microjainslee.core.ra.ResourceAdaptorContextBuilder;
 
 import org.jboss.logging.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,6 +42,22 @@ import org.springframework.context.SmartLifecycle;
 /**
  * Wires the USSD demo: SBB type pools, HTTP + gRPC RAs, profile seed,
  * and initial-event routing for {@link HttpUssdBeginEvent}.
+ *
+ * <p>Updated for Perfect Core S1-S5 (2026-06-28):</p>
+ * <ul>
+ *   <li><b>S5</b> — RA lifecycle now goes through
+ *       {@link ResourceAdaptorContextBuilder#build(MicroSleeContainer,
+ *       com.microjainslee.api.ResourceAdaptor, String)} instead of the
+ *       legacy {@code RaBootstrapContextImpl} shim. The full facility
+ *       set (EventRouter, ACNF, TimerBridge, AlarmFacility, …) is
+ *       wired through the kernel-side factory.</li>
+ *   <li><b>S3</b> — bind an {@link InitialEventSelectorDispatcher} so the
+ *       event router honours the {@code @InitialEventSelect} method on
+ *       {@link Ss7UssdIngressSbb} (msisdn-keyed convergence).</li>
+ *   <li><b>P1</b> — surface {@code tx-enabled} knob on the underlying
+ *       container configuration (handled by the adapter-springboot
+ *       boot listener; this bootstrap just records it for metrics).</li>
+ * </ul>
  */
 @Configuration
 public class UssdDemoBootstrap {
@@ -118,7 +135,13 @@ public class UssdDemoBootstrap {
     private void wireSlee() {
         wiring.setContainer(container);
 
+        // Keep the legacy IES customiser for HttpUssdBeginEvent routing
+        // — Perfect Core S3 still honours it as the "root SBB"
+        // resolution path. We additionally bind the IES dispatcher
+        // below so the @InitialEventSelect methods on the SBBs (e.g.
+        // Ss7UssdIngressSbb) take effect for non-root events.
         container.setInitialEventSelectorCustomizer(this::customizeInitialEvent);
+        bindInitialEventSelector(container);
 
         seedProfiles();
 
@@ -135,12 +158,68 @@ public class UssdDemoBootstrap {
         wiring.setGrpcRa(grpcRa);
     }
 
+    /**
+     * Perfect Core S5 — drive the full RA lifecycle through the
+     * kernel-side factory. The legacy {@code RaBootstrapContextImpl}
+     * shim is replaced by {@link ResourceAdaptorContextBuilder#build}
+     * which wires the RA to the live container's EventRouter, ACNF,
+     * TimerBridge, AlarmFacility, TraceFacility, NullActivityFactory,
+     * and EventLookupFacility in one call.
+     */
     private void activateRa(com.microjainslee.api.ResourceAdaptor ra, String entityName) {
-        RaBootstrapContextImpl ctx = new RaBootstrapContextImpl(container, entityName);
-        ctx.setResourceAdaptor(ra);
-        ra.setResourceAdaptorContext(ctx);
-        ra.raConfigure();
-        ra.raActive();
+        ResourceAdaptorContextBuilder.build(container, ra, entityName);
+    }
+
+    /**
+     * Perfect Core S3 — bind the Initial Event Selector dispatcher so
+     * the event router honours {@code @InitialEventSelect} methods on
+     * SBBs. Without this binding, every incoming
+     * {@link Ss7UssdBeginEvent} would create a brand-new SBB entity,
+     * breaking the USSD stateful protocol.
+     */
+    private void bindInitialEventSelector(MicroSleeContainer c) {
+        try {
+            com.microjainslee.core.VirtualThreadSbbEntityPool pool = c.getSbbEntityPool();
+            final java.util.concurrent.atomic.AtomicLong counter =
+                    new java.util.concurrent.atomic.AtomicLong();
+            InitialEventSelectorDispatcher.SbbEntityPool adapter =
+                    new InitialEventSelectorDispatcher.SbbEntityPool() {
+                        @Override
+                        public String allocateNew(Class<?> sbbClass) {
+                            String entityId = sbbClass.getSimpleName()
+                                    + "#" + counter.incrementAndGet();
+                            final Class<? extends com.microjainslee.api.Sbb> typedSbb =
+                                    sbbClass.asSubclass(com.microjainslee.api.Sbb.class);
+                            pool.acquire(entityId, () -> {
+                                try {
+                                    return typedSbb.getDeclaredConstructor().newInstance();
+                                } catch (Exception e) {
+                                    throw new IllegalStateException(
+                                            "IES allocate factory failed for "
+                                                    + sbbClass.getName(), e);
+                                }
+                            });
+                            return entityId;
+                        }
+
+                        @Override
+                        public boolean contains(String entityId) {
+                            return pool.findEntity(entityId) != null;
+                        }
+
+                        @Override
+                        public void onEntityRemoved(String entityId,
+                                                     java.util.function.Consumer<String> callback) {
+                            callback.accept(entityId);
+                        }
+                    };
+            InitialEventSelectorDispatcher dispatcher =
+                    new InitialEventSelectorDispatcher(adapter);
+            c.setInitialEventSelectorDispatcher(dispatcher);
+            LOG.info("Initial Event Selector dispatcher bound (S3)");
+        } catch (RuntimeException e) {
+            LOG.warnf(e, "IES dispatcher bind failed — falling back to legacy allocate-per-event");
+        }
     }
 
     private void customizeInitialEvent(InitialEventSelector selector) {

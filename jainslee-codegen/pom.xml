@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>micro-jainslee</artifactId>
+        <version>1.1.0</version>
+    </parent>
+
+    <artifactId>jainslee-codegen</artifactId>
+    <packaging>jar</packaging>
+
+    <name>micro-jainslee :: codegen (Javassist CMP concrete SBB generator)</name>
+    <description>
+        Production P1.4 / Sprint S2 — Deploy-time concrete SBB class generator
+        backed by Javassist 3.30.0-GA. Turns an abstract SBB class (with
+        abstract getXxx/setXxx CMP accessors) into a concrete subclass that
+        reads/writes through CmpFieldStore + CmpFieldStoreLocator at runtime.
+
+        The generated .class files are persisted to a deploy dir and loaded
+        through a URLClassLoader (Solution A from the production roadmap) so
+        they never enter the running JVM's metaspace via ClassPool.toClass()
+        — that would leak the loader across reloads. Optional module: when
+        jainslee-codegen is not on the runtime classpath the kernel falls
+        back to reflective CmpAccessorInvoker behaviour.
+    </description>
+
+    <properties>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <maven.compiler.release>25</maven.compiler.release>
+        <!-- Versions inherited from micro-jainslee-bom: javassist 3.30.0-GA -->
+        <junit.jupiter.version>5.11.4</junit.jupiter.version>
+        <assertj.version>3.26.3</assertj.version>
+    </properties>
+
+    <dependencies>
+        <!--
+          Bytecode generation engine. Pinned at 3.30.0-GA via the BOM
+          (micro-jainslee-bom 1.2.0-P1-SNAPSHOT).
+        -->
+        <dependency>
+            <groupId>org.javassist</groupId>
+            <artifactId>javassist</artifactId>
+        </dependency>
+
+        <!--
+          Public SPI — we only need to know that the class implements
+          com.microjainslee.api.Sbb; the rest of the field/accessor logic
+          works on any abstract class.
+        -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!--
+          Provided: we reference CmpFieldStore + CmpFieldStoreLocator so the
+          generated concrete class can read/write through the running
+          container's persistence store. The embedder must always supply
+          the real core at runtime — we never re-export it.
+        -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-core</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!--
+          Log4j2 API for diagnostics. The runtime back-end is provided by
+          whichever adapter embeds the codegen module.
+        -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>2.23.1</version>
+        </dependency>
+
+        <!-- Tests -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.23.1</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <!--
+                      Force tests to run on a platform thread. Javassist's
+                      ClassPool keeps its own internal ClassPath cache which
+                      occasionally synchronises on its loader — see
+                      production-roadmap §5.1.
+                    -->
+                    <argLine>-Xss1m</argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

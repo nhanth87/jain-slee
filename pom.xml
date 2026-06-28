@@ -59,6 +59,7 @@
         <module>jainslee-scheduler</module>
         <module>jainslee-core</module>
         <module>jainslee-tx</module>
+        <module>jainslee-codegen</module>
         <module>jainslee-cluster</module>
         <module>jainslee-apt</module>
         <module>jainslee-ra-spi</module>

@@ -22,5 +22,5 @@ package com.microjainslee.api.management;
  * @author Tran Nhan (nhanth87)
  */
 public interface Management {
-    // TODO Phase 2: full MBean via JMX 1.2.1
+    // TODO Phase 2: full MBean via JMX 1.2.1, nevermind
 }

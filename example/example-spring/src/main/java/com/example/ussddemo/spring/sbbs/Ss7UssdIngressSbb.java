@@ -18,8 +18,11 @@ import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.SleeEvent;
 import com.microjainslee.api.SleeEventHandler;
 import com.microjainslee.api.annotations.CmpField;
+import com.microjainslee.api.annotations.InitialEventSelect;
 import com.microjainslee.api.annotations.SbbAnnotation;
 import com.microjainslee.core.CmpBackedSbb;
+import com.microjainslee.core.ies.InitialEventSelectCondition;
+import com.microjainslee.core.ies.InitialEventSelectResult;
 
 import org.jboss.logging.Logger;
 
@@ -28,9 +31,22 @@ import java.lang.reflect.Method;
 /**
  * Internal SS7/MAP USSD leg. Persists session state in CMP fields and
  * delegates menu resolution to the gRPC RA.
+ *
+ * <p>Updated for Perfect Core S1-S5 (2026-06-28):</p>
+ * <ul>
+ *   <li><b>S2</b> — CMP accessors declared as {@code abstract} so the
+ *       Javassist concrete generator can produce the backing getters
+ *       and setters. A hand-written {@code $Concrete} companion keeps
+ *       the example self-contained.</li>
+ *   <li><b>S3</b> — {@link InitialEventSelect @InitialEventSelect} method
+ *       routes every USSD session to the same entity by msisdn so the
+ *       CMP state survives across the request / response round-trip.</li>
+ *   <li><b>P1</b> — safe under {@code txEnabled=false}; CMP writes go
+ *       straight to the in-memory store through {@code cmpWrite}.</li>
+ * </ul>
  */
 @SbbAnnotation(name = "Ss7UssdIngress", vendor = "com.example.ussddemo", version = "1.0")
-public final class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHandler {
+public abstract class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHandler {
 
     private static final Logger LOG = Logger.getLogger(Ss7UssdIngressSbb.class);
 
@@ -47,32 +63,50 @@ public final class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHa
         this.wiring = wiring;
     }
 
-    @CmpField("sessionId")
-    public String getSessionId() {
-        return (String) cmpRead(accessor("getSessionId"));
-    }
+    // ─────────────────────────────────────────────────────────────────
+    //  CMP accessors — abstract on purpose (Perfect Core S2).
+    // ─────────────────────────────────────────────────────────────────
 
-    public void setSessionId(String sessionId) {
-        cmpWrite(accessor("setSessionId", String.class), sessionId);
-    }
+    @CmpField("sessionId")
+    public abstract String getSessionId();
+
+    @CmpField("sessionId")
+    public abstract void setSessionId(String sessionId);
 
     @CmpField("msisdn")
-    public String getMsisdn() {
-        return (String) cmpRead(accessor("getMsisdn"));
-    }
+    public abstract String getMsisdn();
 
-    public void setMsisdn(String msisdn) {
-        cmpWrite(accessor("setMsisdn", String.class), msisdn);
-    }
+    @CmpField("msisdn")
+    public abstract void setMsisdn(String msisdn);
 
     @CmpField("menuTier")
-    public int getMenuTier() {
-        Integer v = (Integer) cmpRead(accessor("getMenuTier"));
-        return v == null ? 0 : v;
-    }
+    public abstract int getMenuTier();
 
-    public void setMenuTier(int menuTier) {
-        cmpWrite(accessor("setMenuTier", int.class), menuTier);
+    @CmpField("menuTier")
+    public abstract void setMenuTier(int menuTier);
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Initial Event Selection (Perfect Core S3).
+    //  Runs on a TEMP instance — must be free of side effects on CMP state.
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * IES — convergence name = {@code msisdn}. The first
+     * {@link Ss7UssdBeginEvent} for a given msisdn is the initial event;
+     * subsequent events are routed to the same entity per spec §7.5.5.
+     */
+    @InitialEventSelect(name = "ussd-session-convergence")
+    public InitialEventSelectResult selectInitialEvent(InitialEventSelectCondition c) {
+        Object event = c.getEvent();
+        if (event instanceof Ss7UssdBeginEvent) {
+            Ss7UssdBeginEvent e = (Ss7UssdBeginEvent) event;
+            String msisdn = e.getMsisdn() == null ? "anon" : e.getMsisdn();
+            return InitialEventSelectResult.forSession(msisdn, true);
+        }
+        return InitialEventSelectResult.builder()
+                .convergenceName(null)
+                .initialEvent(false)
+                .build();
     }
 
     @Override public void sbbCreate() { LOG.debug("Ss7UssdIngressSbb created"); }
@@ -95,11 +129,16 @@ public final class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHa
         setMenuTier(event.getMenuTier());
         LOG.infof("[SS7-ingress] MAP begin session=%s msisdn=%s tier=%d",
                 event.getSessionId(), event.getMsisdn(), event.getMenuTier());
-        wiring.grpcRa().requestMenu(event.getSessionId(), event.getMsisdn(),
-                event.getUssdString(), aci);
+        if (wiring != null && wiring.grpcRa() != null) {
+            wiring.grpcRa().requestMenu(event.getSessionId(), event.getMsisdn(),
+                    event.getUssdString(), aci);
+        }
     }
 
     private void onGrpcResponse(GrpcMenuResponseEvent event, ActivityContextInterface aci) {
+        if (wiring == null || wiring.container() == null) {
+            return;
+        }
         if (!"OK".equalsIgnoreCase(event.getStatus())) {
             wiring.container().routeEvent(new UssdCompleteEvent(
                     event.getSessionId(), null, event.getError()), aci);
@@ -117,6 +156,80 @@ public final class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHa
             return Ss7UssdIngressSbb.class.getDeclaredMethod(name, params);
         } catch (NoSuchMethodException e) {
             throw new IllegalStateException(e);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Concrete companion (Perfect Core S2).
+    //
+    //  Production deployments generate this class at deploy-time via
+    //  {@code com.microjainslee.codegen.ConcreteSbbGenerator}; the
+    //  hand-written stub below keeps the Spring example self-contained.
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Concrete subclass generated by {@code ConcreteSbbGenerator} at
+     * deploy time.
+     */
+    public static final class $Concrete extends Ss7UssdIngressSbb {
+
+        private final java.util.Map<String, Object> local =
+                new java.util.concurrent.ConcurrentHashMap<>();
+
+        public $Concrete() {
+            super();
+        }
+
+        public $Concrete(UssdWiring wiring) {
+            super(wiring);
+        }
+
+        @Override
+        public String getSessionId() {
+            Object v = local.get("sessionId");
+            return v instanceof String s ? s : (String) cmpRead(accessor("getSessionId"));
+        }
+
+        @Override
+        public void setSessionId(String sessionId) {
+            local.put("sessionId", sessionId);
+            cmpWrite(accessor("setSessionId", String.class), sessionId);
+        }
+
+        @Override
+        public String getMsisdn() {
+            Object v = local.get("msisdn");
+            return v instanceof String s ? s : (String) cmpRead(accessor("getMsisdn"));
+        }
+
+        @Override
+        public void setMsisdn(String msisdn) {
+            local.put("msisdn", msisdn);
+            cmpWrite(accessor("setMsisdn", String.class), msisdn);
+        }
+
+        @Override
+        public int getMenuTier() {
+            Object v = local.get("menuTier");
+            if (v instanceof Integer i) {
+                return i;
+            }
+            Object r = cmpRead(accessor("getMenuTier"));
+            return r instanceof Integer i ? i : 0;
+        }
+
+        @Override
+        public void setMenuTier(int menuTier) {
+            local.put("menuTier", menuTier);
+            cmpWrite(accessor("setMenuTier", int.class), menuTier);
+        }
+
+        private static Method accessor(String name, Class<?>... params) {
+            try {
+                return Ss7UssdIngressSbb.class.getMethod(name, params);
+            } catch (NoSuchMethodException e) {
+                throw new IllegalStateException(e);
+            }
         }
     }
 }

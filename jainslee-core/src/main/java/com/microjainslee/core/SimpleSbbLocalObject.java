@@ -51,6 +51,13 @@ public final class SimpleSbbLocalObject implements SbbLocalObject {
     private final boolean pooledEntity;
     private volatile int priority;
     private volatile boolean removed;
+    /**
+     * Parent SBB entity id, set when this local object is created as a child
+     * via {@link com.microjainslee.core.child.ChildRelationImpl#create()}.
+     * {@code null} for root SBB entities. Used by the cascade remover to
+     * detect cycles and to give better diagnostics.
+     */
+    private volatile String parentEntityId;
 
     public SimpleSbbLocalObject(SbbID sbbID, Sbb sbb) {
         this(sbbID, sbb, null, null, 0);
@@ -76,6 +83,21 @@ public final class SimpleSbbLocalObject implements SbbLocalObject {
 
     public boolean isPooledEntity() {
         return pooledEntity;
+    }
+
+    /**
+     * Set the parent SBB entity id when this local object is created as a
+     * child via {@link com.microjainslee.core.child.ChildRelationImpl#create()}.
+     * Visible for the child package — not part of the {@link SbbLocalObject}
+     * spec API.
+     */
+    public void setParentEntityId(String parentEntityId) {
+        this.parentEntityId = parentEntityId;
+    }
+
+    /** Parent SBB entity id, or {@code null} for root entities. */
+    public String getParentEntityId() {
+        return parentEntityId;
     }
 
     @Override

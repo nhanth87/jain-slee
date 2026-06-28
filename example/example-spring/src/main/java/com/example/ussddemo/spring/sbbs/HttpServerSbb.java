@@ -95,7 +95,11 @@ public final class HttpServerSbb implements Sbb, SleeEventHandler {
 
         String aciName = aci.getActivityContextName();
         String sessionId = event.getSessionId();
-        Ss7UssdIngressSbb ss7Sbb = new Ss7UssdIngressSbb(wiring);
+        // Perfect Core S2 — Ss7UssdIngressSbb is abstract with @CmpField-
+        // annotated accessors; the runtime works against its concrete
+        // companion $Concrete (hand-written here, normally produced by
+        // com.microjainslee.codegen.ConcreteSbbGenerator).
+        Ss7UssdIngressSbb ss7Sbb = new Ss7UssdIngressSbb.$Concrete(wiring);
         GrpcClientSbb grpcSbb = new GrpcClientSbb();
         SimpleSbbLocalObject ss7 = wiring.container().registerSbb(sessionId + "/Ss7", ss7Sbb);
         SimpleSbbLocalObject grpc = wiring.container().registerSbb(sessionId + "/Grpc", grpcSbb);

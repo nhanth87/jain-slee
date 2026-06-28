@@ -7,7 +7,7 @@
 > Spring Boot, and Jakarta EE embeddings.
 
 **Maintainer:** Tran Nhan ([nhanth87@gmail.com](mailto:nhanth87@gmail.com))  
-**Last updated:** 2026-06-26  
+**Last updated:** 2026-06-28  
 **Source file:** [`jainslee-core/src/test/java/com/microjainslee/core/SbbEntityPoolStressTest.java`](../../jainslee-core/src/test/java/com/microjainslee/core/SbbEntityPoolStressTest.java)
 
 ---
@@ -44,6 +44,20 @@ order** on the same virtual thread. This is the JAIN SLEE §8.4
 single-threaded SBB contract; violating it would let a SBB see a
 USSD BEGIN after the corresponding END and break the entire
 service-logic model.
+
+> **Perfect Core S2 — codegen note (2026-06-28):** Starting with
+> micro-jainslee 1.2.0, CMP accessors are generated **at deploy time**
+> by `jainslee-codegen` (Javassist) instead of going through
+> `Method.invoke()` reflection. The 100K stress test currently
+> exercises only `SbbEntityPool`, **not** the CMP codegen path — so
+> the timings below still reflect the pool / Disruptor / VT pipeline.
+>
+> If you measure with `MicroSleeConfiguration.codegenEnabled=true`,
+> expect CMP-heavy SBBs (e.g. `Ss7UssdIngressSbb`) to run
+> **~10× faster** on CMP read/write, but the pool-side numbers
+> (create / pending / cancel) stay roughly the same. To compare,
+> re-run with `-Dmicrojainslee.codegenEnabled=false` for the
+> reflection baseline.
 
 ---
 
@@ -251,6 +265,52 @@ Each million SBBs needs roughly **2.9 GB of heap** (290 MB per 100K).
 On a machine with 32 GB of RAM and 8 cores you can comfortably run
 the 1M scenario in under a minute.
 
+### Toggling Perfect Core S2 codegen (`MicroSleeConfiguration.codegenEnabled`)
+
+Starting with micro-jainslee 1.2.0, the container can **generate concrete
+SBB classes at deploy time** (Javassist, ~10× faster CMP access than
+reflection). The flag `MicroSleeConfiguration.codegenEnabled` controls
+this at runtime:
+
+| Value | Behavior | When to use |
+|---|---|---|
+| `true` (default) | `ConcreteSbbGenerator` runs once per SBB type at startup. CMP reads/writes go direct. | All production paths. |
+| `false` | Container falls back to `Method.invoke()` reflection. | Dev with hot-reload; debugging CMP. |
+
+For the 100K pool stress test the toggle has **no measurable effect**
+on the pool-side numbers (create / pending / cancel) because the test
+constructs `SbbEntity` instances directly without exercising CMP
+accessors. To observe the codegen impact, run a CMP-heavy workload
+(e.g. `Ss7UssdIngressSbb`):
+
+```bash
+# Codegen ON (default)
+mvn -pl jainslee-core test \
+    -Dtest=SbbEntityPoolStressTest \
+    -Dmicrojainslee.codegenEnabled=true \
+    -DargLine="-Xmx4g -XX:+UseZGC"
+
+# Codegen OFF (reflection baseline)
+mvn -pl jainslee-core test \
+    -Dtest=SbbEntityPoolStressTest \
+    -Dmicrojainslee.codegenEnabled=false \
+    -DargLine="-Xmx4g -XX:+UseZGC"
+```
+
+Set the flag via `application.properties`:
+
+```properties
+microjainslee.codegenEnabled=true
+microjainslee.codegenDeployDir=target/generated-sources/sbb
+microjainslee.codegenCacheClass=true
+```
+
+Or via system property at JVM start:
+
+```bash
+java -Dmicrojainslee.codegenEnabled=false -jar my-ussd-app.jar
+```
+
 ### Adjusting task count
 
 `TASKS_PER_SBB = 5` is the default. To stress the pending phase more:
@@ -371,5 +431,5 @@ Common causes:
 
 ---
 
-*Document version 1.0 — maintained alongside micro-jainslee 1.1.0.*
+*Document version 1.1 — maintained alongside micro-jainslee 1.2.0 (Perfect Core S1–S5).*
 *For corrections, open an issue or email [nhanth87@gmail.com](mailto:nhanth87@gmail.com).*

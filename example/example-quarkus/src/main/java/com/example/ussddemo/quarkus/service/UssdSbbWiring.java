@@ -114,7 +114,12 @@ public final class UssdSbbWiring {
         InMemoryActivityContext aci = c.createActivityContext(sessionId);
 
         SimpleSbbLocalObject http = c.registerSbb(sessionId + "/http", new HttpServerSbb(this));
-        SimpleSbbLocalObject ss7 = c.registerSbb(sessionId + "/ss7", new Ss7UssdIngressSbb(this));
+        // Perfect Core S2 — Ss7UssdIngressSbb is abstract with @CmpField-
+        // annotated accessors; the runtime works against its concrete
+        // companion $Concrete (hand-written here, normally produced by
+        // com.microjainslee.codegen.ConcreteSbbGenerator).
+        SimpleSbbLocalObject ss7 = c.registerSbb(sessionId + "/ss7",
+                new Ss7UssdIngressSbb.$Concrete(this));
         SimpleSbbLocalObject grpcChild = c.registerSbb(sessionId + "/grpc", new GrpcClientSbb(this));
         http.setPriority(8);
         ss7.setPriority(7);

@@ -2,9 +2,9 @@
 
 > **Audience:** architects và engineers mở rộng micro-jainslee với Resource Adaptors thật (HTTP, jSS7/MAP, SIP, Diameter, Camel, SMSC, IoT OTA, Security).  
 > **Liên quan:** [`MICRO-JAINSLEE-GUIDE.md`](MICRO-JAINSLEE-GUIDE.md) (hướng dẫn junior), [`microjainslee-design.md`](microjainslee-design.md) (kernel/container design), [`gap-analysis.md`](gap-analysis.md) (gap so với full spec).  
-> **Last updated:** 2026-06-28  
-> **Branch:** `micro-jainslee`  
-> **Version:** 3.0.0 — rewritten after code/spec audit; reconciled with JAIN SLEE 1.1 (JSR-240) ch. 11
+> **Last updated:** 2026-06-28 (Perfect Core S1–S5 update)
+> **Branch:** `micro-jainslee`
+> **Version:** 3.1.0 — added `jainslee-codegen`, `jainslee-tx`, `jainslee-cluster`, `jainslee-tck-harness` modules and Perfect Core S1–S5 wiring notes
 
 ---
 
@@ -17,6 +17,7 @@
 5. [Mục tiêu và triết lý](#5-mục-tiêu-và-triết-lý)
 6. [Big boy (Mobicents/WildFly) vs micro-jainslee](#6-big-boy-mobicentswildfly-vs-micro-jainslee)
 7. [Maven reactor structure — spec-aligned 4-module decomposition](#7-maven-reactor-structure--spec-aligned-4-module-decomposition)
+   * [7.5 Perfect Core S1–S5](#75-perfect-core-s1s5-added-2026-06-28)
 8. [Kernel API — giữ gì](#8-kernel-api--giữ-gì)
 9. [API có thể bỏ hoặc tách optional](#9-api-có-thể-bỏ-hoặc-tách-optional)
 10. [RA SPI — reconciled với JAIN SLEE 1.1 spec](#10-ra-spi--reconciled-với-jain-slee-11-spec)
@@ -51,6 +52,7 @@ micro-jainslee là implementation **embed, R&D-only** của JAIN SLEE 1.1 (JSR-2
 |----------|------------|
 | Java 25 baseline (Phase 0) | ✅ Done — kernel compile/test sạch JDK 25 |
 | RA modular SPI + first RAs (Phase 1) | 🔄 In progress — 2 RA flat (`ra-http-ingress`, `ra-grpc-client`) đã có code & test pass; cấu trúc Maven parent `ras/` hiện chỉ build `ras/http/` và `ras/grpc/` (orphan leaves) |
+| **Perfect Core S1–S5 (P1.2)** | ✅ Done — `jainslee-codegen`, `jainslee-tx`, `jainslee-cluster`, `jainslee-tck-harness` modules; IES dispatcher + Child Relations + full RA SPI |
 | Quarkus deep integration (Phase 2) | ⬜ Planned |
 | Protocol RAs (jSS7/MAP, SIP, Diameter) (Phase 3) | ⬜ Planned |
 | Camel RA bridge (Phase 4) | ⬜ Planned |
@@ -105,13 +107,26 @@ Doc này **không che giấu** các gap này — mỗi gap có đề xuất fix 
 jain-slee/jain-slee/  (branch: micro-jainslee)
 ├── jainslee-api/              ✅ interfaces: Sbb, SleeEvent, ResourceAdaptor (6 method),
 │                               ResourceAdaptorContext, SleeEndpointPort, ActivityContextHandle,
-│                               SimpleActivityContextHandle (UNTRACKED — moved from jainslee-core)
+│                               SimpleActivityContextHandle (UNTRACKED — moved from jainslee-core),
+│                               ChildRelation, SleeEndpoint, @InitialEventSelect annotation (S3)
 ├── jainslee-scheduler/        ✅ Netty HashedWheelTimer 10ms (vendor-slim jSS7 TimerScheduler)
 ├── jainslee-core/             ✅ 177/177 tests — MicroSleeContainer, EventRouter (LMAX Disruptor),
 │                               VirtualThreadSbbEntityPool, SleeTimerSchedulerBridge,
 │                               InMemoryProfileFacility, SbbLifecycleManager, …
+│                               + core/ies/* (S3), core/child/* (S4), core/ra/* (S5)
+├── jainslee-codegen/          ✅ NEW (Perfect Core S2, commit a7566ed29) — Javassist concrete-SBB
+│                               generator: ConcreteSbbGenerator + JavassistDeployTimeCodegen
 ├── jainslee-apt/              ✅ @SbbAnnotation, @EventType, @DeployableUnit processor
 ├── jainslee-ra-spi/           ✅ AbstractResourceAdaptor + publish() helper  (UNTRACKED)
+│                               + RaEntityStateMachine, SleeEndpointImpl,
+│                               ResourceAdaptorContextImpl (Perfect Core S5, a2029f26d)
+├── jainslee-tx/               ✅ NEW (commit ae3666a89) — Narayana JTA 7.0:
+│                               JtaTransactionManager, TransactionContext, NoOpTransactionManager
+├── jainslee-cluster/          ✅ NEW (P2, commits c5eec6f87 + fcf92b275) — Infinispan / JGroups
+│                               primitives: ClusterManager, DistributedSbbEntityPool,
+│                               ClusteredActivityContextNamingFacility, SbbEntitySnapshot
+├── jainslee-tck-harness/      ✅ NEW (commit 0b4210f08) — TCK skeleton: TckRunner,
+│                               MicrojainsleeContainerAdapter (non-production only)
 ├── adapters/                  ⚠️ Quarkus scaffold + Spring Boot v1.1.0
 │
 ├── ras/                       ⚠️ INCONSISTENT — see §3.2
@@ -130,6 +145,37 @@ jain-slee/jain-slee/  (branch: micro-jainslee)
     ├── example-embedded-j25/
     ├── grpc-simulator/
     └── ussdgw-simulator/
+```
+
+**Perfect Core S1–S5 dependency tree (added 2026-06-28):**
+
+```
+┌────────────────────────┐
+│    jainslee-api        │  (JDK only) + @InitialEventSelect (S3)
+└──────────┬─────────────┘
+           │
+   ┌───────┼─────────┐
+   │       │         │
+┌──▼──┐ ┌──▼──┐ ┌───▼──────────────┐
+│core │ │ apt │ │ jainslee-codegen │  (S2 — Javassist, optional)
+└──┬──┘ └─────┘ └─────────────────┘
+   │
+   │   ┌─────────────────┐
+   ├──►│ jainslee-ra-spi │  (S5 — state machine + endpoint + context)
+   │   └─────────────────┘
+   │
+   │   ┌────────────┐    ┌──────────────┐
+   ├──►│ jainslee-tx│    │jainslee-cluster│  (P2)
+   │   └────────────┘    └──────────────┘
+   │
+   │   ┌─────────────────────┐
+   └──►│ jainslee-tck-harness│  (skeleton)
+       └─────────────────────┘
+   │
+   ├──────────────────┬────────────────────┐
+   ▼                  ▼                    ▼
+adapter-quarkus  jainslee-spring-    adapter-jakartaee
+                 boot-starter
 ```
 
 ### 3.2 Vấn đề layout thực tế (mới phát hiện trong audit v3)
@@ -364,6 +410,61 @@ ras/
 ```
 
 `example/example-quarkus/` = **application mẫu** (SBB + bootstrap), **không** chứa RA implementation lâu dài — xem §17.
+
+---
+
+### 7.5 Perfect Core S1–S5 (added 2026-06-28)
+
+Sau khi Phase 1 (flat layout) được commit `a2bd78b4f`, kernel đã trải qua
+**5 iterations tập trung** để đạt spec-compliance cho single-JVM use case.
+Mỗi iteration là một commit với scope rõ ràng:
+
+| Step | Commit | Scope | Headline additions |
+|------|--------|-------|--------------------|
+| **S1** | _pre-S2 baseline_ | IES dispatcher skeleton + spec contract | `InitialEventSelectorDispatcher` interface + `@InitialEventSelect` placeholder |
+| **S2** | `a7566ed29` | CMP Javassist codegen | New module **`jainslee-codegen`** (Javassist). Replaces reflection-based CMP access with a generated concrete subclass cached in `concreteClassCache` |
+| **S3** | `37c7e4c36` | Initial Event Selector wiring | Production `core/ies/InitialEventSelectorDispatcher`, `@InitialEventSelect` annotation, `InitialEventSelectCondition` + `InitialEventSelectResult` records. Convergence-key pattern lets `EventRouter.routeIncomingEvent()` route to existing SBB entities |
+| **S4** | `05cefe3dc` | Child SBB Relations | New package **`core/child/`** with `ChildRelationImpl`, `ChildRelationFactory` (reflection-scan), `CascadeRemover` (depth-first post-order per spec §6.7) |
+| **S5** | `a2029f26d` | RA full wiring | New module **`jainslee-ra-spi`** (RA-facing SPI) + new package **`core/ra/`** (kernel-internal builders) with `RaEntityStateMachine`, `SleeEndpointImpl`, `ResourceAdaptorContextImpl`, `ResourceAdaptorContextBuilder` |
+
+**Context dependencies (sub-modules của `jainslee-core` 1.1.0):**
+
+```
+com.microjainslee.core
+├── (existing) MicroSleeContainer, EventRouter, VirtualThreadSbbEntityPool, …
+├── core.ies       (S3) — InitialEventSelectorDispatcher, InitialEventSelectCondition, InitialEventSelectResult
+├── core.child     (S4) — ChildRelationImpl, ChildRelationFactory, CascadeRemover
+└── core.ra        (S5) — ResourceAdaptorContextBuilder (kernel-side factory)
+```
+
+**Cross-module wiring:**
+
+| Source | Calls into | Trigger |
+|--------|-----------|---------|
+| `jainslee-codegen` (S2) | `jainslee-core` `CmpFieldStoreLocator` | Lazy on first `acquire(SbbID, factory)` |
+| `core.ies.InitialEventSelectorDispatcher` (S3) | `VirtualThreadSbbEntityPool.entityFor(name)` / `allocateNew()` | Per `routeIncomingEvent()` call |
+| `core.child.CascadeRemover` (S4) | `VirtualThreadSbbEntityPool.lookup(id)` + `sbbRemove()` | On parent removal |
+| `core.ra.ResourceAdaptorContextBuilder` (S5) | `MicroSleeContainer.getEventRouter()` + facilities | On `registerResourceAdaptor(name, ra)` |
+
+**Effect on RA authors (this doc's main audience):**
+
+- **S5** is the biggest win — `SleeEndpointImpl` now matches spec §13.4
+  fully (event-type validation, handle active check, state-machine
+  guard). RAs no longer need to implement their own fireEvent guards.
+- **S3** adds `routeIncomingEvent()` for RAs that want the kernel to
+  manage entity allocation (vs raw `routeEvent()`). RAs that want
+  full control can keep using `routeEvent()`.
+- **S4** introduces `ChildRelation<T>` — RAs don't see this directly,
+  but if your SBB tree uses parent/child SBBs you can now write
+  `getAuthChildRelation()` and have the container auto-remove children
+  on parent `sbbRemove()`.
+- **S2** is transparent — RAs see no change, but the SBB instantiation
+  on the hot path is now zero-reflection via Javassist codegen.
+
+**Out of scope of this section** (deferred): `jainslee-tx` (Narayana
+JTA, opt-in via classpath), `jainslee-cluster` (Infinispan/JGroups,
+P2), `jainslee-tck-harness` (skeleton, non-production). These show up
+in §7.1 / §3.1 above but do not change the RA module layout.
 
 ---
 
@@ -907,6 +1008,31 @@ httpRa.raActive();
 ### Phase 3 — Protocol RAs (future)
 
 Port Mobicents RAs theo checklist §15 — **implement trực tiếp `ResourceAdaptor`**, không `AbstractMicroRA`. Mỗi RA tự quản lý stack thread; hot path vẫn `SleeEndpointPort.fireEvent()`.
+
+### Phase P1.2 — Perfect Core rollout (shipped 2026-06-28) ✅
+
+Five focused iterations took the kernel from "an LMAX Disruptor plus a
+virtual-thread pool" to a spec-compliant single-JVM runtime. Every step
+landed as a single commit on `micro-jainslee`:
+
+| Step | Commit | Kernel impact | Visible to RA authors? |
+|------|--------|---------------|------------------------|
+| S1 | _baseline_ | IES dispatcher skeleton + `@InitialEventSelect` placeholder | No |
+| S2 | `a7566ed29` | `jainslee-codegen` module: Javassist concrete-SBB generator | **Indirect** — SBB instantiation now zero-reflection |
+| S3 | `37c7e4c36` | IES production dispatcher + `routeIncomingEvent()` | **Direct** — RAs can opt into kernel-managed entity allocation |
+| S4 | `05cefe3dc` | Child SBB Relations + CascadeRemover | **Indirect** — parent SBBs can declare child SBBs |
+| S5 | `a2029f26d` | `jainslee-ra-spi` module + `RaEntityStateMachine` + `SleeEndpointImpl` (full §13.4) | **Direct** — RAs no longer need their own fireEvent guards |
+
+**Modules added to reactor:**
+
+- `jainslee-codegen` (S2) — Javassist generator; optional dependency
+- `jainslee-tx` (S2 ancillary, commit `ae3666a89`) — Narayana JTA 7.0;
+  opt-in via classpath
+- `jainslee-cluster` (P2, commits `c5eec6f87` + `fcf92b275`) —
+  Infinispan / JGroups primitives
+- `jainslee-tck-harness` (commit `0b4210f08`) — TCK skeleton, non-production
+
+See §7.5 for the cross-module wiring table.
 
 ### Việc song song được khuyến nghị (Phase 1)
 

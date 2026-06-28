@@ -54,10 +54,14 @@
     </organization>
 
     <modules>
+        <module>bom</module>
         <module>jainslee-api</module>
         <module>jainslee-scheduler</module>
         <module>jainslee-core</module>
+        <module>jainslee-tx</module>
         <module>jainslee-apt</module>
+        <module>jainslee-ra-spi</module>
+        <module>ras</module>
         <module>adapters/adapter-quarkus</module>
         <module>adapters/adapter-springboot</module>
         <module>adapters/adapter-jakartaee</module>
@@ -67,6 +71,21 @@
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
     </properties>
+
+    <!-- ============================================================ -->
+    <!--  dependencyManagement — import micro-jainslee BOM (P1.1)    -->
+    <!-- ============================================================ -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.microjainslee</groupId>
+                <artifactId>micro-jainslee-bom</artifactId>
+                <version>1.2.0-P1-SNAPSHOT</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <build>
         <plugins>

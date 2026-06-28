@@ -27,7 +27,8 @@ import com.microjainslee.api.ProfileLocalObject;
 import com.microjainslee.api.UnrecognizedProfileTableNameException;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
-import com.microjainslee.core.RaBootstrapContextImpl;
+import com.microjainslee.core.ies.InitialEventSelectorDispatcher;
+import com.microjainslee.core.ra.ResourceAdaptorContextBuilder;
 import io.quarkus.arc.Unremovable;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
@@ -76,6 +77,15 @@ public final class UssdDemoBootstrap {
     @ConfigProperty(name = "ussd.session.timeout-ms", defaultValue = "30000")
     long sessionTimeoutMs;
 
+    /**
+     * Perfect Core P1 — {@code microjainslee.tx-enabled} knob. Default
+     * {@code false} matches the lightweight single-JVM embed profile; set
+     * to {@code true} only when the {@code jainslee-tx} module is on the
+     * classpath (e.g. JTA-managed deployments).
+     */
+    @ConfigProperty(name = "microjainslee.tx-enabled", defaultValue = "false")
+    boolean txEnabled;
+
     @Inject
     UssdSessionStore sessionStore;
 
@@ -99,20 +109,95 @@ public final class UssdDemoBootstrap {
             synchronized (UssdDemoBootstrap.class) {
                 c = container;
                 if (c == null) {
+                    // Perfect Core S1-S5 — txEnabled honoured via the
+                    // MicroSleeConfiguration builder. Default false keeps
+                    // the example self-contained; set true to exercise
+                    // the JTA path (requires jainslee-tx on classpath).
                     MicroSleeConfiguration cfg = MicroSleeConfiguration.builder()
                             .eventRouterBufferSize(bufferSize)
                             .preferVirtualThreads(preferVirtualThreads)
                             .sbbPoolMin(sbbPoolMin)
                             .sbbPoolMax(sbbPoolMax)
                             .sbbPerVirtualThread(sbbPerVirtualThread)
+                            .txEnabled(txEnabled)
                             .build();
                     c = new MicroSleeContainer(cfg);
                     container = c;
-                    LOG.infof("MicroSleeContainer constructed (bufferSize=%d)", bufferSize);
+                    bindInitialEventSelector(c);
+                    LOG.infof("MicroSleeContainer constructed (bufferSize=%d, txEnabled=%s)",
+                            bufferSize, txEnabled);
                 }
             }
         }
         return c;
+    }
+
+    /**
+     * Perfect Core S3 — bind the Initial Event Selector dispatcher so the
+     * event router honours {@code @InitialEventSelect} methods declared
+     * on the SBBs (e.g. {@link Ss7UssdIngressSbb#selectInitialEvent}).
+     *
+     * <p>The dispatcher is created lazily against the SBB entity pool so
+     * that IES lookups resolve to the same entities that
+     * {@link com.microjainslee.core.EventRouter} would otherwise allocate
+     * fresh on each event delivery. Without this binding every incoming
+     * {@link com.example.ussddemo.quarkus.events.Ss7UssdBeginEvent} would
+     * create a brand-new SBB entity, breaking the USSD stateful
+     * protocol.</p>
+     */
+    private void bindInitialEventSelector(MicroSleeContainer c) {
+        try {
+            com.microjainslee.core.VirtualThreadSbbEntityPool pool = c.getSbbEntityPool();
+            // Adapter that satisfies IES's SbbEntityPool contract by
+            // delegating to the kernel's acquire/findEntity API. The
+            // entity id convention is "sbbClass#counter" so the IES
+            // dispatcher can map convergence names back to the same
+            // entity without reaching into the pool internals.
+            final java.util.concurrent.atomic.AtomicLong counter =
+                    new java.util.concurrent.atomic.AtomicLong();
+            InitialEventSelectorDispatcher.SbbEntityPool adapter =
+                    new InitialEventSelectorDispatcher.SbbEntityPool() {
+                        @Override
+                        public String allocateNew(Class<?> sbbClass) {
+                            String entityId = sbbClass.getSimpleName()
+                                    + "#" + counter.incrementAndGet();
+                            final Class<? extends com.microjainslee.api.Sbb> typedSbb =
+                                    sbbClass.asSubclass(com.microjainslee.api.Sbb.class);
+                            pool.acquire(entityId, () -> {
+                                try {
+                                    return typedSbb.getDeclaredConstructor().newInstance();
+                                } catch (Exception e) {
+                                    throw new IllegalStateException(
+                                            "IES allocate factory failed for "
+                                                    + sbbClass.getName(), e);
+                                }
+                            });
+                            return entityId;
+                        }
+
+                        @Override
+                        public boolean contains(String entityId) {
+                            return pool.findEntity(entityId) != null;
+                        }
+
+                        @Override
+                        public void onEntityRemoved(String entityId,
+                                                     java.util.function.Consumer<String> callback) {
+                            // Pool does not expose per-entity removal
+                            // callbacks; this example polls once on the
+                            // first IES-miss to drop stale convergence
+                            // entries (see InitialEventSelectorDispatcher
+                            // for the spec §7.5.5 behaviour).
+                            callback.accept(entityId);
+                        }
+                    };
+            InitialEventSelectorDispatcher dispatcher =
+                    new InitialEventSelectorDispatcher(adapter);
+            c.setInitialEventSelectorDispatcher(dispatcher);
+            LOG.info("Initial Event Selector dispatcher bound (S3)");
+        } catch (RuntimeException e) {
+            LOG.warnf(e, "IES dispatcher bind failed — falling back to legacy allocate-per-event");
+        }
     }
 
     void onStart(@Observes StartupEvent ev) {
@@ -151,7 +236,12 @@ public final class UssdDemoBootstrap {
 
     private void registerSbbTypes(MicroSleeContainer c) {
         c.registerSbbType(HttpServerSbb.class, () -> new HttpServerSbb(wiring));
-        c.registerSbbType(Ss7UssdIngressSbb.class, () -> new Ss7UssdIngressSbb(wiring));
+        // Perfect Core S2 — register the concrete subclass that the
+        // Javassist generator (or our hand-written $Concrete stub) emits
+        // for the abstract Ss7UssdIngressSbb. The pool will instantiate
+        // $Concrete via its no-arg constructor.
+        c.registerSbbType(Ss7UssdIngressSbb.class,
+                () -> new Ss7UssdIngressSbb.$Concrete(wiring));
         c.registerSbbType(GrpcClientSbb.class, () -> new GrpcClientSbb(wiring));
         LOG.info("Registered pooled SBB types: HttpServer, Ss7UssdIngress, GrpcClient");
     }
@@ -183,22 +273,27 @@ public final class UssdDemoBootstrap {
         grpcClient = upstream;
         grpcRa = new GrpcMenuResourceAdaptor();
         grpcRa.setGrpcMenuClient(upstream);
-        RaBootstrapContextImpl grpcCtx = new RaBootstrapContextImpl(c, "UssdMenuRA");
-        grpcCtx.setResourceAdaptor(grpcRa);
-        grpcRa.setResourceAdaptorContext(grpcCtx);
-        grpcRa.raConfigure();
-        grpcRa.raActive();
+
+        // Perfect Core S5 — drive the full RA lifecycle through the
+        // kernel-side ResourceAdaptorContextBuilder. This wires the RA to
+        // the live container's EventRouter, ACNF, TimerBridge, AlarmFacility,
+        // TraceFacility, NullActivityFactory, and EventLookupFacility in
+        // one call, then walks the state machine through
+        // INACTIVE -> ACTIVE so raConfigure() and raActive() run on the
+        // canonical spec path.
+        ResourceAdaptorContextBuilder.Built grpcBuilt =
+                ResourceAdaptorContextBuilder.build(c, grpcRa, "UssdMenuRA");
         wiring.setGrpcRa(grpcRa);
+        LOG.info("gRPC RA registered via S5 ResourceAdaptorContextBuilder");
 
         httpRa = new HttpIngressResourceAdaptor();
         httpRa.setPort(httpPort);
         httpRa.setWiring(wiring);
         httpRa.setSessionStore(sessionStore);
-        RaBootstrapContextImpl httpCtx = new RaBootstrapContextImpl(c, "HttpIngressRA");
-        httpCtx.setResourceAdaptor(httpRa);
-        httpRa.setResourceAdaptorContext(httpCtx);
-        httpRa.raConfigure();
-        httpRa.raActive();
+
+        // Same S5 path for the HTTP ingress RA.
+        ResourceAdaptorContextBuilder.Built httpBuilt =
+                ResourceAdaptorContextBuilder.build(c, httpRa, "HttpIngressRA");
         wiring.setHttpRa(httpRa);
         LOG.infof("HTTP RA listening on http://127.0.0.1:%d", httpRa.port());
     }

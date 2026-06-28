@@ -5,6 +5,10 @@
 > **Quarkus** application (recommended), Spring Boot, a Jakarta EE server, or a
 > unit test, with **no JBoss Modules, no VFS, no MSC, no JMX dependency**.
 
+> **📦 micro-jainslee chỉ có ~10,827 dòng code (kernel) so với RestComm jain-slee cũ ~49,774 dòng (trong checkout này) / ~174,710 dòng (full upstream Mobicents) — giảm ~78 %–~94 %**. Xem chi tiết tại [`docs/micro-jainslee-compact-vs-mobicents.md`](docs/micro-jainslee-compact-vs-mobicents.md) (EN) · [`.vi.md`](docs/micro-jainslee-compact-vs-mobicents.vi.md) (VI) · [`.am.md`](docs/micro-jainslee-compact-vs-mobicents.am.md) (አማርኛ).
+
+> **📦 micro-jainslee has only ~10,827 LOC (kernel) compared to the legacy RestComm jain-slee ~49,774 LOC (in this checkout) / ~174,710 LOC (full upstream Mobicents) — a ~78 %–~94 % reduction**. Details in [`docs/micro-jainslee-compact-vs-mobicents.md`](docs/micro-jainslee-compact-vs-mobicents.md).
+
 [![Java](https://img.shields.io/badge/Java-25_LTS-orange)](https://openjdk.org/projects/jdk/25/)
 [![Virtual Threads](https://img.shields.io/badge/Virtual_Threads-Loom-green)](https://openjdk.org/projects/loom/)
 [![License](https://img.shields.io/badge/license-Dual_(GPLv3_|_Commercial)-blue)](LICENSE)

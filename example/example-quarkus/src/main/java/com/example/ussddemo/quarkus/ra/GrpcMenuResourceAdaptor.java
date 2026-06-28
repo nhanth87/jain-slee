@@ -79,7 +79,8 @@ public final class GrpcMenuResourceAdaptor implements ResourceAdaptor {
         }
     }
 
-    public void requestMenu(String sessionId, String msisdn, String ussdString) {
+    public void requestMenu(String sessionId, String msisdn, String ussdString,
+                            ActivityContextInterface responseAci) {
         if (context == null) {
             LOG.warn("gRPC-RA.requestMenu called before setResourceAdaptorContext");
             return;
@@ -99,12 +100,16 @@ public final class GrpcMenuResourceAdaptor implements ResourceAdaptor {
             LOG.warnf("gRPC-RA unknown session activity: %s", sessionId);
             return;
         }
+        // Request event on session ACI.
         container.routeEvent(new GrpcMenuRequestEvent(sessionId, msisdn, ussdString), sessionAci);
-        workerPool.submit(() -> doCall(sessionId, msisdn, ussdString, sessionAci));
+        // Response event on caller-supplied response ACI (defaults to session
+        // ACI when caller did not pass one, e.g. legacy 3-arg callers).
+        ActivityContextInterface respAci = responseAci != null ? responseAci : sessionAci;
+        workerPool.submit(() -> doCall(sessionId, msisdn, ussdString, respAci));
     }
 
     private void doCall(String sessionId, String msisdn, String ussdString,
-                          ActivityContextInterface sessionAci) {
+                          ActivityContextInterface responseAci) {
         MicroSleeContainer container = container();
         MenuResponse resp;
         try {
@@ -114,14 +119,14 @@ public final class GrpcMenuResourceAdaptor implements ResourceAdaptor {
             if (container != null) {
                 container.routeEvent(new GrpcMenuResponseEvent(
                         sessionId, "ERR", null,
-                        t.getClass().getSimpleName() + ": " + t.getMessage()), sessionAci);
+                        t.getClass().getSimpleName() + ": " + t.getMessage()), responseAci);
             }
             return;
         }
         if (container != null) {
             container.routeEvent(new GrpcMenuResponseEvent(
                     resp.getSessionId(), resp.getStatus(), resp.getMenuText(),
-                    resp.getError()), sessionAci);
+                    resp.getError()), responseAci);
         }
     }
 

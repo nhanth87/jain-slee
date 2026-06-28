@@ -10,9 +10,9 @@ import com.microjainslee.api.ActivityContextHandle;
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.ResourceAdaptor;
 import com.microjainslee.api.ResourceAdaptorContext;
+import com.microjainslee.api.SimpleActivityContextHandle;
 import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.core.RaBootstrapContextImpl;
-import com.microjainslee.core.SimpleActivityContextHandle;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -179,7 +179,10 @@ public final class HttpIngressResourceAdaptor implements ResourceAdaptor {
 
     private MicroSleeContainer container() {
         if (context instanceof RaBootstrapContextImpl) {
-            return ((RaBootstrapContextImpl) context).getContainer();
+            // S5 — getContainer() now returns Object for kernel-package
+            // decoupling (see MicroSleeContainer.registerResourceAdaptor).
+            Object c = ((RaBootstrapContextImpl) context).getContainer();
+            return c instanceof MicroSleeContainer mc ? mc : null;
         }
         return null;
     }

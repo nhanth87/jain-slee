@@ -16,10 +16,15 @@ import com.microjainslee.api.SbbLocalObject;
 import com.microjainslee.api.SleeEvent;
 import com.microjainslee.api.SleeEventHandler;
 import com.microjainslee.api.TimerFiredEvent;
+import com.microjainslee.api.annotations.CmpField;
+import com.microjainslee.api.annotations.InitialEventSelect;
+import com.microjainslee.api.annotations.SbbAnnotation;
 import com.microjainslee.core.CmpBackedSbb;
 import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.core.SbbLifecycleManager;
 import com.microjainslee.core.SimpleSbbLocalObject;
+import com.microjainslee.core.ies.InitialEventSelectCondition;
+import com.microjainslee.core.ies.InitialEventSelectResult;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -27,9 +32,29 @@ import org.apache.logging.log4j.Logger;
 import java.lang.reflect.Method;
 
 /**
- * Internal MAP/USSD service leg. Registered at runtime via {@code registerSbbType}.
+ * Internal MAP/USSD service leg. Registered at runtime via
+ * {@code registerSbbType}.
+ *
+ * <p>Updated for Perfect Core S1-S5 (2026-06-28):</p>
+ * <ul>
+ *   <li><b>S2</b> — CMP accessors declared as {@code abstract} so the
+ *       Javassist concrete generator can produce the backing getters
+ *       and setters. A hand-written {@code $Concrete} companion keeps
+ *       the example self-contained.</li>
+ *   <li><b>S3</b> — {@link InitialEventSelect @InitialEventSelect} method
+ *       routes every USSD session to the same entity by msisdn so the
+ *       CMP state survives across the request / response round-trip.</li>
+ *   <li><b>S4</b> — child SBB creation still uses
+ *       {@link com.microjainslee.core.MicroSleeContainer#getChildRelationFactory(Class)};
+ *       the {@link ChildRelation} delegate invokes the cascade remover
+ *       on {@code sbbRemove} so child entities are torn down
+ *       automatically.</li>
+ *   <li><b>P1</b> — safe under {@code txEnabled=false}; CMP writes go
+ *       straight to the in-memory store through {@code cmpWrite}.</li>
+ * </ul>
  */
-public final class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHandler {
+@SbbAnnotation(name = "Ss7UssdIngress", vendor = "com.example.ussddemo", version = "1.0")
+public abstract class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHandler {
 
     private static final Logger LOG = LogManager.getLogger(Ss7UssdIngressSbb.class);
     private static final long SESSION_TIMEOUT_MS = 30_000L;
@@ -47,28 +72,49 @@ public final class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHa
         setMenuTier(menuTier);
     }
 
-    public String getSessionId() {
-        return (String) cmpRead(getter("getSessionId"));
-    }
+    // ─────────────────────────────────────────────────────────────────
+    //  CMP accessors — abstract on purpose (Perfect Core S2).
+    // ─────────────────────────────────────────────────────────────────
 
-    public void setSessionId(String sessionId) {
-        cmpWrite(setter("setSessionId", String.class), sessionId);
-    }
+    @CmpField("sessionId")
+    public abstract String getSessionId();
 
-    public String getMsisdn() {
-        return (String) cmpRead(getter("getMsisdn"));
-    }
+    @CmpField("sessionId")
+    public abstract void setSessionId(String sessionId);
 
-    public void setMsisdn(String msisdn) {
-        cmpWrite(setter("setMsisdn", String.class), msisdn);
-    }
+    @CmpField("msisdn")
+    public abstract String getMsisdn();
 
-    public String getMenuTier() {
-        return (String) cmpRead(getter("getMenuTier"));
-    }
+    @CmpField("msisdn")
+    public abstract void setMsisdn(String msisdn);
 
-    public void setMenuTier(String menuTier) {
-        cmpWrite(setter("setMenuTier", String.class), menuTier);
+    @CmpField("menuTier")
+    public abstract String getMenuTier();
+
+    @CmpField("menuTier")
+    public abstract void setMenuTier(String menuTier);
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Initial Event Selection (Perfect Core S3).
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * IES — convergence name = {@code msisdn}. The first
+     * {@link Ss7UssdBeginEvent} for a given msisdn is the initial event;
+     * subsequent events are routed to the same entity per spec §7.5.5.
+     */
+    @InitialEventSelect(name = "ussd-session-convergence")
+    public InitialEventSelectResult selectInitialEvent(InitialEventSelectCondition c) {
+        Object event = c.getEvent();
+        if (event instanceof Ss7UssdBeginEvent) {
+            Ss7UssdBeginEvent e = (Ss7UssdBeginEvent) event;
+            String msisdn = e.getMsisdn() == null ? "anon" : e.getMsisdn();
+            return InitialEventSelectResult.forSession(msisdn, true);
+        }
+        return InitialEventSelectResult.builder()
+                .convergenceName(null)
+                .initialEvent(false)
+                .build();
     }
 
     @Override
@@ -174,6 +220,65 @@ public final class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHa
                 return;
             }
             Thread.sleep(10L);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Concrete companion (Perfect Core S2).
+    //
+    //  Production deployments generate this class at deploy-time via
+    //  {@code com.microjainslee.codegen.ConcreteSbbGenerator}; the
+    //  hand-written stub below keeps the embedded example
+    //  self-contained.
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Concrete subclass generated by {@code ConcreteSbbGenerator} at
+     * deploy time.
+     */
+    public static final class $Concrete extends Ss7UssdIngressSbb {
+
+        private final java.util.Map<String, Object> local =
+                new java.util.concurrent.ConcurrentHashMap<>();
+
+        public $Concrete() {
+            super();
+        }
+
+        @Override
+        public String getSessionId() {
+            Object v = local.get("sessionId");
+            return v instanceof String s ? s : (String) cmpRead(getter("getSessionId"));
+        }
+
+        @Override
+        public void setSessionId(String sessionId) {
+            local.put("sessionId", sessionId);
+            cmpWrite(setter("setSessionId", String.class), sessionId);
+        }
+
+        @Override
+        public String getMsisdn() {
+            Object v = local.get("msisdn");
+            return v instanceof String s ? s : (String) cmpRead(getter("getMsisdn"));
+        }
+
+        @Override
+        public void setMsisdn(String msisdn) {
+            local.put("msisdn", msisdn);
+            cmpWrite(setter("setMsisdn", String.class), msisdn);
+        }
+
+        @Override
+        public String getMenuTier() {
+            Object v = local.get("menuTier");
+            return v instanceof String s ? s : (String) cmpRead(getter("getMenuTier"));
+        }
+
+        @Override
+        public void setMenuTier(String menuTier) {
+            local.put("menuTier", menuTier);
+            cmpWrite(setter("setMenuTier", String.class), menuTier);
         }
     }
 }

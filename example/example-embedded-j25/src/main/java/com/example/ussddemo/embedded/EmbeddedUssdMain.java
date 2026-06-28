@@ -52,6 +52,11 @@ public final class EmbeddedUssdMain {
                 .sbbPoolMin(envInt("microjainslee.sbb-pool-min", 16))
                 .sbbPoolMax(envInt("microjainslee.sbb-pool-max", 4096))
                 .sbbPerVirtualThread(envBool("microjainslee.sbb-per-virtual-thread", true))
+                // Perfect Core P1 — surface the tx-enabled knob so an
+                // operator can flip the container into JTA mode at
+                // startup. Defaults to false which keeps the example
+                // self-contained.
+                .txEnabled(envBool("microjainslee.tx-enabled", false))
                 .build();
         container = new MicroSleeContainer(configuration);
         UssdSessionStore sessionStore = new UssdSessionStore();
@@ -60,6 +65,10 @@ public final class EmbeddedUssdMain {
 
         bootstrap = new EmbeddedUssdBootstrap(container, sessionStore);
         bootstrap.registerSbbTypesOnly();
+        // Perfect Core S3 — bind the IES dispatcher before start() so
+        // the event router picks up @InitialEventSelect methods on the
+        // SBBs on the very first incoming event.
+        bootstrap.bindInitialEventSelector();
         container.start();
         bootstrap.install(httpPort, grpcHost, grpcPort);
 

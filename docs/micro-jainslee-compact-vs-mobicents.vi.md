@@ -13,11 +13,20 @@
 
 1. [Tóm tắt điều hành](#1-tóm-tắt-điều-hành)
 2. [So sánh số dòng code](#2-so-sánh-số-dòng-code)
+   - 2.1 [Cây JAIN-SLEE cũ (Mobicents / RestComm — vendored)](#21-cây-jain-slee-cũ-mobicents--restcomm--vendored-tham-chiếu)
+   - 2.2 [Cây micro-jainslee (build target)](#22-cây-micro-jainslee-build-target)
+   - 2.3 [Con số này giấu gì](#23-con-số-này-giấu-gì)
+   - 2.4 [Cây phụ thuộc module sau Perfect Core](#24-cây-phụ-thuộc-module-sau-perfect-core)
+   - 2.5 [LOC delta của Perfect Core](#25-loc-delta-của-perfect-core)
 3. [micro-jainslee đã compact ở đâu — những thứ bị cắt / giữ lại / viết lại](#3-micro-jainslee-đã-compact-ở-đâu--những-thứ-bị-cắt--giữ-lại--viết-lại)
 4. [micro-jainslee hoạt động như thế nào — kiến trúc runtime](#4-micro-jainslee-hoạt-động-như-thế-nào--kiến-trúc-runtime)
 5. [Line-by-line walkthrough example-quarkus](#5-line-by-line-walkthrough-example-quarkus)
 6. [Migrate một SBB từ Mobicents SLEE sang micro-jainslee](#6-migrate-một-sbb-từ-mobicents-slee-sang-micro-jainslee)
 7. [Đánh đổi — cái được, cái mất](#7-đánh-đổi--cái-được-cái-mất)
+   - 7.1 [Cái mất (cố ý, theo thiết kế)](#71-cái-mất-cố-ý-theo-thiết-kế)
+   - 7.1.1 [Spec exception hoãn sang Phase 7+](#711-spec-exception-hoãn-sang-phase-7-sau-perfect-core-s1s5)
+   - 7.2 [Cái được](#72-cái-được)
+   - 7.3 [Khi nào dùng cái nào](#73-khi-nào-dùng-cái-nào)
 
 ---
 
@@ -110,6 +119,53 @@ Cộng thêm RAs + adapters + example USSD, tổng vẫn **nhỏ hơn ~7 lần**
 | JNDI `comp/env` injection | Setter injection / `@Inject` | đơn giản hơn |
 | XML descriptor (ra/sbb/event/service/profile/du) | `sbb-index.properties` + Java | xóa ~40+ DTD file |
 | JTA + UserTransaction | Logical transaction trong core | đơn giản hơn |
+
+### 2.4 Cây phụ thuộc module sau Perfect Core
+
+> Copy nguyên từ `docs/WIRING_GUIDE.md` mục "Module dependency tree sau Perfect Core". Để doc này tự chứa, không cần mở file khác.
+
+```
+jainslee-api          (giữ nguyên — chỉ thêm annotation @InitialEventSelect)
+    ↑
+jainslee-tx           (MỚI — SleeTransactionManager, Narayana)
+    ↑
+jainslee-codegen      (MỚI — ConcreteSbbGenerator, Javassist)
+    ↑
+jainslee-core         (update EventRouter + VirtualThreadSbbEntityPool)
+    ↑                  wire: IES + CascadeRemover + ConcreteSbbGenerator + JTA
+jainslee-ra-spi       (update — SleeEndpointImpl, RaEntityStateMachine, RAContext)
+    ↑
+adapters/             (Quarkus, Spring Boot — nhỏ: thêm JTA bean + RA wiring)
+```
+
+> **Lưu ý:** Sơ đồ trên thể hiện **chiều phụ thuộc trực tiếp** (A → B nghĩa là A phụ thuộc B). Cả reactor có 14 Maven module sau Perfect Core — xem `docs/micro-jainslee-cmp-production-roadmap.md` §6.4 để có cây đầy đủ gồm `jainslee-scheduler`, `jainslee-apt`, `jainslee-cluster`, `jainslee-tck-harness`, `jainslee-bom`, `adapter-quarkus`, `adapter-springboot`, `adapter-jakartaee`, và `example/example-quarkus`.
+
+### 2.5 LOC delta của Perfect Core
+
+Đo bằng `git show --shortstat` cho mỗi commit sprint (2026-06-28).
+
+| Giai đoạn | LOC thêm | Module bị chạm |
+|---|---:|---|
+| Pre-Perfect-Core | ~10.800 | bom, api, ra-spi, core, tx, tck-harness, cluster |
+| S1 JTA polish | ~200 | core (verify only) |
+| S2 CMP codegen | ~700 | jainslee-codegen (MỚI), core |
+| S3 IES | ~600 | core (MỚI ies/), api |
+| S4 Child | ~900 | core (MỚI child/), core (VirtualThreadSbbEntityPool) |
+| S5 RA | ~1.500 | ra-spi, core |
+| **Tổng Perfect Core** | **~3.900** | |
+
+**Số liệu nguồn từ git history:**
+
+| Commit | Giai đoạn | `files changed / insertions(+)` |
+|---|---|---|
+| `ae3666a89` | S1 JTA wiring | 11 files / 1.250 insertions (phần lớn là module `jainslee-tx` mới — kernel chỉ ~200 LOC verify-only) |
+| `a7566ed29` | S2 CMP codegen | 7 files / 1.361 insertions (jainslee-codegen MỚI) |
+| `37c7e4c36` | S3 IES | 11 files / 1.156 insertions (core/ies/ MỚI) |
+| `05cefe3dc` | S4 Child | 8 files / 1.919 insertions (core/child/ MỚI) |
+| `a2029f26d` | S5 RA wiring | 36 files / 2.822 insertions (jainslee-ra-spi + core được update nặng) |
+| **Cộng** | | **~8.500 insertions qua Perfect Core S1–S5** |
+
+> Con số `~3.900` ở bảng trên là **delta so với baseline Pre-Perfect-Core**, đếm ở cấp *main-source* (không tính test). Các số `git-shortstat` ở trên bao gồm test; test nằm trong cùng commit. Tổng khớp: ~3.900 main-source LOC + ~4.600 test LOC ≈ 8.500 total insertions.
 
 ---
 
@@ -626,6 +682,16 @@ public final class MySbb implements SleeEventHandler {
 - **XML deployment descriptors** — không.
 - **TCK compliance đầy đủ** — không. Đây là R&D, không phải product.
 - **Infinispan-backed timer cluster** — không. Dùng jSS7 `HashedWheelTimer` in-process.
+
+#### 7.1.1 Spec exception hoãn sang Phase 7+ (sau Perfect Core S1–S5)
+
+Perfect Core S1–S5 đã ship gần hết spec surface bị hoãn (JTA wiring, IES, ChildRelation, full RA SPI). Các mục còn lại được liệt kê ở đây là **việc tương lai**, **không phải** gap của kernel hiện tại:
+
+- **CMP field type validation** (`spec §6.5.8`) — reflection đang permissive; logic từ chối type đầy đủ theo dõi trong `docs/micro-jainslee-cmp-production-roadmap.md` GAP-CMP-3.
+- **Indexed CMP field lookup** (`spec §6.5.4`) — `@CmpField.indexed()` đã parse nhưng chưa index; theo dõi ở GAP-CMP-4.
+- **Passivation timeout** (`spec §6.5.5`) — theo dõi ở GAP-CMP-5.
+- **Schema evolution / version migration** (`spec §6.5.9`) — theo dõi ở GAP-CMP-6.
+- **CMP distributed snapshot** (cluster + P2) — `DistributedSbbEntityPool` skeleton có (commit `8d89bdfd5`); phần wire-in CMP là GAP-CMP-7.
 
 ### 7.2 Cái được
 

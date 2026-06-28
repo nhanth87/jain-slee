@@ -13,11 +13,20 @@
 
 1. [ዋና ማጠቃለያ](#1-ዋና-ማጠቃለያ)
 2. [የኮድ መስመር ብዛት ንጽጽር](#2-የኮድ-መስመር-ብዛት-ንጽጽር)
+   - 2.1 [ያረጀ JAIN-SLEE tree (Mobicents / RestComm — vendored)](#21-ያረጀ-jain-slee-tree-mobicents--restcomm--vendored-ማጣቀሻ-ብቻ)
+   - 2.2 [micro-jainslee tree (built target)](#22-micro-jainslee-tree-built-target--የተለከ-በ-2026-06-28)
+   - 2.3 [ይህ ቁጥር ምን ይደብቃል](#23-ይህ-ቁጥር-ምን-ይደብቃል)
+   - 2.4 [የሞዱል dependency tree ከ Perfect Core በኋላ](#24-የሞዱል-dependency-tree-ከ-perfect-core-በኋላ)
+   - 2.5 [Perfect Core LOC delta](#25-perfect-core-loc-delta)
 3. [micro-jainslee የተንጸባረቀበት — የተቆረጡ / የተጠበቁ / የተደረጉ እንደገና የተጻፉ ነገሮች](#3-micro-jainslee-የተንጸባረቀበት)
 4. [micro-jainslee እንዴት ይሰራል — runtime architecture](#4-micro-jainslee-እንዴት-ይሰራል)
 5. [Line-by-line walkthrough example-quarkus](#5-line-by-line-walkthrough-example-quarkus)
 6. [SBB ከ Mobicents SLEE ወደ micro-jainslee ማዛወር](#6-sbb-ከ-mobicents-slee-ወደ-micro-jainslee-ማዛወር)
 7. [ምን ያጣሉ ምን ያገኛሉ](#7-ምን-ያጣሉ-ምን-ያገኛሉ)
+   - 7.1 [የሚጣሉት (በውስጥ የተነደፈ)](#71-የሚጣሉት-በውስጥ-የተነደፈ)
+   - 7.1.1 [ወደ Phase 7+ የተላለፉ spec exceptions](#711-ወደ-phase-7-የተላለፉ-spec-exceptions-ከ-perfect-core-s1s5-በኋላ)
+   - 7.2 [የሚገኙት](#72-የሚገኙት)
+   - 7.3 [መቼ የትኛውን መጠቀም](#73-መቼ-የትኛውን-መጠቀም)
 
 ---
 
@@ -112,6 +121,53 @@ RAs + adapters + USSD example ሲጨመር ጠቅላላው ከ Mobicents kernel 
 | JNDI `comp/env` injection | Setter injection / `@Inject` | ቀላል |
 | XML descriptor (ra/sbb/event/service/profile/du) | `sbb-index.properties` + Java | ~40+ DTD ፋይል ተቆርጧል |
 | JTA + UserTransaction | Logical transaction in core | ቀላል |
+
+### 2.4 የሞዱል dependency tree ከ Perfect Core በኋላ
+
+> ከ `docs/WIRING_GUIDE.md` "Module dependency tree sau Perfect Core" የተቀዳ ለማንበብ። ይህን doc እንዳናነበው ለማቆየት ነው።
+
+```
+jainslee-api          (ያለ ለውጥ — @InitialEventSelect annotation ብቻ ይጨመራል)
+    ↑
+jainslee-tx           (አዲስ — SleeTransactionManager, Narayana)
+    ↑
+jainslee-codegen      (አዲስ — ConcreteSbbGenerator, Javassist)
+    ↑
+jainslee-core         (EventRouter + VirtualThreadSbbEntityPool ይዘምናል)
+    ↑                  IES + CascadeRemover + ConcreteSbbGenerator + JTA ይገናኛሉ
+jainslee-ra-spi       (ይዘምናል — SleeEndpointImpl, RaEntityStateMachine, RAContext)
+    ↑
+adapters/             (Quarkus, Spring Boot — ትንሽ: JTA bean + RA wiring ይጨመራል)
+```
+
+> **ማስታወሻ:** የላይኛው diagram **ቀጥታ dependency አቅጣጫ** ያሳያል (A → B ማለት A ይጠብቅበታል Bን)። ሙሉ reactor 14 Maven modules አሉት ከ Perfect Core በኋላ — ሙሉ tree ለማየት `docs/micro-jainslee-cmp-production-roadmap.md` §6.4 ይመልከቱ (jainslee-scheduler, jainslee-apt, jainslee-cluster, jainslee-tck-harness, jainslee-bom, adapter-quarkus, adapter-springboot, adapter-jakartaee, እና example/example-quarkus ጨምሮ)።
+
+### 2.5 Perfect Core LOC delta
+
+በ `git show --shortstat` ለእያንዳንዱ sprint commit (2026-06-28) የተለካ።
+
+| ደረጃ | የተጨመረ LOC | የተነኩ modules |
+|---|---:|---|
+| Pre-Perfect-Core | ~10,800 | bom, api, ra-spi, core, tx, tck-harness, cluster |
+| S1 JTA polish | ~200 | core (verify only) |
+| S2 CMP codegen | ~700 | jainslee-codegen (አዲስ), core |
+| S3 IES | ~600 | core (አዲስ ies/), api |
+| S4 Child | ~900 | core (አዲስ child/), core (VirtualThreadSbbEntityPool) |
+| S5 RA | ~1,500 | ra-spi, core |
+| **Perfect Core ጠቅላላ** | **~3,900** | |
+
+**ምንጮች ከ git history:**
+
+| Commit | ደረጃ | `files changed / insertions(+)` |
+|---|---|---|
+| `ae3666a89` | S1 JTA wiring | 11 files / 1,250 insertions (አብዛኛው አዲሱ `jainslee-tx` module — kernel ላይ impact ~200 LOC verify-only) |
+| `a7566ed29` | S2 CMP codegen | 7 files / 1,361 insertions (jainslee-codegen አዲስ) |
+| `37c7e4c36` | S3 IES | 11 files / 1,156 insertions (core/ies/ አዲስ) |
+| `05cefe3dc` | S4 Child | 8 files / 1,919 insertions (core/child/ አዲስ) |
+| `a2029f26d` | S5 RA wiring | 36 files / 2,822 insertions (jainslee-ra-spi + core በጣም ዘምኗል) |
+| **ድምር** | | **Perfect Core S1–S5 ላይ ~8,500 insertions** |
+
+> በላይኛው ሠንጠረዥ ያለው `~3,900` ዋጋ **ከ Pre-Perfect-Core baseline ጋር delta** ነው፣ በ *main-source* ደረጃ ብቻ ይቆጠራል (test አይካተትም)። ከላይ ያሉት `git-shortstat` ቁጥሮች testን ያካትታሉ; test በተመሳሳይ commit ውስጥ ነው። ድምር ይዛመዳል: ~3,900 main-source LOC + ~4,600 test LOC ≈ 8,500 ጠቅላላ insertions።
 
 ---
 
@@ -628,6 +684,16 @@ public final class MySbb implements SleeEventHandler {
 - **XML deployment descriptors** — የሉም።
 - **ሙሉ TCK compliance** — የለም። ይህ R&D ነው፣ ምርት አይደለም።
 - **Infinispan-backed timer cluster** — የለም። jSS7 `HashedWheelTimer` in-process ይጠቀማል።
+
+#### 7.1.1 ወደ Phase 7+ የተላለፉ spec exceptions (ከ Perfect Core S1–S5 በኋላ)
+
+Perfect Core S1–S5 ከተላለፉት spec surface ላይ አብዛኛውን አድርሷል (JTA wiring, IES, ChildRelation, full RA SPI)። የቀሩት እዚህ ላይ እንደ **የወደፊት ሥራ** ተዘርዝረዋል፣ **የአሁኑ kernel gaps አይደሉም**:
+
+- **CMP field type validation** (`spec §6.5.8`) — reflection path permissive ነው; ሙሉ type-rejection logic በ `docs/micro-jainslee-cmp-production-roadmap.md` GAP-CMP-3 ይከታታል።
+- **Indexed CMP field lookup** (`spec §6.5.4`) — `@CmpField.indexed()` ተፈትኖ ነው ግን አልተገኘም; በ GAP-CMP-4 ይከታታል።
+- **Passivation timeout** (`spec §6.5.5`) — በ GAP-CMP-5 ይከታታል።
+- **Schema evolution / version migration** (`spec §6.5.9`) — በ GAP-CMP-6 ይከታታል።
+- **CMP distributed snapshot** (cluster + P2) — `DistributedSbbEntityPool` skeleton አለ (commit `8d89bdfd5`); CMP wire-in GAP-CMP-7 ነው።
 
 ### 7.2 የሚገኙት
 

@@ -61,6 +61,7 @@
         <module>jainslee-tx</module>
         <module>jainslee-apt</module>
         <module>jainslee-ra-spi</module>
+        <module>jainslee-tck-harness</module>
         <module>ras</module>
         <module>adapters/adapter-quarkus</module>
         <module>adapters/adapter-springboot</module>

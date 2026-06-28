@@ -14,6 +14,7 @@ import com.microjainslee.api.*;
 import com.lmax.disruptor.*;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
+import com.microjainslee.core.logging.EventMdc;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -26,6 +27,8 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 
 /**
  * JAIN-SLEE 1.1 §7.3 — Event Router.
@@ -53,6 +56,23 @@ public class EventRouter {
      * diagnostics; never reset.
      */
     private final AtomicLong skippedMaskCount = new AtomicLong();
+
+    /**
+     * Production P1.2 — external JTA transaction context (typed as
+     * {@link Object} so the kernel stays JTA-free). Bound by
+     * {@link #bindJtaTransactionContext(Object)}. When non-null, every
+     * {@code deliverEvent} call inside {@link #dispatchWithTransaction} is
+     * wrapped in {@code txContext.executeInTransaction(...)}.
+     */
+    private volatile Object jtaTransactionContext;
+
+    /**
+     * Cached reflective handle for
+     * {@code txContext.executeInTransaction(Runnable)}. Looked up once at
+     * bind-time; per-event cost is a single
+     * {@link Method#invoke(Object, Object...)} (~30 ns).
+     */
+    private volatile Method executeInTransactionMethod;
 
     public EventRouter(int bufferSize) {
         this(bufferSize, false, false);
@@ -119,6 +139,47 @@ public class EventRouter {
         this.errorHandlingPolicy = errorHandlingPolicy;
     }
 
+    /**
+     * Production P1.2 — bind an external JTA {@code TransactionContext} so
+     * {@link #dispatchWithTransaction(SleeEvent, ActivityContextInterface, InMemoryActivityContext,
+     *   SbbTransactionContext, boolean[])} wraps each SBB delivery in a real
+     * JTA transaction boundary.
+     *
+     * <p>The {@code txContext} is typed as {@link Object} so the kernel does
+     * not pull in a compile-time dependency on
+     * {@code com.microjainslee.tx.TransactionContext}. The runtime contract
+     * is:
+     * <ul>
+     *   <li>{@code txContext} may be {@code null} — disables JTA wrapping.</li>
+     *   <li>Otherwise {@code txContext} MUST expose a public method
+     *       {@code void executeInTransaction(Runnable)} — looked up
+     *       reflectively here and cached.</li>
+     * </ul>
+     *
+     * <p>The reflective lookup adds ~30 ns per delivery (cached
+     * {@link Method#invoke(Object, Object...)}) and avoids any
+     * {@code jainslee-core -> jainslee-tx} compile-time edge.
+     */
+    public void bindJtaTransactionContext(Object txContext) {
+        if (txContext == null) {
+            this.jtaTransactionContext = null;
+            this.executeInTransactionMethod = null;
+            return;
+        }
+        Method m;
+        try {
+            m = txContext.getClass().getMethod("executeInTransaction", Runnable.class);
+        } catch (NoSuchMethodException nsme) {
+            throw new IllegalArgumentException(
+                    "JTA transaction context must expose executeInTransaction(Runnable): "
+                            + txContext.getClass().getName(), nsme);
+        }
+        this.jtaTransactionContext = txContext;
+        this.executeInTransactionMethod = m;
+        LOG.info("EventRouter bound to JTA transaction context: {}",
+                txContext.getClass().getName());
+    }
+
     public void routeEvent(SleeEvent event, ActivityContextInterface aci) {
         long sequence = ringBuffer.next();
         try {
@@ -165,6 +226,12 @@ public class EventRouter {
             InMemoryActivityContext activityContext) {
         SbbTransactionContext transaction = ActivityContextTransactionRegistry.begin(
                 activityContext, timerBridge);
+        // Production P1.2 — propagate the external (JTA) transaction context
+        // to the SBB transaction so SBB code / diagnostics can introspect
+        // the live tx status. This is a pure observation hook — it does NOT
+        // alter the logical undo stack semantics. When no JTA context is
+        // bound (R&D default) the setter is a no-op and isJtaBacked()=false.
+        transaction.setExternalTransactionContext(this.jtaTransactionContext);
         // ScopedValue.where binds the new transaction to the caller's
         // structured scope for the duration of this dispatch. The
         // surrounding code that calls CURRENT.get() (via
@@ -184,8 +251,18 @@ public class EventRouter {
     private void dispatchWithTransaction(SleeEvent event, ActivityContextInterface aci,
             InMemoryActivityContext activityContext,
             SbbTransactionContext transaction, boolean[] failedHolder) {
-        boolean failed = false;
+        // P1.3 — structured logging instrumentation. Capture the entry
+        // timestamp and populate the MDC fields known up-front; the
+        // duration and txStatus fields are stamped in the finally block.
+        // We never modify the dispatch logic itself — MDC is purely
+        // observational metadata for the logging layer.
+        long startNanos = System.nanoTime();
+        String aciName = activityContext.getActivityContextName();
+        String eventType = event.getClass().getSimpleName();
+        EventMdc.start("?", aciName, eventType);
+        String txStatus = "ROLLED_BACK";
         try {
+            boolean failed = false;
             List<SbbLocalObject> attached = new ArrayList<SbbLocalObject>(
                     activityContext.getAttachedSbbs());
             Collections.sort(attached, new Comparator<SbbLocalObject>() {
@@ -216,16 +293,36 @@ public class EventRouter {
                     continue;
                 }
                 SleeEventHandler handler = (SleeEventHandler) sbb;
-                if (deliverEvent(localObject, handler, sbb, event, aci, transaction)) {
+                // Stamp the SBB id into the MDC right before we hand the
+                // event off — that way any log line emitted from inside
+                // onEvent (or the timer / error-handler callbacks) carries
+                // the right correlation id.
+                EventMdc.setSbbId(localObject.getSbbID() != null
+                        ? localObject.getSbbID().getId() : "?");
+                if (deliverInTransaction(localObject, handler, sbb, event, aci, transaction)) {
                     failed = true;
+                    txStatus = "ROLLED_BACK";
                     break;
                 }
             }
             if (!failed && deliveryMode != EventDeliveryMode.ASYNC_COMMIT) {
                 transaction.commit();
+                txStatus = "COMMITTED";
+            } else if (!failed && deliveryMode == EventDeliveryMode.ASYNC_COMMIT) {
+                // ASYNC_COMMIT path — the actual commit happens on the
+                // per-SBB virtual thread inside deliverEvent(). We
+                // intentionally leave txStatus as ROLLED_BACK here
+                // because this synchronous frame did not commit; the
+                // per-SBB code path is responsible for its own MDC
+                // instrumentation in P2 when it adopts the same pattern.
+                txStatus = "DEFERRED";
             }
         } finally {
+            EventMdc.finish(startNanos, txStatus);
             ActivityContextTransactionRegistry.clear(transaction);
+            // Always clear MDC so pooled / virtual threads don't leak
+            // the fields into the next event they handle.
+            EventMdc.clear();
         }
     }
 
@@ -331,6 +428,57 @@ public class EventRouter {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Production P1.2 — thin wrapper around {@link #deliverEvent(SbbLocalObject,
+     * SleeEventHandler, Sbb, SleeEvent, ActivityContextInterface, SbbTransactionContext)}
+     * that wraps the inner delivery in the externally-bound JTA transaction
+     * boundary when {@link #bindJtaTransactionContext(Object)} has been called.
+     *
+     * <p>When no JTA context is bound this method is a no-op pass-through so
+     * the R&D behaviour (logical undo stack only) is byte-for-byte identical
+     * to pre-P1.2.
+     */
+    private boolean deliverInTransaction(final SbbLocalObject localObject,
+            final SleeEventHandler handler, final Sbb sbb,
+            final SleeEvent event, final ActivityContextInterface aci,
+            final SbbTransactionContext transaction) {
+        final Object txContext = this.jtaTransactionContext;
+        if (txContext == null || executeInTransactionMethod == null) {
+            return deliverEvent(localObject, handler, sbb, event, aci, transaction);
+        }
+        // Run the inner delivery (which may be INLINE / per-SBB virtual
+        // thread / ASYNC_COMMIT) inside a JTA tx boundary. The inner
+        // code is unchanged; only its caller (us) is wrapped.
+        final boolean[] failed = {false};
+        try {
+            executeInTransactionMethod.invoke(txContext, (Runnable) new Runnable() {
+                @Override
+                public void run() {
+                    failed[0] = deliverEvent(localObject, handler, sbb, event, aci, transaction);
+                }
+            });
+        } catch (InvocationTargetException ite) {
+            // The task itself threw — surface its cause to the dispatcher.
+            // We deliberately do NOT mark "failed" here because the inner
+            // delivery already routed the exception to handleSbbException
+            // and that path returns true to break the loop.
+            Throwable cause = ite.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            throw new RuntimeException("JTA executeInTransaction failed", cause);
+        } catch (IllegalAccessException iae) {
+            // setAccessible(true) is not even attempted, so this should be
+            // unreachable — but if it ever fires we want to know about it.
+            throw new IllegalStateException(
+                    "JTA executeInTransaction method not callable", iae);
+        }
+        return failed[0];
     }
 
     private void handleSbbException(Exception exception, SbbLocalObject localObject, SleeEvent event,

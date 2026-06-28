@@ -121,7 +121,10 @@ public final class GrpcMenuResourceAdaptor implements ResourceAdaptor {
 
     private MicroSleeContainer container() {
         if (context instanceof RaBootstrapContextImpl) {
-            return ((RaBootstrapContextImpl) context).getContainer();
+            // S5 — getContainer() now returns Object for kernel-package
+            // decoupling (see MicroSleeContainer.registerResourceAdaptor).
+            Object c = ((RaBootstrapContextImpl) context).getContainer();
+            return c instanceof MicroSleeContainer mc ? mc : null;
         }
         return null;
     }

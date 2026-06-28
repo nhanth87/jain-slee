@@ -17,15 +17,27 @@ import com.microjainslee.api.ProfileFacility;
 import com.microjainslee.api.ProfileLocalObject;
 import com.microjainslee.api.ResourceAdaptor;
 import com.microjainslee.core.MicroSleeContainer;
-import com.microjainslee.core.RaBootstrapContextImpl;
 import com.microjainslee.core.SbbLifecycleManager;
 import com.microjainslee.core.SimpleSbbLocalObject;
+import com.microjainslee.core.ies.InitialEventSelectorDispatcher;
+import com.microjainslee.core.ra.ResourceAdaptorContextBuilder;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
  * Wires resource adaptors, pooled SBB types, and seeded subscriber profiles.
+ *
+ * <p>Updated for Perfect Core S1-S5 (2026-06-28):</p>
+ * <ul>
+ *   <li><b>S5</b> — RA lifecycle now goes through
+ *       {@link ResourceAdaptorContextBuilder#build(MicroSleeContainer,
+ *       ResourceAdaptor, String)} instead of the legacy
+ *       {@code RaBootstrapContextImpl} shim.</li>
+ *   <li><b>S3</b> — bind an {@link InitialEventSelectorDispatcher} on
+ *       the container so the {@code @InitialEventSelect} methods on
+ *       the SBBs take effect.</li>
+ * </ul>
  */
 public final class EmbeddedUssdBootstrap {
 
@@ -141,7 +153,12 @@ public final class EmbeddedUssdBootstrap {
     }
 
     private void registerSbbTypes() {
-        container.registerSbbType(Ss7UssdIngressSbb.class, Ss7UssdIngressSbb::new);
+        // Perfect Core S2 — register the concrete subclass that the
+        // Javassist generator (or our hand-written $Concrete stub)
+        // emits for the abstract Ss7UssdIngressSbb. The pool will
+        // instantiate $Concrete via its no-arg constructor.
+        container.registerSbbType(Ss7UssdIngressSbb.class,
+                Ss7UssdIngressSbb.$Concrete::new);
         container.registerSbbType(GrpcClientSbb.class, GrpcClientSbb::new);
         LOG.info("Registered pooled SBB types: Ss7UssdIngress, GrpcClient");
     }
@@ -182,11 +199,68 @@ public final class EmbeddedUssdBootstrap {
     }
 
     private void activateRa(ResourceAdaptor ra, String entityName) {
-        RaBootstrapContextImpl ctx = new RaBootstrapContextImpl(container, entityName);
-        ctx.setResourceAdaptor(ra);
-        ra.setResourceAdaptorContext(ctx);
-        ra.raConfigure();
-        ra.raActive();
+        // Perfect Core S5 — drive the full RA lifecycle through the
+        // kernel-side factory. The legacy RaBootstrapContextImpl shim is
+        // replaced by ResourceAdaptorContextBuilder.build which wires
+        // the RA to the live container's EventRouter, ACNF, TimerBridge,
+        // AlarmFacility, TraceFacility, NullActivityFactory, and
+        // EventLookupFacility in one call.
+        ResourceAdaptorContextBuilder.build(container, ra, entityName);
+    }
+
+    /**
+     * Perfect Core S3 — bind the Initial Event Selector dispatcher so
+     * the event router honours {@code @InitialEventSelect} methods on
+     * the SBBs (e.g. {@link Ss7UssdIngressSbb#selectInitialEvent}).
+     * Without this binding, every incoming
+     * {@code Ss7UssdBeginEvent} would create a brand-new SBB entity,
+     * breaking the USSD stateful protocol.
+     */
+    public void bindInitialEventSelector() {
+        try {
+            com.microjainslee.core.VirtualThreadSbbEntityPool pool = container.getSbbEntityPool();
+            final java.util.concurrent.atomic.AtomicLong counter =
+                    new java.util.concurrent.atomic.AtomicLong();
+            InitialEventSelectorDispatcher.SbbEntityPool adapter =
+                    new InitialEventSelectorDispatcher.SbbEntityPool() {
+                        @Override
+                        public String allocateNew(Class<?> sbbClass) {
+                            String entityId = sbbClass.getSimpleName()
+                                    + "#" + counter.incrementAndGet();
+                            final Class<? extends com.microjainslee.api.Sbb> typedSbb =
+                                    sbbClass.asSubclass(com.microjainslee.api.Sbb.class);
+                            pool.acquire(entityId, () -> {
+                                try {
+                                    return typedSbb.getDeclaredConstructor().newInstance();
+                                } catch (Exception e) {
+                                    throw new IllegalStateException(
+                                            "IES allocate factory failed for "
+                                                    + sbbClass.getName(), e);
+                                }
+                            });
+                            return entityId;
+                        }
+
+                        @Override
+                        public boolean contains(String entityId) {
+                            return pool.findEntity(entityId) != null;
+                        }
+
+                        @Override
+                        public void onEntityRemoved(String entityId,
+                                                     java.util.function.Consumer<String> callback) {
+                            callback.accept(entityId);
+                        }
+                    };
+            InitialEventSelectorDispatcher dispatcher =
+                    new InitialEventSelectorDispatcher(adapter);
+            container.setInitialEventSelectorDispatcher(dispatcher);
+            LOG.info("Initial Event Selector dispatcher bound (S3)");
+        } catch (RuntimeException e) {
+            // log4j2 uses .warn(String, Throwable) instead of JBoss
+            // Logger's .warnf(Throwable, String, ...) helper.
+            LOG.warn("IES dispatcher bind failed — falling back to legacy allocate-per-event", e);
+        }
     }
 
     private static void waitForActivation(SimpleSbbLocalObject lo) throws InterruptedException {

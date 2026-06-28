@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  micro-jainslee :: jainslee-tck-harness
+
+  Skeleton TCK harness module — P1.3 deliverable. Wires jainslee-core
+  and jainslee-api as compile-scope "provided" dependencies (the harness
+  is meant to be linked against a JAIN SLEE 1.1 TCK test suite at test
+  time) and pulls in JUnit 5 (Jupiter) for the dynamic-test discovery
+  entry point. Full implementation lands in P1.5 / P1.6 — this artifact
+  exists today so P1.3's CI can depend on a stable module boundary.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>micro-jainslee</artifactId>
+        <version>1.1.0</version>
+    </parent>
+
+    <artifactId>jainslee-tck-harness</artifactId>
+    <packaging>jar</packaging>
+
+    <name>micro-jainslee :: TCK harness</name>
+    <description>
+        Skeleton harness that wraps a MicroSleeContainer into the JAIN SLEE 1.1
+        (JSR-240) SleeContainer SPI so a standard JSR-240 TCK suite can be
+        executed against the micro-jainslee kernel. R&amp;D only — never for
+        production packaging.
+    </description>
+
+    <properties>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <maven.compiler.release>25</maven.compiler.release>
+    </properties>
+
+    <!--
+        No dependencyManagement import here on purpose — the harness is
+        a leaf module that declares its own pinned versions of
+        junit-jupiter (5.11.4) and the micro-jainslee artefacts it
+        consumes. Versions are kept in sync with bom/pom.xml so the
+        BOM-importing modules stay compatible.
+    -->
+    <dependencies>
+        <!--
+            jainslee-core / jainslee-api are wired as 'provided' so the
+            harness does NOT pull them transitively into the classpath of
+            a downstream consumer (the consumer already has its own copy
+            via the BOM). This is the standard split for an adapter/SPI
+            artifact.
+        -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-core</artifactId>
+            <version>1.2.0-P1-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-api</artifactId>
+            <version>1.2.0-P1-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!--
+            JUnit 5 (Jupiter) — 5.11.4 matches the version pinned in
+            bom/pom.xml. Used for the TckRunner dynamic-test discovery.
+
+            NOTE: scope is intentionally `compile` (not `test`) because
+            the runner's public API exposes
+            {@link org.junit.jupiter.api.DynamicTest} as a return type.
+            A downstream consumer that links against the harness for
+            TCK discovery therefore needs Jupiter on its own compile
+            classpath. The actual JUnit {@code @Test} annotations in
+            the TCK suite itself stay in the consumer's test source.
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.11.4</version>
+            <!--
+                BOM (bom/pom.xml) defaults junit-jupiter to scope=test.
+                The harness needs the compile-scope override because the
+                runner's public API exposes DynamicTest as a return type.
+            -->
+            <scope>compile</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>25</source>
+                    <target>25</target>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!--
+                        JUnit 5 (Jupiter) — surefire needs an explicit
+                        engine selection in 3.x.
+                    -->
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,0 +1,22 @@
+<config xmlns="urn:org:jgroups"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="urn:org:jgroups http://www.jgroups.org/schema/jgroups-5.3.xsd">
+    <TCP bind_port="0"
+         bind_addr="127.0.0.1"
+         diag.enabled="false"
+         thread_naming_pattern="cl"
+         external_addr="127.0.0.1"
+         port_range="50"/>
+    <FILE_PING remove_all_data_on_view_change="true"/>
+    <MERGE3 max_interval="3000" min_interval="1000"/>
+    <FD_SOCK/>
+    <FD_ALL timeout="5000" interval="1000"/>
+    <VERIFY_SUSPECT timeout="1500"/>
+    <pbcast.NAKACK2 xmit_interval="1000"/>
+    <UNICAST3 xmit_interval="1000"/>
+    <pbcast.STABLE desired_avg_gossip="5000"/>
+    <pbcast.GMS/>
+    <UFC max_credits="2M"/>
+    <MFC max_credits="2M"/>
+    <FRAG3 frag_size="8K"/>
+</config>

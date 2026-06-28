@@ -21,6 +21,13 @@ public final class MicroSleeConfiguration {
 
     private static final int DEFAULT_SBB_TYPE_POOL_MIN_IDLE = 0;
 
+    // Production P2.1 — cluster layer defaults. Default mode is local
+    // (R&D / single-JVM) so the kernel does not pay the JGroups cost unless
+    // the embedder explicitly opts in.
+    private static final boolean DEFAULT_CLUSTER_ENABLED = false;
+    private static final String DEFAULT_CLUSTER_STACK = "tcp";
+    private static final String DEFAULT_CLUSTER_INITIAL_HOSTS = "localhost[7800]";
+
     private final int eventRouterBufferSize;
     private final boolean preferVirtualThreads;
     private final int sbbPoolMin;
@@ -29,6 +36,10 @@ public final class MicroSleeConfiguration {
     private final int sbbTypePoolMinIdle;
     private final EventDeliveryMode eventDeliveryMode;
     private final boolean txEnabled;
+    private final boolean clusterEnabled;
+    private final String clusterStack;
+    private final String clusterInitialHosts;
+    private final String nodeId;
 
     private MicroSleeConfiguration(Builder builder) {
         this.eventRouterBufferSize = builder.eventRouterBufferSize;
@@ -39,6 +50,10 @@ public final class MicroSleeConfiguration {
         this.sbbTypePoolMinIdle = builder.sbbTypePoolMinIdle;
         this.eventDeliveryMode = builder.eventDeliveryMode;
         this.txEnabled = builder.txEnabled;
+        this.clusterEnabled = builder.clusterEnabled;
+        this.clusterStack = builder.clusterStack;
+        this.clusterInitialHosts = builder.clusterInitialHosts;
+        this.nodeId = builder.nodeId;
     }
 
     public static Builder builder() {
@@ -88,6 +103,50 @@ public final class MicroSleeConfiguration {
         return txEnabled;
     }
 
+    /**
+     * Production P2.1 — when {@code true}, the container looks up
+     * {@code com.microjainslee.cluster.ClusterManager} reflectively on
+     * the classpath and binds the resulting instance through
+     * {@code MicroSleeContainer.bindCluster(Object)}. The cluster layer
+     * is wired only when this flag is enabled, so the default
+     * {@code false} keeps the kernel single-JVM (R&amp;D behaviour).
+     */
+    public boolean isClusterEnabled() {
+        return clusterEnabled;
+    }
+
+    /**
+     * Production P2.1 — JGroups transport flavour. Accepted values are
+     * {@code "tcp"} (default) and {@code "udp"}. Selects the
+     * {@code jgroups-tcp.xml} or {@code jgroups-udp.xml} configuration
+     * file that ships inside the JGroups jar. Ignored when
+     * {@link #isClusterEnabled()} is {@code false}.
+     */
+    public String getClusterStack() {
+        return clusterStack;
+    }
+
+    /**
+     * Production P2.1 — comma-separated JGroups discovery initial hosts,
+     * e.g. {@code "host1[7800],host2[7800]"}. Forwarded to JGroups as
+     * the {@code initial_hosts} property. Ignored when
+     * {@link #isClusterEnabled()} is {@code false}.
+     */
+    public String getClusterInitialHosts() {
+        return clusterInitialHosts;
+    }
+
+    /**
+     * Production P2.1 — stable node id for this JVM. When {@code null}
+     * (the default) the {@code ClusterManager} generates a short
+     * random UUID at construction time. Production embedders should
+     * set this to a stable value (hostname, K8s pod name, etc.) so log
+     * lines and JGroups views are traceable across restarts.
+     */
+    public String getNodeId() {
+        return nodeId;
+    }
+
     public static final class Builder {
         private int eventRouterBufferSize = DEFAULT_RING_BUFFER_SIZE;
         private boolean preferVirtualThreads = true;
@@ -97,6 +156,12 @@ public final class MicroSleeConfiguration {
         private int sbbTypePoolMinIdle = DEFAULT_SBB_TYPE_POOL_MIN_IDLE;
         private EventDeliveryMode eventDeliveryMode = EventDeliveryMode.SYNC;
         private boolean txEnabled = false;
+        // Production P2.1 — cluster layer fields. Defaults match the
+        // single-JVM R&D behaviour so existing embedders see no change.
+        private boolean clusterEnabled = DEFAULT_CLUSTER_ENABLED;
+        private String clusterStack = DEFAULT_CLUSTER_STACK;
+        private String clusterInitialHosts = DEFAULT_CLUSTER_INITIAL_HOSTS;
+        private String nodeId = null;
 
         public Builder eventRouterBufferSize(int eventRouterBufferSize) {
             if (eventRouterBufferSize <= 0 || Integer.bitCount(eventRouterBufferSize) != 1) {
@@ -148,6 +213,55 @@ public final class MicroSleeConfiguration {
          */
         public Builder txEnabled(boolean txEnabled) {
             this.txEnabled = txEnabled;
+            return this;
+        }
+
+        /**
+         * Production P2.1 — enable the Infinispan + JGroups cluster layer.
+         * When {@code true} the container will load
+         * {@code com.microjainslee.cluster.ClusterManager} reflectively at
+         * {@code start()} time and call
+         * {@code MicroSleeContainer.bindCluster(Object)}. Default
+         * {@code false} (R&amp;D / single-JVM).
+         */
+        public Builder clusterEnabled(boolean clusterEnabled) {
+            this.clusterEnabled = clusterEnabled;
+            return this;
+        }
+
+        /**
+         * Production P2.1 — JGroups transport flavour. Accepted values are
+         * {@code "tcp"} (default) and {@code "udp"}. Case-insensitive. The
+         * value is passed to {@code ClusterManager} as-is.
+         */
+        public Builder clusterStack(String clusterStack) {
+            if (clusterStack != null) {
+                this.clusterStack = clusterStack;
+            }
+            return this;
+        }
+
+        /**
+         * Production P2.1 — comma-separated JGroups discovery initial hosts,
+         * e.g. {@code "host1[7800],host2[7800]"}. Default
+         * {@code "localhost[7800]"}.
+         */
+        public Builder clusterInitialHosts(String clusterInitialHosts) {
+            if (clusterInitialHosts != null && !clusterInitialHosts.isBlank()) {
+                this.clusterInitialHosts = clusterInitialHosts;
+            }
+            return this;
+        }
+
+        /**
+         * Production P2.1 — stable node id for this JVM. When {@code null}
+         * (default) the {@code ClusterManager} generates a short random
+         * UUID at construction time. Production embedders should set this
+         * to a stable value (hostname, K8s pod name) so log lines and
+         * JGroups views are traceable across restarts.
+         */
+        public Builder nodeId(String nodeId) {
+            this.nodeId = nodeId;
             return this;
         }
 

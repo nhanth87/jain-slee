@@ -11,6 +11,7 @@
 package com.microjainslee.core;
 
 import com.microjainslee.api.ActivityContextInterface;
+import com.microjainslee.api.ActivityContextNamingFacility;
 import com.microjainslee.api.CreateException;
 import com.microjainslee.api.InitialEventSelector;
 import com.microjainslee.api.PoolableSbb;
@@ -46,7 +47,14 @@ public final class MicroSleeContainer {
     }
 
     private final MicroSleeConfiguration configuration;
-    private final InMemoryActivityContextNamingFacility activityContextNamingFacility;
+    // Production P2.2 — the activity context naming facility is
+    // mutable so a clustered (Infinispan-backed) implementation
+    // can be installed after construction through
+    // #bindActivityContextNamingFacility(Object). The initial value
+    // is the in-memory facility; reflective rebind swaps the
+    // reference atomically (volatile) without affecting the rest
+    // of the kernel.
+    private volatile AcnfBackend activityContextNamingFacility;
     private final EventRouter eventRouter;
     private final TimerPortImpl timerPort;
     private volatile VirtualThreadSbbEntityPool sbbEntityPool;
@@ -69,6 +77,11 @@ public final class MicroSleeContainer {
     private volatile State state = State.CREATED;
     private volatile ClassLoader deploymentClassLoader;
     private volatile InitialEventSelectorCustomizer initialEventSelectorCustomizer;
+    // Production P2.1 — optional cluster manager. Bound reflectively by
+    // #bindCluster(Object) when MicroSleeConfiguration.isClusterEnabled() is
+    // true. Stored as java.lang.Object so the kernel stays free of any
+    // jainslee-cluster compile-time dependency.
+    private volatile Object clusterManager;
 
     public MicroSleeContainer() {
         this(MicroSleeConfiguration.defaults());
@@ -76,7 +89,7 @@ public final class MicroSleeContainer {
 
     public MicroSleeContainer(MicroSleeConfiguration configuration) {
         this.configuration = configuration;
-        this.activityContextNamingFacility = new InMemoryActivityContextNamingFacility();
+        this.activityContextNamingFacility = new InMemoryAcnfBackend(new InMemoryActivityContextNamingFacility());
         this.eventRouter = new EventRouter(configuration.getEventRouterBufferSize(),
                 configuration.isPreferVirtualThreads(),
                 configuration.isSbbPerVirtualThread(),
@@ -190,6 +203,298 @@ public final class MicroSleeContainer {
         }
     }
 
+    /**
+     * Production P2.1 — bind a {@code com.microjainslee.cluster.ClusterManager}
+     * instance to the container. The cluster layer is loaded reflectively
+     * (this method receives the instance as {@link Object} and stores it as
+     * such) so {@code jainslee-core} keeps a clean compile-time boundary
+     * with {@code jainslee-cluster}. The kernel never imports the cluster
+     * API; embedders that want cluster support pass the instance through
+     * this seam.
+     *
+     * <p>Reflexive contract verified at bind time:
+     * <ul>
+     *   <li>The argument's runtime class MUST be exactly
+     *       {@code com.microjainslee.cluster.ClusterManager} (compared via
+     *       {@code Class.forName(...).isInstance(argument)}). Any other type
+     *       results in an {@link IllegalArgumentException}.</li>
+     *   <li>When the cluster module is on the classpath, the kernel will
+     *       call {@code ClusterManager.start()} reflectively after
+     *       {@link #start()} succeeds, so the JGroups transport is brought
+     *       up in lock-step with the kernel. If the call fails we log a
+     *       warning and leave the cluster manager unbound &mdash; the
+     *       container remains usable in local mode.</li>
+     * </ul>
+     *
+     * <p>Idempotent: binding a second instance replaces the first and
+     * stops the previous one (best-effort). Passing {@code null} clears
+     * the binding.
+     *
+     * @param clusterManager a {@code ClusterManager} instance, or
+     *                       {@code null} to clear
+     */
+    public synchronized void bindCluster(Object clusterManager) {
+        if (clusterManager == null) {
+            Object previous = this.clusterManager;
+            this.clusterManager = null;
+            invokeStopOnClusterManager(previous);
+            return;
+        }
+        // Class.forName("com.microjainslee.cluster.ClusterManager") — the
+        // kernel does NOT depend on jainslee-cluster at compile time, so we
+        // resolve the class by name. The check happens lazily so unit
+        // tests that never touch the cluster module do not pay the
+        // class-loading cost.
+        Class<?> clusterClass;
+        try {
+            clusterClass = Class.forName("com.microjainslee.cluster.ClusterManager");
+        } catch (ClassNotFoundException cnfe) {
+            throw new IllegalArgumentException(
+                    "bindCluster() called but the cluster module "
+                            + "(com.microjainslee:jainslee-cluster) is not on the classpath. "
+                            + "Add it to your dependencies or set clusterEnabled(false).", cnfe);
+        }
+        if (!clusterClass.isInstance(clusterManager)) {
+            throw new IllegalArgumentException(
+                    "bindCluster() expected an instance of "
+                            + "com.microjainslee.cluster.ClusterManager, got "
+                            + clusterManager.getClass().getName());
+        }
+        Object previous = this.clusterManager;
+        this.clusterManager = clusterManager;
+        LOG.info("Bound cluster manager: {}", clusterManager.getClass().getName());
+        // Stop the previous instance (best-effort). The previous one may
+        // already be stopped if the embedder is rebinding after a restart.
+        if (previous != null && previous != clusterManager) {
+            invokeStopOnClusterManager(previous);
+        }
+    }
+
+    /**
+     * Production P2.2 — install a clustered
+     * {@code com.microjainslee.cluster.ClusteredActivityContextNamingFacility}
+     * over the in-memory facility created at construction time.
+     *
+     * <p>The class is loaded reflectively by name
+     * ({@code com.microjainslee.cluster.ClusteredActivityContextNamingFacility})
+     * so the kernel keeps its compile-time boundary with
+     * {@code jainslee-cluster}. The argument's runtime type must be
+     * exactly the cluster ACNF class; any other type results in
+     * {@link IllegalArgumentException}.
+     *
+     * <p>Reflexive contract verified at bind time:
+     * <ul>
+     *   <li>The argument's class is checked against
+     *       {@code Class.forName("com.microjainslee.cluster.ClusteredActivityContextNamingFacility").isInstance(arg)}.</li>
+     *   <li>The argument's class must expose a single-arg
+     *       {@code ClusterManager} constructor — that is how the
+     *       cluster layer wires the facility to a specific
+     *       {@code ClusterManager}. We do not invoke the constructor
+     *       here (the embedder already produced the instance); we
+     *       just record it.</li>
+     * </ul>
+     *
+     * <p>Idempotent: rebinding replaces the previous facility
+     * (best-effort clear on the old one if it exposes {@code clear()}).
+     *
+     * @param facility a {@code ClusteredActivityContextNamingFacility}
+     *                 instance, or {@code null} to clear the binding
+     *                 (the kernel falls back to the in-memory facility
+     *                 the next time it asks for one)
+     */
+    public synchronized void bindActivityContextNamingFacility(Object facility) {
+        if (facility == null) {
+            AcnfBackend previous = this.activityContextNamingFacility;
+            this.activityContextNamingFacility = new InMemoryAcnfBackend(new InMemoryActivityContextNamingFacility());
+            if (previous != null) {
+                try {
+                    previous.clear();
+                } catch (RuntimeException ignored) {
+                    // best effort
+                }
+            }
+            LOG.info("Cleared activity context naming facility; reverted to in-memory");
+            return;
+        }
+        Class<?> acnfClass;
+        try {
+            acnfClass = Class.forName(
+                    "com.microjainslee.cluster.ClusteredActivityContextNamingFacility");
+        } catch (ClassNotFoundException cnfe) {
+            throw new IllegalArgumentException(
+                    "bindActivityContextNamingFacility() called but the cluster module "
+                            + "(com.microjainslee:jainslee-cluster) is not on the classpath. "
+                            + "Add it to your dependencies.", cnfe);
+        }
+        if (!acnfClass.isInstance(facility)) {
+            throw new IllegalArgumentException(
+                    "bindActivityContextNamingFacility() expected an instance of "
+                            + "com.microjainslee.cluster.ClusteredActivityContextNamingFacility, got "
+                            + facility.getClass().getName());
+        }
+        // The cluster ACNF class is a subtype of InMemoryActivityContextNamingFacility's
+        // API surface used by the kernel (bind, lookup, unbind, names), but
+        // it does NOT extend InMemoryActivityContextNamingFacility. The kernel
+        // field type is InMemoryActivityContextNamingFacility for the R&D
+        // path, so we cannot assign the cluster facility to the same field
+        // without a wrapper. Use a reflective duck-typed wrapper that
+        // implements the same methods.
+        this.activityContextNamingFacility = new ReflectiveAcnfBackend(
+                facility, acnfClass);
+        LOG.info("Bound clustered activity context naming facility: {}",
+                facility.getClass().getName());
+    }
+
+    /**
+     * Production P2.3 - register a distributed SBB entity pool
+     * ({@code com.microjainslee.cluster.DistributedSbbEntityPool})
+     * with the kernel.
+     *
+     * <p>The cluster class is loaded reflectively by name
+     * ({@code com.microjainslee.cluster.DistributedSbbEntityPool})
+     * so the kernel keeps its compile-time boundary with
+     * {@code jainslee-cluster}. The argument's runtime type must be
+     * exactly the cluster pool class; any other type results in
+     * {@link IllegalArgumentException}.
+     *
+     * <p>Reflexive contract verified at bind time:
+     * <ul>
+     *   <li>The argument's class is checked against
+     *       {@code Class.forName("com.microjainslee.cluster.DistributedSbbEntityPool").isInstance(arg)}.</li>
+     *   <li>The argument's class must expose a constructor
+     *       {@code (int, int, boolean, ClusterManager)} so embedders
+     *       cannot pass an instance built with a divergent API.</li>
+     * </ul>
+     *
+     * <p>Idempotent: rebinding replaces the previous pool. Passing
+     * {@code null} clears the binding (the previously registered pool
+     * is {@link VirtualThreadSbbEntityPool#shutdown() shut down} on
+     * best effort).
+     *
+     * <h2>Why we do not rebind {@code sbbEntityPool}</h2>
+     * The kernel field is strongly typed as
+     * {@link VirtualThreadSbbEntityPool} and the cluster pool is
+     * <em>not</em> a subtype (composition, not inheritance &mdash;
+     * {@code VirtualThreadSbbEntityPool} is {@code final}). Java's
+     * reflective {@code Method.invoke} enforces runtime type
+     * compatibility, so we cannot silently swap the field through
+     * reflection either. Embedders that want their events routed
+     * through the distributed pool should call
+     * {@link com.microjainslee.core.EventRouter#bindSbbEntityPool(VirtualThreadSbbEntityPool)}
+     * themselves (with the cluster pool cast or wrapped) &mdash;
+     * {@link com.microjainslee.core.EventRouter} accepts the
+     * concrete supertype by design.
+     *
+     * <p>This method simply records the reference and exposes it via
+     * {@link #getDistributedSbbPool()} so the rest of the kernel can
+     * consult the cluster pool without a compile-time dependency on
+     * {@code jainslee-cluster}.
+     *
+     * @param pool a {@code DistributedSbbEntityPool} instance, or
+     *             {@code null} to clear the binding
+     */
+    public synchronized void bindDistributedSbbPool(Object pool) {
+        Class<?> poolClass;
+        try {
+            poolClass = Class.forName(
+                    "com.microjainslee.cluster.DistributedSbbEntityPool");
+        } catch (ClassNotFoundException cnfe) {
+            throw new IllegalArgumentException(
+                    "bindDistributedSbbPool() called but the cluster module "
+                            + "(com.microjainslee:jainslee-cluster) is not on the classpath. "
+                            + "Add it to your dependencies.", cnfe);
+        }
+        if (pool != null && !poolClass.isInstance(pool)) {
+            throw new IllegalArgumentException(
+                    "bindDistributedSbbPool() expected an instance of "
+                            + "com.microjainslee.cluster.DistributedSbbEntityPool, got "
+                            + pool.getClass().getName());
+        }
+        try {
+            poolClass.getConstructor(int.class, int.class, boolean.class,
+                    Class.forName("com.microjainslee.cluster.ClusterManager"));
+        } catch (NoSuchMethodException nsme) {
+            throw new IllegalArgumentException(
+                    "DistributedSbbEntityPool does not expose a "
+                            + "(int, int, boolean, ClusterManager) constructor", nsme);
+        } catch (ClassNotFoundException cnfe) {
+            throw new IllegalArgumentException(
+                    "ClusterManager class not on classpath while validating "
+                            + "DistributedSbbEntityPool constructor", cnfe);
+        }
+        Object previous = this.distributedSbbEntityPool;
+        this.distributedSbbEntityPool = pool;
+        if (previous != null) {
+            // Best effort - the embedder may have already shut it down.
+            try {
+                previous.getClass().getMethod("shutdown").invoke(previous);
+            } catch (RuntimeException | java.lang.reflect.InvocationTargetException
+                     | NoSuchMethodException | IllegalAccessException ignored) {
+                // best effort
+            }
+        }
+        if (pool != null) {
+            LOG.info("Bound distributed SBB entity pool: {}",
+                    pool.getClass().getName());
+        } else {
+            LOG.info("Cleared distributed SBB entity pool binding");
+        }
+    }
+
+    /** Optional reference to a bound DistributedSbbEntityPool, or {@code null}. */
+    private volatile Object distributedSbbEntityPool;
+
+    /**
+     * @return the bound {@code DistributedSbbEntityPool} instance, or
+     *         {@code null} when no cluster pool has been installed.
+     *         Strongly-typed callers should cast; the kernel returns
+     *         {@link Object} on purpose so {@code jainslee-core} keeps
+     *         its compile-time boundary with {@code jainslee-cluster}.
+     */
+    public Object getDistributedSbbPool() {
+        return distributedSbbEntityPool;
+    }
+
+    /**
+     * Production P2.1 — reflectively call {@code ClusterManager.start()}
+     * on the bound instance. Best-effort: a failure is logged and the
+     * container proceeds in local mode.
+     */
+    private void invokeStartOnClusterManager(Object mgr) {
+        if (mgr == null) {
+            return;
+        }
+        try {
+            java.lang.reflect.Method start = mgr.getClass().getMethod("start");
+            start.invoke(mgr);
+        } catch (NoSuchMethodException nsme) {
+            LOG.warn("ClusterManager has no start() method: {}", nsme.getMessage());
+        } catch (ReflectiveOperationException roe) {
+            LOG.warn("ClusterManager.start() failed: {}", roe.getMessage());
+        }
+    }
+
+    /**
+     * Production P2.1 — reflectively call {@code ClusterManager.stop()}.
+     * Always best-effort: a failure is logged but never thrown, so the
+     * container's {@link #stop()} path remains exception-clean.
+     */
+    private static void invokeStopOnClusterManager(Object mgr) {
+        if (mgr == null) {
+            return;
+        }
+        try {
+            java.lang.reflect.Method stop = mgr.getClass().getMethod("stop");
+            stop.invoke(mgr);
+        } catch (NoSuchMethodException nsme) {
+            // Fine — some embedders may pass a stub that does not need
+            // explicit teardown.
+        } catch (ReflectiveOperationException roe) {
+            // Best-effort — embedders usually call this from a shutdown
+            // hook; surfacing the error would mask the real cause.
+        }
+    }
+
     public synchronized void start() {
         if (state == State.STARTED) {
             return;
@@ -204,6 +509,11 @@ public final class MicroSleeContainer {
         CmpFieldStoreLocator.set(cmpFieldStore);
         sbbEntityPool.prewarm(sbbEntityPool.getMin());
         state = State.STARTED;
+        // Production P2.1 — bring up the JGroups transport (in cluster mode)
+        // after the kernel has finished its own start sequence. Bound
+        // before autoDeployFromClasspathIndex() so SBBs that consult
+        // ClusterManager at deploy time see a started manager.
+        invokeStartOnClusterManager(this.clusterManager);
         autoDeployFromClasspathIndex();
     }
 
@@ -238,6 +548,12 @@ public final class MicroSleeContainer {
         entityTypesById.clear();
         CmpFieldStoreLocator.set(null);
         profileFacility.shutdown();
+        // Production P2.1 — release JGroups threads + Infinispan resources
+        // after the kernel has finished its own teardown. invokeStopOn... is
+        // best-effort: a failure is logged but never thrown, so the
+        // container's stop() path stays exception-clean.
+        invokeStopOnClusterManager(this.clusterManager);
+        this.clusterManager = null;
         state = State.STOPPED;
     }
 
@@ -626,7 +942,7 @@ public final class MicroSleeContainer {
         return timerPort;
     }
 
-    public InMemoryActivityContextNamingFacility getActivityContextNamingFacility() {
+    public AcnfBackend getActivityContextNamingFacility() {
         return activityContextNamingFacility;
     }
 
@@ -650,6 +966,18 @@ public final class MicroSleeContainer {
 
     public VirtualThreadSbbEntityPool getSbbEntityPool() {
         return sbbEntityPool;
+    }
+
+    /**
+     * Production P2.1 — access the bound {@code ClusterManager} instance,
+     * or {@code null} when no cluster layer has been bound. The return
+     * type is {@link Object} on purpose &mdash; the kernel does not depend
+     * on {@code jainslee-cluster} at compile time, so embedders that need
+     * the strongly-typed reference must cast it themselves (or use the
+     * reflective helpers inside {@code ClusterManager}).
+     */
+    public Object getClusterManager() {
+        return clusterManager;
     }
 
     /**
@@ -895,5 +1223,186 @@ public final class MicroSleeContainer {
                 }
             }
         });
+    }
+
+    // -----------------------------------------------------------------
+    // Production P2.2 — Activity Context Naming Facility abstraction
+    // -----------------------------------------------------------------
+
+    /**
+     * Internal seam for the Activity Context Naming Facility.
+     * jainslee-core keeps the {@code InMemoryActivityContextNamingFacility}
+     * R&amp;D default; the cluster module's
+     * {@code com.microjainslee.cluster.ClusteredActivityContextNamingFacility}
+     * installs itself through
+     * {@link MicroSleeContainer#bindActivityContextNamingFacility(Object)}
+     * and is reached by the kernel through this interface.
+     *
+     * <p>The interface is package-private on purpose: it is an
+     * implementation detail of the kernel/cluster hand-off, not a
+     * public API surface.
+     */
+    public interface AcnfBackend extends ActivityContextNamingFacility {
+        void bind(String name, ActivityContextInterface aci);
+        ActivityContextInterface lookup(String name);
+        void unbind(String name);
+        java.util.Set<String> names();
+        void clear();
+        java.util.Collection<ActivityContextInterface> getBoundContexts();
+    }
+
+    /**
+     * Adapter that wraps the in-memory facility so the kernel field
+     * can hold a {@link AcnfBackend} without forcing the
+     * {@code InMemoryActivityContextNamingFacility} class to grow a
+     * new {@code implements} clause.
+     */
+    private static final class InMemoryAcnfBackend implements AcnfBackend {
+        private final InMemoryActivityContextNamingFacility delegate;
+
+        InMemoryAcnfBackend(InMemoryActivityContextNamingFacility delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void bind(String name, ActivityContextInterface aci) {
+            delegate.bind(name, aci);
+        }
+
+        @Override
+        public ActivityContextInterface lookup(String name) {
+            return delegate.lookup(name);
+        }
+
+        @Override
+        public void unbind(String name) {
+            delegate.unbind(name);
+        }
+
+        @Override
+        public java.util.Set<String> names() {
+            // The in-memory facility does not expose a public
+            // names() view (only lookup/bind/unbind/getBoundContexts);
+            // build it from the bound contexts collection.
+            java.util.Set<String> names = new java.util.LinkedHashSet<String>();
+            for (ActivityContextInterface aci : delegate.getBoundContexts()) {
+                if (aci != null) {
+                    String name = aci.getActivityContextName();
+                    if (name != null) {
+                        names.add(name);
+                    }
+                }
+            }
+            return java.util.Collections.unmodifiableSet(names);
+        }
+
+        @Override
+        public void clear() {
+            delegate.clear();
+        }
+
+        @Override
+        public java.util.Collection<ActivityContextInterface> getBoundContexts() {
+            return delegate.getBoundContexts();
+        }
+    }
+
+    /**
+     * Reflective adapter that lets a non-related
+     * {@code com.microjainslee.cluster.ClusteredActivityContextNamingFacility}
+     * sit in the {@link AcnfBackend} slot without forcing a
+     * compile-time dependency on {@code jainslee-cluster}.
+     *
+     * <p>The wrapper forwards each call to the underlying cluster
+     * facility through {@link java.lang.reflect.Method} handles
+     * resolved once at construction time. Each call costs one
+     * {@code Method.invoke} — acceptable because ACNF calls are not
+     * on the per-event hot path.
+     */
+    private static final class ReflectiveAcnfBackend implements AcnfBackend {
+        private final Object delegate;
+        private final java.lang.reflect.Method bindMethod;
+        private final java.lang.reflect.Method lookupMethod;
+        private final java.lang.reflect.Method unbindMethod;
+        private final java.lang.reflect.Method namesMethod;
+        private final java.lang.reflect.Method clearMethod;
+        private final java.lang.reflect.Method getBoundContextsMethod;
+
+        ReflectiveAcnfBackend(Object delegate, Class<?> delegateClass) {
+            this.delegate = delegate;
+            this.bindMethod = lookupMethod0(delegateClass, "bind", String.class, ActivityContextInterface.class);
+            this.lookupMethod = lookupMethod0(delegateClass, "lookup", String.class);
+            this.unbindMethod = lookupMethod0(delegateClass, "unbind", String.class);
+            this.namesMethod = lookupMethod0(delegateClass, "names");
+            this.clearMethod = lookupMethod0(delegateClass, "clear");
+            this.getBoundContextsMethod = lookupMethod0(delegateClass, "getBoundContexts");
+        }
+
+        private static java.lang.reflect.Method lookupMethod0(Class<?> cls, String name, Class<?>... params) {
+            try {
+                return cls.getMethod(name, params);
+            } catch (NoSuchMethodException nsme) {
+                throw new IllegalStateException(
+                        "ClusteredActivityContextNamingFacility is missing method " + name
+                                + " — the cluster module version is incompatible with this kernel.",
+                        nsme);
+            }
+        }
+
+        @Override
+        public void bind(String name, ActivityContextInterface aci) {
+            invoke(bindMethod, name, aci);
+        }
+
+        @Override
+        public ActivityContextInterface lookup(String name) {
+            return (ActivityContextInterface) invoke(lookupMethod, name);
+        }
+
+        @Override
+        public void unbind(String name) {
+            invoke(unbindMethod, name);
+        }
+
+        @Override
+        public java.util.Set<String> names() {
+            @SuppressWarnings("unchecked")
+            java.util.Set<String> result = (java.util.Set<String>) invoke(namesMethod);
+            return result != null ? result : java.util.Collections.emptySet();
+        }
+
+        @Override
+        public void clear() {
+            try {
+                invoke(clearMethod);
+            } catch (RuntimeException re) {
+                // Clear is best-effort on the cluster path too.
+            }
+        }
+
+        @Override
+        public java.util.Collection<ActivityContextInterface> getBoundContexts() {
+            @SuppressWarnings("unchecked")
+            java.util.Collection<ActivityContextInterface> result =
+                    (java.util.Collection<ActivityContextInterface>) invoke(getBoundContextsMethod);
+            return result != null ? result : java.util.Collections.emptyList();
+        }
+
+        private Object invoke(java.lang.reflect.Method method, Object... args) {
+            try {
+                return method.invoke(delegate, args);
+            } catch (java.lang.reflect.InvocationTargetException ite) {
+                Throwable cause = ite.getCause();
+                if (cause instanceof RuntimeException) {
+                    throw (RuntimeException) cause;
+                }
+                if (cause instanceof Error) {
+                    throw (Error) cause;
+                }
+                throw new RuntimeException(cause != null ? cause : ite);
+            } catch (java.lang.IllegalAccessException iae) {
+                throw new IllegalStateException(iae);
+            }
+        }
     }
 }

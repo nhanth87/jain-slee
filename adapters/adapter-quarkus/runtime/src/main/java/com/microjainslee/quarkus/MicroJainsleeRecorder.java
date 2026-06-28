@@ -12,7 +12,6 @@ package com.microjainslee.quarkus;
 
 import com.microjainslee.api.TimerPort;
 import com.microjainslee.core.EventRouter;
-import com.microjainslee.core.InMemoryActivityContextNamingFacility;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
 import io.quarkus.runtime.RuntimeValue;
@@ -35,7 +34,7 @@ public class MicroJainsleeRecorder {
     private static volatile MicroSleeContainer container;
     private static volatile EventRouter eventRouter;
     private static volatile TimerPort timerPort;
-    private static volatile InMemoryActivityContextNamingFacility acnf;
+    private static volatile com.microjainslee.core.MicroSleeContainer.AcnfBackend acnf;
 
     /**
      * Build a fresh {@link MicroSleeContainer} using the supplied configuration and stash
@@ -127,7 +126,7 @@ public class MicroJainsleeRecorder {
         return new RuntimeValue<TimerPort>(timerPort);
     }
 
-    public RuntimeValue<InMemoryActivityContextNamingFacility> acnfRuntimeValue(MicroSleeConfiguration cfg) {
-        return new RuntimeValue<InMemoryActivityContextNamingFacility>(acnf);
+    public RuntimeValue<com.microjainslee.core.MicroSleeContainer.AcnfBackend> acnfRuntimeValue(MicroSleeConfiguration cfg) {
+        return new RuntimeValue<com.microjainslee.core.MicroSleeContainer.AcnfBackend>(acnf);
     }
 }

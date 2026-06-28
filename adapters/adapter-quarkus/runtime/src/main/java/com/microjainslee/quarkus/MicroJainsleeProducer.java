@@ -17,7 +17,6 @@ import com.microjainslee.api.TimerPort;
 import com.microjainslee.api.TracePort;
 import com.microjainslee.api.UsagePort;
 import com.microjainslee.core.EventRouter;
-import com.microjainslee.core.InMemoryActivityContextNamingFacility;
 import com.microjainslee.core.InMemoryNamingPort;
 import com.microjainslee.core.MicroSleeContainer;
 import io.quarkus.arc.Arc;
@@ -82,7 +81,7 @@ public class MicroJainsleeProducer {
     @Produces
     @ApplicationScoped
     @DefaultBean
-    public InMemoryActivityContextNamingFacility activityContextNamingFacility() {
+    public com.microjainslee.core.MicroSleeContainer.AcnfBackend activityContextNamingFacility() {
         return container().getActivityContextNamingFacility();
     }
 

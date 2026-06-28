@@ -40,6 +40,13 @@ public final class MicroSleeConfiguration {
     private final String clusterStack;
     private final String clusterInitialHosts;
     private final String nodeId;
+    // Production P1.4 — Javassist CMP codegen (S2). When the optional
+    // jainslee-codegen module is on the runtime classpath the pool uses it
+    // to turn abstract SBB classes into concrete ones at acquire() time.
+    // Default behaviour keeps the existing reflective CmpAccessorInvoker
+    // path so existing embedders see no change.
+    private final boolean codegenEnabled;
+    private final String deployDir;
 
     private MicroSleeConfiguration(Builder builder) {
         this.eventRouterBufferSize = builder.eventRouterBufferSize;
@@ -54,6 +61,8 @@ public final class MicroSleeConfiguration {
         this.clusterStack = builder.clusterStack;
         this.clusterInitialHosts = builder.clusterInitialHosts;
         this.nodeId = builder.nodeId;
+        this.codegenEnabled = builder.codegenEnabled;
+        this.deployDir = builder.deployDir;
     }
 
     public static Builder builder() {
@@ -147,6 +156,29 @@ public final class MicroSleeConfiguration {
         return nodeId;
     }
 
+    /**
+     * Production P1.4 — Javassist CMP codegen enabled. When {@code true}
+     * the container looks up {@code com.microjainslee.codegen.JavassistDeployTimeCodegen}
+     * reflectively at start time; if the module is on the runtime classpath
+     * the pool will use it to turn abstract SBB classes into concrete ones
+     * backed by {@link CmpFieldStore}. When {@code false} (default) the
+     * legacy reflection-based {@code CmpAccessorInvoker} path stays in
+     * effect.
+     */
+    public boolean isCodegenEnabled() {
+        return codegenEnabled;
+    }
+
+    /**
+     * Production P1.4 — directory in which generated concrete SBB
+     * {@code .class} files are persisted. Defaults to
+     * {@code ${java.io.tmpdir}/slee-deploy}. Ignored when
+     * {@link #isCodegenEnabled()} is {@code false}.
+     */
+    public String getDeployDir() {
+        return deployDir;
+    }
+
     public static final class Builder {
         private int eventRouterBufferSize = DEFAULT_RING_BUFFER_SIZE;
         private boolean preferVirtualThreads = true;
@@ -162,6 +194,13 @@ public final class MicroSleeConfiguration {
         private String clusterStack = DEFAULT_CLUSTER_STACK;
         private String clusterInitialHosts = DEFAULT_CLUSTER_INITIAL_HOSTS;
         private String nodeId = null;
+        // Production P1.4 — Javassist codegen fields. Default behaviour
+        // keeps the reflective CmpAccessorInvoker path; the codegen is
+        // picked up automatically when (a) enabled is left at the default
+        // AND (b) the jainslee-codegen module is reachable at runtime.
+        // Tests can force-disable to exercise the reflection fallback.
+        private boolean codegenEnabled = true;
+        private String deployDir = System.getProperty("java.io.tmpdir") + "/slee-deploy";
 
         public Builder eventRouterBufferSize(int eventRouterBufferSize) {
             if (eventRouterBufferSize <= 0 || Integer.bitCount(eventRouterBufferSize) != 1) {
@@ -262,6 +301,30 @@ public final class MicroSleeConfiguration {
          */
         public Builder nodeId(String nodeId) {
             this.nodeId = nodeId;
+            return this;
+        }
+
+        /**
+         * Production P1.4 — toggle the Javassist CMP codegen path. Default
+         * {@code true}. When {@code false} the kernel falls back to the
+         * reflection-based {@code CmpAccessorInvoker} flow even if the
+         * codegen module is on the runtime classpath.
+         */
+        public Builder codegenEnabled(boolean codegenEnabled) {
+            this.codegenEnabled = codegenEnabled;
+            return this;
+        }
+
+        /**
+         * Production P1.4 — directory in which generated concrete SBB
+         * {@code .class} files are persisted. Default
+         * {@code ${java.io.tmpdir}/slee-deploy}. The directory is created
+         * on demand by the codegen helper.
+         */
+        public Builder deployDir(String deployDir) {
+            if (deployDir != null && !deployDir.isBlank()) {
+                this.deployDir = deployDir;
+            }
             return this;
         }
 

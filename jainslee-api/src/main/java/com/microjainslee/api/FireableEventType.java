@@ -11,13 +11,13 @@
 package com.microjainslee.api;
 
 /**
- * JAIN-SLEE 1.1 §16 — trace levels supported by {@link TracePort}.
+ * JAIN-SLEE 1.1 §13 — handle that an RA passes to
+ * {@code SleeEndpoint.fireEvent} so the SLEE knows which {@link EventType}
+ * is being fired and which SBB event-handler methods should be invoked.
  */
-public enum TraceLevel {
-    INFO,
-    FINE,
-    FINER,
-    FINEST,
-    WARNING,
-    SEVERE
+public interface FireableEventType {
+
+    EventType getEventType();
+
+    String getName();
 }

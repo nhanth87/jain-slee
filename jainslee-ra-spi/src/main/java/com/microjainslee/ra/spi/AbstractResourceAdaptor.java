@@ -38,6 +38,16 @@ public abstract class AbstractResourceAdaptor implements ResourceAdaptor {
      * Spec §11.3 — last lifecycle call. Delegates to {@link #onContextUnset()}
      * so subclasses can run custom cleanup, then nulls the context field.
      * <p>
+     * Perfect Core S5 — when the wired context is a
+     * {@link com.microjainslee.ra.ResourceAdaptorContextImpl} the
+     * teardown also drives the state machine to INACTIVE (if it was
+     * still ACTIVE/STOPPING). This mirrors what
+     * {@code MicroSleeContainer.stopRA(entityName)} does in the
+     * kernel-side path; the SPI base class performs the same stop
+     * sequence locally so direct callers that drive
+     * {@code unsetResourceAdaptorContext()} directly (no kernel
+     * in sight) still get a clean shutdown.
+     * <p>
      * The {@code final} modifier is dropped so this method is the public
      * override point (matching the spec semantics that the SLEE calls this
      * directly during RA teardown). {@link #raUnconfigure()} now delegates
@@ -45,6 +55,21 @@ public abstract class AbstractResourceAdaptor implements ResourceAdaptor {
      */
     @Override
     public void unsetResourceAdaptorContext() {
+        // Drive any wired RA state machine to INACTIVE before we
+        // discard the context reference. This is idempotent: the
+        // state machine's stopComplete() is a no-op when the state
+        // is not STOPPING, and the container-side stopRA() will
+        // already have done this for entities it manages.
+        if (context instanceof com.microjainslee.ra.ResourceAdaptorContextImpl rci) {
+            com.microjainslee.api.SleeEndpoint endpoint = rci.getSleeEndpoint();
+            if (endpoint != null) {
+                try {
+                    endpoint.stopComplete();
+                } catch (RuntimeException ignored) {
+                    // best effort — context is going away anyway
+                }
+            }
+        }
         onContextUnset();
         this.context = null;
     }

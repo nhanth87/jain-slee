@@ -23,6 +23,16 @@
             <artifactId>jainslee-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- Perfect Core S5 — RA SPI wiring lives here so the kernel
+             can build a ResourceAdaptorContextImpl against the live
+             container. Module order in the parent pom is
+             jainslee-api → jainslee-ra-spi → jainslee-core so the
+             cycle is forward-only. -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-ra-spi</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>com.lmax</groupId>
             <artifactId>disruptor</artifactId>

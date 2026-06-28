@@ -1,13 +1,20 @@
-# micro-jainslee 1.1.0
+# micro-jainslee 1.2.0-P1-SNAPSHOT — Perfect Core
 
 > A lightweight, embeddable implementation of the **JAIN SLEE 1.1** (JSR-240) service
 > logic execution environment — designed to run as a plain Java library inside a
 > **Quarkus** application (recommended), Spring Boot, a Jakarta EE server, or a
 > unit test, with **no JBoss Modules, no VFS, no MSC, no JMX dependency**.
 
-> **📦 micro-jainslee chỉ có ~10,827 dòng code (kernel) so với RestComm jain-slee cũ ~49,774 dòng (trong checkout này) / ~174,710 dòng (full upstream Mobicents) — giảm ~78 %–~94 %**. Xem chi tiết tại [`docs/micro-jainslee-compact-vs-mobicents.md`](docs/micro-jainslee-compact-vs-mobicents.md) (EN) · [`.vi.md`](docs/micro-jainslee-compact-vs-mobicents.vi.md) (VI) · [`.am.md`](docs/micro-jainslee-compact-vs-mobicents.am.md) (አማርኛ).
+> **🚀 Perfect Core (S1–S5, June 2026)** — the runtime now matches the JAIN SLEE 1.1
+> contract surface end-to-end: **JTA** wiring (Narayana), **Javassist CMP codegen**
+> for abstract SBBs, **Initial Event Selector** dispatcher with convergence keys,
+> **Child SBB Relations + cascade removal** (depth-first post-order), and **full
+> Resource Adaptor** wiring (state machine + endpoint + context). See the
+> [Perfect Core status](#perfect-core-status-s1s5) section below.
 
-> **📦 micro-jainslee has only ~10,827 LOC (kernel) compared to the legacy RestComm jain-slee ~49,774 LOC (in this checkout) / ~174,710 LOC (full upstream Mobicents) — a ~78 %–~94 % reduction**. Details in [`docs/micro-jainslee-compact-vs-mobicents.md`](docs/micro-jainslee-compact-vs-mobicents.md).
+> **📦 micro-jainslee chỉ có ~17,000 dòng code (14 modules: jainslee-api + jainslee-core + jainslee-tx + jainslee-codegen + jainslee-cluster + jainslee-ra-spi + jainslee-apt + jainslee-tck-harness + jainslee-scheduler + 3 adapters + 2 RAs + bom) so với RestComm jain-slee cũ ~49,774 dòng / ~174,710 dòng (full upstream Mobicents) — giảm ~65 %–~90 %**. Xem chi tiết tại [`docs/micro-jainslee-compact-vs-mobicents.md`](docs/micro-jainslee-compact-vs-mobicents.md) (EN) · [`.vi.md`](docs/micro-jainslee-compact-vs-mobicents.vi.md) (VI) · [`.am.md`](docs/micro-jainslee-compact-vs-mobicents.am.md) (አማርኛ).
+
+> **📦 micro-jainslee has only ~17,000 LOC across 14 modules compared to the legacy RestComm jain-slee ~49,774 LOC (in this checkout) / ~174,710 LOC (full upstream Mobicents) — a ~65 %–~90 % reduction**. Details in [`docs/micro-jainslee-compact-vs-mobicents.md`](docs/micro-jainslee-compact-vs-mobicents.md).
 
 [![Java](https://img.shields.io/badge/Java-25_LTS-orange)](https://openjdk.org/projects/jdk/25/)
 [![Virtual Threads](https://img.shields.io/badge/Virtual_Threads-Loom-green)](https://openjdk.org/projects/loom/)
@@ -27,15 +34,18 @@
 6. [Quarkus integration in detail](#quarkus-integration-in-detail)
 7. [Resource Adaptors (RA)](#resource-adaptors-ra)
 8. [SBB lifecycle](#sbb-lifecycle)
-9. [Profile & ACNF](#profile--acnf)
-10. [Timer Facility](#timer-facility)
-11. [Stress test: 100K SBBs](#stress-test-100k-sbbs)
-12. [Example application (Quarkus + USSD demo)](#example-application-quarkus--ussd-demo)
-13. [Build & test](#build--test)
-14. [micro-jainslee vs JBoss/Mobicents JAIN-SLEE](#micro-jainslee-vs-jbossmobicents-jain-slee-container)
-15. [Operational notes](#operational-notes)
-16. [Documentation](#documentation)
-17. [License](#license)
+9. [Initial Event Selector (IES)](#initial-event-selector-ies)
+10. [Child SBB Relations](#child-sbb-relations)
+11. [Profile & ACNF](#profile--acnf)
+12. [Timer Facility](#timer-facility)
+13. [Stress test: 100K SBBs](#stress-test-100k-sbbs)
+14. [Example application (Quarkus + USSD demo)](#example-application-quarkus--ussd-demo)
+15. [Build & test](#build--test)
+16. [Perfect Core status (S1–S5)](#perfect-core-status-s1s5)
+17. [micro-jainslee vs JBoss/Mobicents JAIN-SLEE](#micro-jainslee-vs-jbossmobicents-jain-slee-container)
+18. [Operational notes](#operational-notes)
+19. [Documentation](#documentation)
+20. [License](#license)
 
 ---
 
@@ -93,18 +103,83 @@ try (MicroSleeContainer container = new MicroSleeContainer(cfg)) {
 
 That's it. No XML, no annotation scanning, no deployment descriptors.
 
+### Quick start — IES-driven routing (USSD convergence)
+
+The minimal example above creates one SBB per ACI and routes all events to it.
+That works for stateless SBBs, but breaks for any **stateful dialog** (USSD,
+SIP dialogs, custom protocols) because subsequent events of the same session
+must hit the **same** SBB entity, not a fresh one. The IES dispatcher solves
+this by binding events to entities via a *convergence key*:
+
+```java
+// SBB — has an @InitialEventSelect method that returns a convergence key
+@SbbAnnotation(name = "UssdSessionSbb", vendor = "com.example", version = "1.0")
+public abstract class UssdSessionSbb implements Sbb {
+    public abstract String getMsisdn();
+    public abstract void setMsisdn(String msisdn);
+    public abstract String getMenuState();
+    public abstract void setMenuState(String state);
+
+    /** IES method — runs on a TEMP instance, no side effects allowed. */
+    @InitialEventSelect
+    public InitialEventSelectResult selectInitialEvent(InitialEventSelectCondition c) {
+        UssdEvent e = (UssdEvent) c.getEvent();
+        return InitialEventSelectResult.forSession(
+            e.getMsisdn() + ":" + e.getDialogId(),   // convergence key
+            e.getType() == UssdEventType.BEGIN         // isInitialEvent?
+        );
+    }
+
+    public void onUssdBegin(UssdEvent event, ActivityContextInterface aci, ...) {
+        setMsisdn(event.getMsisdn());
+        setMenuState("MAIN_MENU");
+    }
+    public void onUssdContinue(UssdEvent event, ActivityContextInterface aci, ...) {
+        // IES already routed this to the existing entity by msisdn:dialogId
+        String state = getMenuState();
+        // ...
+    }
+}
+
+// Caller (HTTP RA, gRPC adapter, JUnit test, ...)
+MicroSleeContainer container = ...; // started somewhere
+EventRouter router = container.getEventRouter();
+
+// Single call that uses the IES dispatcher under the hood — the same
+// sessionId always lands on the same SBB entity.
+router.routeIncomingEvent(new UssdEvent("*123#", "251911000001", "d-7", BEGIN),
+                          UssdSessionSbb.class);
+router.routeIncomingEvent(new UssdEvent("1",     "251911000001", "d-7", CONTINUE),
+                          UssdSessionSbb.class);
+```
+
+See [Initial Event Selector (IES)](#initial-event-selector-ies) for the full
+contract, including the temp-instance rule and the spec reference.
+
 ---
 
 ## Modules at a glance
 
+All `Lines` columns were measured with `find $module/src/main -name '*.java' | xargs wc -l | tail -1`
+on 2026-06-28, branch `micro-jainslee` (commit range `HEAD~9..HEAD`).
+
 | Module | Artifact | Lines | Status |
 |---|---|---|---|
-| `jainslee-api` | `com.microjainslee:jainslee-api:1.1.0` | ~240 | Stable — JAIN SLEE 1.1 interfaces |
-| `jainslee-core` | `com.microjainslee:jainslee-core:1.1.0` | ~1100 | Stable — embedded container |
-| `jainslee-apt` | `com.microjainslee:jainslee-apt:1.1.0` | ~240 | Stable — annotation processor |
-| `adapter-quarkus` | `com.microjainslee:adapter-quarkus:1.1.0` | ~520 | Stable — Quarkus 3 extension |
-| `adapter-springboot` | `com.microjainslee:adapter-springboot:1.1.0` | ~270 | Stable — Spring Boot 3 auto-config |
-| `adapter-jakartaee` | `com.microjainslee:adapter-jakartaee:1.1.0` | ~250 | Stable — Jakarta EE 9 EJB |
+| `bom` | `com.microjainslee:micro-jainslee-bom:1.2.0-P1-SNAPSHOT` | — | BOM pinning Narayana 7.0.0 / Infinispan 15 / JGroups 5 / Javassist 3.30 / LMAX Disruptor 3.4.2 |
+| `jainslee-api` | `com.microjainslee:jainslee-api:1.2.0-P1-SNAPSHOT` | **3,190** | Stable — JAIN SLEE 1.1 interfaces (added `@InitialEventSelect`, `ChildRelation<T>`, `SbbLocalObject.remove()`) |
+| `jainslee-scheduler` | `com.microjainslee:jainslee-scheduler:1.2.0-P1-SNAPSHOT` | **582** | Stable — vendored scheduler (jSS7 `LocalTimerAdapter` fallback) |
+| `jainslee-core` | `com.microjainslee:jainslee-core:1.2.0-P1-SNAPSHOT` | **10,252** | Stable — embedded container, EventRouter, IES dispatcher, CascadeRemover |
+| `jainslee-tx` | `com.microjainslee:jainslee-tx:1.2.0-P1-SNAPSHOT` | **373** | Stable — Narayana JTA 7.0 wiring (`JtaTransactionManager`, `TransactionContext`, `NoOpTransactionManager`) — *S1* |
+| `jainslee-codegen` | `com.microjainslee:jainslee-codegen:1.2.0-P1-SNAPSHOT` | **790** | Stable — Javassist CMP codegen (`ConcreteSbbGenerator`, `JavassistDeployTimeCodegen`) — *S2* |
+| `jainslee-cluster` | `com.microjainslee:jainslee-cluster:1.2.0-P1-SNAPSHOT` | **1,016** | Stable — JGroups 5 + Infinispan DIST_SYNC ACNF + `DistributedSbbEntityPool` (snapshot/replication) |
+| `jainslee-ra-spi` | `com.microjainslee:jainslee-ra-spi:1.2.0-P1-SNAPSHOT` | **1,220** | Stable — `SleeEndpointImpl` + `RaEntityStateMachine` + `ResourceAdaptorContextImpl` — *S5* |
+| `jainslee-apt` | `com.microjainslee:jainslee-apt:1.2.0-P1-SNAPSHOT` | **374** | Stable — annotation processor (`@SbbAnnotation`, `@DeployableUnit`, `@EventType`) |
+| `jainslee-tck-harness` | `com.microjainslee:jainslee-tck-harness:1.2.0-P1-SNAPSHOT` | **385** | Stable — TCK harness skeleton (`TckRunner`, `MicrojainsleeContainerAdapter`) — *S6* |
+| `adapters/adapter-quarkus` | `com.microjainslee:adapter-quarkus:1.2.0-P1-SNAPSHOT` | ~520 | Stable — Quarkus 3 extension (`@BuildStep` + `@Recorder` + synthetic CDI beans) |
+| `adapters/adapter-springboot` | `com.microjainslee:adapter-springboot:1.2.0-P1-SNAPSHOT` | **255** | Stable — Spring Boot 3 auto-config (`@AutoConfiguration` + `SmartLifecycle`) |
+| `adapters/adapter-jakartaee` | `com.microjainslee:adapter-jakartaee:1.2.0-P1-SNAPSHOT` | **247** | Stable — Jakarta EE 9 EJB (`@Singleton @Startup @LocalBean`) |
+| `ras/ra-http-ingress` | `com.microjainslee:ra-http-ingress:1.2.0-P1-SNAPSHOT` | — | Reference — HTTP ingress Resource Adaptor (USSD `/api/ussd/begin`) |
+| `ras/ra-grpc-client` | `com.microjainslee:ra-grpc-client:1.2.0-P1-SNAPSHOT` | — | Reference — gRPC menu backend Resource Adaptor |
 
 > The legacy **RestComm JAIN-SLEE v8** container (Mobicents, WildFly 10, ~1,400
 > modules, ~150 KLOC) lives in the sibling `container/`, `api/`, and `tools/`
@@ -162,6 +237,11 @@ flowchart TB
 | **SBB threading** | `VirtualThreadSbbEntityPool` | Pins each SBB ID to one parked virtual thread. Every `entity.submit(Runnable)` runs on that thread, preserving **single-threaded per-SBB ordering** required by JAIN SLEE. |
 | **Timer facility** | `TimerPortImpl` → `SleeTimerSchedulerBridge` | Schedules `TimerRecord` instances on jSS7 `LocalTimerAdapter` (Netty `HashedWheelTimer`). On fire, re-posts a `TimerFiredEvent` through `EventRouter` — SBB code never runs on the wheel thread. |
 | **Naming & lookup** | `InMemoryActivityContextNamingFacility` | `ConcurrentHashMap<String, ActivityContextInterface>` for O(1) bind/lookup/unbind. RAs create ACIs; SBBs resolve them by name. |
+| **JTA wiring** | `jainslee-tx/JtaTransactionManager` | Wraps every `EventRouter.deliverEvent` call in a Narayana 7.0 JTA transaction. `NoOpTransactionManager` is the default fallback. *Perfect Core S1.* |
+| **IES dispatcher** | `core.ies.InitialEventSelectorDispatcher` | On every incoming event, resolves the *convergence key* (e.g. `msisdn:dialogId`) → SBB entity ID. Prevents creating a new SBB per event. Falls back to a fresh allocation if no IES method is present. *Perfect Core S3.* |
+| **Child relations / cascade** | `core.CascadeRemover` + `ChildRelation<T>` | Iterative depth-first **post-order** removal of SBB entity trees (parent `sbbRemove()` is called *after* all children). Used by `SimpleSbbLocalObject.remove()` and `MicroSleeContainer` shutdown. *Perfect Core S4.* |
+| **RA entity lifecycle** | `ra.RaEntityStateMachine` + `ra.SleeEndpointImpl` + `ra.ResourceAdaptorContextImpl` | State machine `INACTIVE → ACTIVE → STOPPING → INACTIVE` per JAIN SLEE 1.1 §12.4. RA fires events via `SleeEndpoint.fireEvent(handle, eventType, ...)`. Context exposes Timer/Alarm/Trace/ACNF/EventLookup to the RA. *Perfect Core S5.* |
+| **CMP codegen** | `jainslee-codegen.ConcreteSbbGenerator` | Javassist generator that materializes a concrete subclass for every abstract `@SbbAnnotation` SBB, implementing CMP getter/setter pairs and `ChildRelation` accessors. Cached in `concreteClassCache` so the same source SBB never re-generates. *Perfect Core S2.* |
 
 ---
 
@@ -405,24 +485,51 @@ microjainslee.deployment.scan.includes=com.example.ussd
 ## Resource Adaptors (RA)
 
 RAs in JAIN SLEE 1.1 are how external events (SIP messages, HTTP requests,
-diameter answers, …) enter the SLEE. micro-jainslee exposes
-{@link com.microjainslee.api.SleeEndpointPort} on {@code ResourceAdaptorContext}
-so RAs fire events without blocking the transport thread.
+diameter answers, …) enter the SLEE. Perfect Core **S5** (commit
+[`a2029f26d`](https://github.com/nhanth87/micro-jainslee/commit/a2029f26d))
+ships the full RA framework:
 
-### RA bootstrap + `SleeEndpointPort`
+* **`RaEntityStateMachine`** — state machine `INACTIVE → ACTIVE → STOPPING →
+  INACTIVE` per JAIN SLEE 1.1 §12.4. Locked transitions; only `activate()`
+  and `stopping()/stopComplete()` are externally callable.
+* **`SleeEndpointImpl`** — what the RA actually uses to fire events. Wraps
+  `EventRouter.routeIncomingEvent(...)` with full validation: rejects
+  duplicate `ActivityHandle`s, rejects unknown event types, rejects fires
+  while the state machine is not `ACTIVE`.
+* **`ResourceAdaptorContextImpl`** — gives the RA access to all SLEE
+  facilities: Timer, Alarm, Trace, ACNF, EventLookup, NullActivity factory.
+
+### Full RA wiring (S5)
 
 ```java
-RaBootstrapContextImpl ctx = container.bootstrapResourceAdaptor(
-        MyHttpResourceAdaptor.class.getName(), "http-ingress");
-MyHttpResourceAdaptor ra = (MyHttpResourceAdaptor) ctx.getResourceAdaptor();
-// ctx.getSleeEndpointPort().fireEvent(handle, initialEvent);
+// 1. Create the state machine for this RA entity
+RaEntityStateMachine stateMachine = new RaEntityStateMachine(ra, "http-ingress");
+
+// 2. Create the SleeEndpoint — the only thing the RA uses to fire events
+SleeEndpointImpl endpoint = new SleeEndpointImpl(eventRouter, acnf, stateMachine);
+
+// 3. Build the context with every facility wired in
+ResourceAdaptorContextImpl ctx = ResourceAdaptorContextImpl.builder("http-ingress")
+        .sleeEndpoint(endpoint)
+        .timer(timerFacility)              // SleeTimerSchedulerBridge
+        .alarm(alarmFacility)              // SimpleAlarmFacility
+        .trace(traceFacility)              // TraceFacility (Logback-backed)
+        .nullActivity(nullActivityFactory) // for fire-no-activity events
+        .eventLookup(eventLookupFacility)
+        .build();
+
+// 4. Lifecycle: hand the context to the RA, register, then activate
+ra.setResourceAdaptorContext(ctx);
+container.registerResourceAdaptor("http-ingress", ra);  // stores the entity
+stateMachine.activate();                                 // → ra.raActive()
 ```
 
-Reference implementations live in each example app (copy-not-share):
-`example-quarkus/.../ra/HttpIngressResourceAdaptor.java`,
-`example-quarkus/.../ra/GrpcMenuResourceAdaptor.java`.
+The state machine guarantees `raActive()` is only called when the RA moves
+from `INACTIVE` to `ACTIVE`, and `raStopping()` only on `ACTIVE → STOPPING`.
+Any concurrent transition attempt blocks until the first completes — there
+are no torn states.
 
-### Minimal RA skeleton
+### Minimal RA skeleton (the `ResourceAdaptor` the user writes)
 
 ```java
 public class SipResourceAdaptor implements ResourceAdaptor {
@@ -439,13 +546,33 @@ public class SipResourceAdaptor implements ResourceAdaptor {
 
     // Called by your transport (Netty / Helidon / Servlet) when an INVITE arrives:
     public void onInvite(String callId, byte[] body) {
-        ActivityContextInterface aci = container.createActivityContext(callId);
-        SbbLocalObject sbb = container.registerSbb("SipSbb", new SipSbb());
-        container.attach(callId, sbb);
-        container.routeEvent(new SipInviteEvent(body), aci);
+        ActivityHandle handle = context.getNullActivityFactory()
+                                        .createNullActivityHandle();
+        context.getSleeEndpoint().fireEvent(handle, SipInviteEvent.REQUEST,
+                                            new SipInviteEvent(body));
+        // ↑ fires through SleeEndpointImpl → state machine asserts ACTIVE
+        //   → EventRouter → IES dispatcher → convergence-keyed SBB entity
     }
 }
 ```
+
+Reference implementations live in:
+
+* `ras/ra-http-ingress/.../HttpIngressResourceAdaptor.java` — REST ingress
+  for the USSD demo
+* `ras/ra-grpc-client/.../GrpcMenuResourceAdaptor.java` — gRPC menu backend
+
+These two are full production-shaped RAs that exercise the state machine,
+endpoint, and context end-to-end and are the templates we recommend copying
+when integrating a new transport.
+
+### `RaBootstrapContext` (backwards-compatible path)
+
+For code that still wants the *legacy* path — `bootstrapResourceAdaptor`
+plus `SleeEndpointPort.fireEvent(...)` — `RaBootstrapContextImpl` is kept
+as a thin shim over the new state machine. New code should call
+`MicroSleeContainer.registerResourceAdaptor(name, ra)` directly so the
+full S5 wiring (state machine + endpoint + context) is used.
 
 ---
 
@@ -465,6 +592,28 @@ container.releaseEntity(sessionId);  // returns SBB + VT slot to pool
 `registerSbb(String, Sbb)` remains for backward compatibility. When the SBB
 class was registered via `registerSbbType`, the container borrows from
 `SbbTypePool` automatically.
+
+### `@InitialEventSelect` — routing events to the right entity (S3)
+
+For any *stateful* protocol (USSD sessions, SIP dialogs, custom dialogs)
+the SLEE **must** route subsequent events of the same session to the
+**same** SBB entity, not create a new one. The JAIN SLEE 1.1 contract for
+this is the **Initial Event Selector** (IES) — see [Initial Event Selector
+(IES)](#initial-event-selector-ies) below for the full details and the USSD
+walkthrough. The short version:
+
+* An SBB marks **one** method with `@InitialEventSelect`.
+* That method receives the incoming event and the activity context and
+  returns `InitialEventSelectResult.forSession(convergenceKey, isInitial)`.
+* `InitialEventSelectorDispatcher.resolveTarget(event, aci, sbbClass)`
+  looks up the entity by `convergenceKey`. If found, the existing entity
+  receives the event; if not, a fresh entity is allocated for `isInitial=true`
+  and non-initial events are silently dropped per spec §7.5.5.
+
+Perfect Core **S3** (commit [`37c7e4c36`](https://github.com/nhanth87/micro-jainslee/commit/37c7e4c36))
+wires `EventRouter.routeIncomingEvent(event, sbbClass)` through the
+dispatcher; the previous direct-dispatch path that allocated a new SBB
+per event was the root cause of broken USSD state.
 
 ### Entity slot pool (virtual threads)
 
@@ -549,6 +698,207 @@ pool.shutdown();
 | `Sbb.onEvent(...)` | **One parked VT per SBB ID** | None — single-threaded by design |
 | `TimerPort.setTimer` | The SBB's own VT | None — bridge reuses the same one |
 | `Container.start`/`stop` | Main thread | `synchronized` on container instance |
+
+---
+
+## Initial Event Selector (IES)
+
+Spec reference: **JAIN SLEE 1.1 §7.5** — *Initial Event Selection*. Without
+IES, every incoming event would create a brand-new SBB entity, which
+immediately breaks any stateful protocol (USSD sessions, SIP dialogs,
+custom long-running conversations). The IES solves this with a
+**convergence key**: an arbitrary string (typically `"<msisdn>:<dialogId>"`,
+`"<callId>"`, or `"<conversationId>"`) that all events of the same session
+share, so the dispatcher can route them to the same SBB entity.
+
+### How it works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant RA as HttpIngressResourceAdaptor
+    participant EP as SleeEndpointImpl
+    participant ER as EventRouter
+    participant IES as InitialEventSelectorDispatcher
+    participant POOL as VirtualThreadSbbEntityPool
+    participant SBB as UssdSessionSbb entity
+
+    RA->>EP: fireEvent(handle, BEGIN, new UssdEvent(...))
+    EP->>ER: routeIncomingEvent(event, UssdSessionSbb.class)
+    ER->>IES: resolveTarget(event, aci, UssdSessionSbb.class)
+    IES->>SBB: selectInitialEvent(condition) [on TEMP instance]
+    Note over IES: returns InitialEventSelectResult<br/>convergenceKey="251911000001:d-7"<br/>isInitial=true
+    IES->>POOL: allocateNew("UssdSessionSbb", "251911000001:d-7")
+    POOL-->>IES: SbbEntity (entityId="251911000001:d-7")
+    IES-->>ER: entityId
+    ER->>POOL: dispatch to parked VT
+    POOL->>SBB: onEvent(UssdEvent{BEGIN}) [real entity]
+
+    Note over RA,SBB: --- later, same dialog ---
+
+    RA->>EP: fireEvent(handle, CONTINUE, new UssdEvent(...))
+    EP->>ER: routeIncomingEvent(event, UssdSessionSbb.class)
+    ER->>IES: resolveTarget(event, aci, UssdSessionSbb.class)
+    IES->>SBB: selectInitialEvent(condition) [on TEMP instance]
+    Note over IES: same convergenceKey, isInitial=false
+    IES->>POOL: lookup("251911000001:d-7")
+    POOL-->>IES: existing SbbEntity
+    IES-->>ER: entityId
+    ER->>POOL: dispatch to parked VT
+    POOL->>SBB: onEvent(UssdEvent{CONTINUE}) [SAME entity, state preserved]
+```
+
+### SBB-side contract
+
+```java
+@SbbAnnotation(name = "UssdSessionSbb", vendor = "com.example", version = "1.0")
+public abstract class UssdSessionSbb implements Sbb {
+
+    // CMP fields — Javassist generates backing field + getter/setter (S2)
+    public abstract String getMsisdn();
+    public abstract void setMsisdn(String msisdn);
+    public abstract String getMenuState();
+    public abstract void setMenuState(String state);
+
+    /**
+     * IES method. CRITICAL: runs on a TEMP instance that is discarded after
+     * the call. Do NOT mutate state here; return values only.
+     */
+    @InitialEventSelect
+    public InitialEventSelectResult selectInitialEvent(InitialEventSelectCondition c) {
+        UssdEvent e = (UssdEvent) c.getEvent();
+        return InitialEventSelectResult.forSession(
+            e.getMsisdn() + ":" + e.getDialogId(),      // convergenceKey
+            e.getType() == UssdEventType.BEGIN            // isInitialEvent
+        );
+    }
+
+    public void onUssdBegin(UssdEvent event, ActivityContextInterface aci, ...) {
+        setMsisdn(event.getMsisdn());      // state is now persisted to the entity
+        setMenuState("MAIN_MENU");
+    }
+
+    public void onUssdContinue(UssdEvent event, ActivityContextInterface aci, ...) {
+        // IES already routed this to the same entity → getMenuState() is correct
+        switch (getMenuState()) {
+            case "MAIN_MENU":   /* user picked option */ setMenuState("SUB_MENU"); break;
+            case "SUB_MENU":    /* process input */    break;
+        }
+    }
+}
+```
+
+### Container-side dispatcher
+
+```java
+// Direct dispatch via the IES-aware path
+eventRouter.routeIncomingEvent(event, UssdSessionSbb.class);
+
+// Or with a pre-built ACI:
+eventRouter.routeIncomingEvent(event, aci, UssdSessionSbb.class);
+```
+
+`InitialEventSelectorDispatcher.resolveTarget(...)`:
+
+1. Reflectively find the `@InitialEventSelect` method on the SBB class
+   (cached in `ConcurrentHashMap<Class<?>, Method>`).
+2. Instantiate a *temporary* SBB on a fresh VT slot.
+3. Invoke the method with `InitialEventSelectCondition(event, aci, ...)`;
+   assert it returns non-null.
+4. Discard the temp instance.
+5. Look up `entityId = result.getConvergenceKey()` in
+   `entitiesByConvergenceKey`. If found → return existing entityId.
+6. If not found and `isInitial == true` → call
+   `pool.allocateNew(sbbClass, convergenceKey)` and return the new entityId.
+7. If not found and `isInitial == false` → silently drop per spec §7.5.5
+   (`LOG.debugf("IES dropped event %s (non-initial, no existing entity)", ...)`).
+
+Perfect Core **S3** commit: [`37c7e4c36`](https://github.com/nhanth87/micro-jainslee/commit/37c7e4c36).
+See `docs/WIRING_GUIDE.md` §S3 for the legacy-code migration path.
+
+---
+
+## Child SBB Relations
+
+Spec reference: **JAIN SLEE 1.1 §6.7** — *Child Relations* and cascading
+removal. A child relation lets a parent SBB spawn child SBB entities
+(on-demand, by calling `create(childRelationName)`) that share the parent's
+lifecycle. When the parent is removed, every child **must** be removed
+first, depth-first, in **post-order** (leaves removed before parents), and
+the parent's `sbbRemove()` is called *only after* all children's
+`sbbRemove()` returns.
+
+Perfect Core **S4** (commit [`05cefe3dc`](https://github.com/nhanth87/micro-jainslee/commit/05cefe3dc))
+wires the spec via:
+
+* **`ChildRelation<T>`** (interface in `jainslee-api`) — typed handle the
+  parent calls to create / iterate children.
+* **`ChildRelationImpl<T>`** (in `jainslee-core`) — runtime impl that
+  creates a new entity, attaches it to the parent's ACI, and registers
+  it under the parent's `SbbEntityState`.
+* **`CascadeRemover`** (in `jainslee-core.child`) — iterative (no
+  recursion) depth-first post-order walk that calls `sbbRemove()` on every
+  child entity first, then the parent.
+
+### SBB-side contract
+
+```java
+@SbbAnnotation(name = "ParentSbb", vendor = "com.example", version = "1.0")
+public abstract class ParentSbb implements Sbb {
+
+    /** The Javassist CMP codegen (S2) auto-generates the impl. */
+    public abstract ChildRelation<ChildSbb> getChildSbbRelation();
+
+    public void onCreateChild(...) {
+        ChildRelation<ChildSbb> rel = getChildSbbRelation();
+        // create() allocates a new ChildSbb entity, attaches it to the
+        // parent's ACI, and tracks it under the parent's SbbEntityState.
+        ChildSbbLocalObject child = rel.create(ChildSbbLocalObject.class);
+        // ... interact with child ...
+    }
+
+    /** Called by CascadeRemover AFTER all children have been removed. */
+    @Override public void sbbRemove() {
+        // Optional cleanup. Do NOT call getChildSbbRelation().create()
+        // from here — the parent is being torn down.
+    }
+}
+```
+
+### Container-side cascade
+
+```java
+// Public API — fires CascadeRemover
+sbbLocalObject.remove();
+
+// Or shutdown the whole container — every root entity cascades
+container.stop();
+```
+
+`CascadeRemover.cascadeRemove(rootEntityId)`:
+
+1. Build a `Set<String> visited` and an `ArrayDeque<String> stack` of
+   *seeds* (the root entity ids to remove).
+2. Iteratively walk children via `SbbEntityState.getChildRelations()` —
+   the *snapshot* avoids `ConcurrentModificationException` against a
+   parent that is still creating children.
+3. For each entity in post-order, call `sbb.sbbRemove()` then
+   `pool.releaseEntity(entityId)`.
+4. Idempotent: re-removing an already-removed entity is a no-op
+   (asserted by `CascadeRemoverTest`).
+
+### Why depth-first post-order?
+
+Spec §6.7: a child's `sbbRemove()` may still need to talk to its parent
+(for commit notifications, event ordering, etc.). Removing the parent
+first would leave dangling pointers. Post-order guarantees every child's
+`sbbRemove()` runs while the parent is still in `READY` state, and the
+parent only enters `REMOVING` once no child references it.
+
+Perfect Core **S4** commit: [`05cefe3dc`](https://github.com/nhanth87/micro-jainslee/commit/05cefe3dc).
+See `docs/WIRING_GUIDE.md` §S4 for the Javassist generator hooks.
+
+---
 
 ---
 
@@ -761,8 +1111,54 @@ mvn -pl jainslee-core test -Dtest=SbbEntityPoolStressTest
 # Just Spring Boot adapter
 mvn -pl adapters/adapter-springboot test
 
-# Build everything except the legacy Mobicents container/
-mvn -pl 'jainslee-api,jainslee-core,jainslee-apt,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee,adapters/adapter-springboot' -am test
+# Build everything except the legacy Mobicents container/ and the cluster
+# module (which spawns an embedded JGroups/Infinispan stack and adds ~1 min)
+mvn -pl 'jainslee-api,jainslee-core,jainslee-tx,jainslee-codegen,jainslee-ra-spi,jainslee-apt,adapters/adapter-quarkus/runtime,adapters/adapter-quarkus/deployment,adapters/adapter-jakartaee,adapters/adapter-springboot' -am test
+
+# Same as above in one short flag — Perfect Core minus the cluster tests
+mvn -pl '!jainslee-cluster' test
+```
+
+### Skipping the cluster tests (CI speed-up)
+
+`jainslee-cluster` boots an embedded JGroups stack and Infinispan
+`DIST_SYNC` cache for every test method. The full suite takes ~60 s and is
+only meaningful when you are changing cluster code. Skip it during normal
+development:
+
+```bash
+# Fast path — skip cluster tests, run everything else (~16 s on Java 25)
+mvn -pl '!jainslee-cluster' test
+
+# Even faster — only core + tx + codegen + ra-spi (Perfect Core S1-S5)
+mvn -pl jainslee-api,jainslee-core,jainslee-tx,jainslee-codegen,jainslee-ra-spi -am test
+
+# Full suite including cluster (~76 s — use this before pushing)
+mvn -pl jainslee-cluster -am test
+```
+
+### Perfect Core verification commands
+
+```bash
+# S1 — JTA (Narayana)
+mvn -pl jainslee-tx test
+
+# S2 — CMP codegen (Javassist)
+mvn -pl jainslee-codegen test
+
+# S3 — IES dispatcher + USSD convergence
+mvn -pl jainslee-core test -Dtest=InitialEventSelectorDispatcherTest
+mvn -pl jainslee-core test -Dtest=UssdIesEndToEndTest
+
+# S4 — Child relations + cascade remover
+mvn -pl jainslee-core test -Dtest=CascadeRemoverTest
+mvn -pl jainslee-core test -Dtest=ChildRelationImplTest
+
+# S5 — RA state machine + endpoint + context
+mvn -pl jainslee-ra-spi test
+
+# All Perfect Core at once
+mvn -pl jainslee-core,jainslee-tx,jainslee-codegen,jainslee-ra-spi -am test
 ```
 
 ### Module-by-module commands
@@ -816,6 +1212,81 @@ cat /tmp/apt-out/META-INF/microjainslee/sbb-index.properties
 
 ---
 
+
+## Perfect Core status (S1–S5)
+
+This section summarises the five sprints that landed on branch
+`micro-jainslee` between 2026-06-26 and 2026-06-28. Each row links to the
+commit that shipped the feature and the new module where the code lives.
+Build status as of 2026-06-28: `mvn -pl '!jainslee-cluster' test` → BUILD
+SUCCESS.
+
+| Sprint | Commit | What landed | New / updated module |
+|---|---|---|---|
+| **S1 — JTA wiring** | [`ae3666a89`](https://github.com/nhanth87/micro-jainslee/commit/ae3666a89) | Narayana JTA 7.0 wiring in `EventRouter.deliverEvent`. `JtaTransactionManager`, `TransactionContext`, `NoOpTransactionManager`, structured MDC for event delivery (`24251649a`). | **new** `jainslee-tx` |
+| **S2 — CMP Javassist codegen** | [`a7566ed29`](https://github.com/nhanth87/micro-jainslee/commit/a7566ed29) | `ConcreteSbbGenerator` + `JavassistDeployTimeCodegen`. Materializes concrete SBB subclasses with CMP backing fields + `ChildRelation` accessors. Cached per source class. | **new** `jainslee-codegen` |
+| **S3 — IES dispatcher** | [`37c7e4c36`](https://github.com/nhanth87/micro-jainslee/commit/37c7e4c36) | `InitialEventSelectorDispatcher` + `InitialEventSelectCondition` + `InitialEventSelectResult`. `@InitialEventSelect` annotation in `jainslee-api`. `EventRouter.routeIncomingEvent` routes through IES. | `jainslee-core` + `jainslee-api` |
+| **S4 — Child relations + cascade** | [`05cefe3dc`](https://github.com/nhanth87/micro-jainslee/commit/05cefe3dc) | `ChildRelation<T>` + `ChildRelationImpl<T>` + `CascadeRemover`. Iterative depth-first post-order walk used by `SimpleSbbLocalObject.remove()` and container shutdown. | `jainslee-core` + `jainslee-api` |
+| **S5 — RA full wiring** | [`a2029f26d`](https://github.com/nhanth87/micro-jainslee/commit/a2029f26d) | `RaEntityStateMachine` (INACTIVE→ACTIVE→STOPPING→INACTIVE), `SleeEndpointImpl` (validated fire), `ResourceAdaptorContextImpl` (Timer/Alarm/Trace/ACNF/EventLookup builder). | `jainslee-ra-spi` |
+| **S6 — TCK harness** (foundation) | [`0b4210f08`](https://github.com/nhanth87/micro-jainslee/commit/0b4210f08) | `TckRunner` skeleton + `MicrojainsleeContainerAdapter`. | **new** `jainslee-tck-harness` |
+| Cluster ACNF + SBB pool | [`8496efd47`](https://github.com/nhanth87/micro-jainslee/commit/8496efd47), [`8d89bdfd5`](https://github.com/nhanth87/micro-jainslee/commit/8d89bdfd5) | `ClusteredActivityContextNamingFacility` over Infinispan DIST_SYNC; `DistributedSbbEntityPool` with snapshot/replication. | `jainslee-cluster` |
+| BOM | [`fe0a27dfc`](https://github.com/nhanth87/micro-jainslee/commit/fe0a27dfc) | `micro-jainslee-bom 1.2.0-P1-SNAPSHOT` pinning Narayana/Infinispan/JGroups/Javassist/Disruptor versions across the reactor. | **new** `bom/` |
+
+### Build commands by sprint
+
+```bash
+# S1
+mvn -pl jainslee-tx -am test
+
+# S2
+mvn -pl jainslee-codegen -am test
+
+# S3 + S4 (live in jainslee-core)
+mvn -pl jainslee-core test -Dtest='InitialEventSelectorDispatcherTest,CascadeRemoverTest,ChildRelationImplTest,UssdIesEndToEndTest'
+
+# S5
+mvn -pl jainslee-ra-spi -am test
+
+# All of Perfect Core, no cluster (≈ 16 s on Java 25)
+mvn -pl '!jainslee-cluster' test
+
+# Full suite including cluster (≈ 76 s)
+mvn test
+```
+
+### What's still deferred (non-goals)
+
+* **TCK compliance** — the harness is in place but only 5 of the JAIN
+  SLEE 1.1 test groups are wired (EventRouting, SbbLifecycle,
+  TimerFacility, ChildSbbRelation, TransactionTests). Coverage will grow
+  per-sprint.
+* **Infinispan-backed timer cluster** — local `SleeTimerSchedulerBridge`
+  only. The cluster module covers ACNF + SBB entity snapshot replication
+  but the timer fire path is still single-JVM.
+* **JSR-77 management MBeans** — out of scope for R&D; rely on the
+  embedding runtime (Quarkus Actuator, Spring Boot Actuator).
+* **CMP-style profile bodies** — interface + in-memory done; JPA profiles
+  are user-implemented.
+
+### Where the contract surface is now
+
+| JAIN SLEE 1.1 § | Spec surface | Status |
+|---|---|---|
+| §6.4 SBB entity lifecycle | create / ready / removing / removed | ✅ Perfect Core S4 |
+| §6.5 SBB object pool | pooled entity semantics | ✅ pre-existing |
+| §6.6 Event handler methods | `fire<EventType>(...)` + `on<Event>` dispatch | ✅ pre-existing |
+| §6.7 Child relations + cascade | depth-first post-order removal | ✅ Perfect Core S4 |
+| §6.8 Transactional SBB context | JTA / no-op | ✅ Perfect Core S1 |
+| §7.5 Initial Event Selection | IES dispatcher + convergence key | ✅ Perfect Core S3 |
+| §7.7 Activity Context Naming Facility | `InMemoryACNF` + cluster `ClusteredACNF` | ✅ pre-existing + cluster module |
+| §9 Timer Facility | `TimerPort` + `SleeTimerSchedulerBridge` (jSS7) | ✅ pre-existing |
+| §10 Trace Facility | `SimpleTracePort` + Quarkus adapter | ✅ pre-existing |
+| §11 Usage Facility | `SimpleUsagePort` + Micrometer adapter | ✅ pre-existing |
+| §12.4 Resource Adaptor state machine | INACTIVE → ACTIVE → STOPPING → INACTIVE | ✅ Perfect Core S5 |
+| §12.5 SleeEndpoint fire semantics | validated fire, null activity, unmarshalling | ✅ Perfect Core S5 |
+| §13 Profile Specification | `ProfileTablePort` interface + in-memory | ✅ minimal — pre-existing |
+
+---
 
 ## micro-jainslee vs JBoss/Mobicents JAIN-SLEE container
 

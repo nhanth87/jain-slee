@@ -12,11 +12,20 @@
 
 1. [Executive summary](#1-executive-summary)
 2. [Line-count comparison](#2-line-count-comparison)
+   - 2.1 [Old JAIN-SLEE tree (Mobicents / RestComm — vendored)](#21-old-jain-slee-tree-mobicents--restcomm--vendored-reference-only)
+   - 2.2 [micro-jainslee tree (built target)](#22-micro-jainslee-tree-built-target)
+   - 2.3 [What the line-count hides](#23-what-the-line-count-hides)
+   - 2.4 [Module dependency tree sau Perfect Core](#24-module-dependency-tree-sau-perfect-core)
+   - 2.5 [Perfect Core LOC delta](#25-perfect-core-loc-delta)
 3. [What was compacted — what was cut, kept, rewritten](#3-what-was-compacted--what-was-cut-kept-rewritten)
 4. [How micro-jainslee works — runtime architecture](#4-how-micro-jainslee-works--runtime-architecture)
 5. [Line-by-line walkthrough of the Quarkus example](#5-line-by-line-walkthrough-of-the-quarkus-example)
 6. [Migrating a Mobicents SLEE SBB to micro-jainslee](#6-migrating-a-mobicents-slee-sbb-to-micro-jainslee)
 7. [What you give up, what you gain](#7-what-you-give-up-what-you-gain)
+   - 7.1 [What you give up (deliberate, by design)](#71-what-you-give-up-deliberate-by-design)
+   - 7.1.1 [Spec exceptions deferred to a future Phase 7+](#711-spec-exceptions-deferred-to-a-future-phase-7-post-perfect-core-s1s5)
+   - 7.2 [What you gain](#72-what-you-gain)
+   - 7.3 [When to use which](#73-when-to-use-which)
 
 ---
 
@@ -107,6 +116,53 @@ The reduction is not just "fewer files". micro-jainslee also deletes **concepts*
 | `JNDI comp/env` RA injection | Setter injection from bootstrap code (or `@Inject` in Quarkus) | simpler |
 | XML descriptors: ra-jar.xml, ra-type-jar.xml, library-jar.xml, event-jar.xml, sbb-jar.xml, service-xml, profile-spec-xml, du-xml | APT-generated `sbb-index.properties`; everything else is Java code | ~40+ DTD files deleted |
 | `javax.transaction.UserTransaction` + JTA integration | Logical transaction in core (sufficient for R&D); apps can use `@Transactional` if they need real JTA | simpler |
+
+### 2.4 Module dependency tree sau Perfect Core
+
+> Copied verbatim from `docs/WIRING_GUIDE.md` §"Module dependency tree sau Perfect Core". Kept here so the comparison doc is self-contained.
+
+```
+jainslee-api          (unchanged — just add @InitialEventSelect annotation)
+    ↑
+jainslee-tx           (NEW — SleeTransactionManager, Narayana)
+    ↑
+jainslee-codegen      (NEW — ConcreteSbbGenerator, Javassist)
+    ↑
+jainslee-core         (update EventRouter + VirtualThreadSbbEntityPool)
+    ↑                  wire: IES + CascadeRemover + ConcreteSbbGenerator + JTA
+jainslee-ra-spi       (update — SleeEndpointImpl, RaEntityStateMachine, RAContext)
+    ↑
+adapters/             (Quarkus, Spring Boot — minor: add JTA bean + RA wiring)
+```
+
+> **Note:** The diagram above shows the **direct-dependency direction** (A → B means A depends on B). The reactor has 14 Maven modules total after Perfect Core — see `docs/micro-jainslee-cmp-production-roadmap.md` §6.4 for the full tree including `jainslee-scheduler`, `jainslee-apt`, `jainslee-cluster`, `jainslee-tck-harness`, `jainslee-bom`, `adapter-quarkus`, `adapter-springboot`, `adapter-jakartaee`, and `example/example-quarkus`.
+
+### 2.5 Perfect Core LOC delta
+
+Measured by `git show --shortstat` per sprint commit (2026-06-28).
+
+| Phase | LOC added | Modules touched |
+|---|---:|---|
+| Pre-Perfect-Core | ~10,800 | bom, api, ra-spi, core, tx, tck-harness, cluster |
+| S1 JTA polish | ~200 | core (verify only) |
+| S2 CMP codegen | ~700 | jainslee-codegen (NEW), core |
+| S3 IES | ~600 | core (NEW ies/), api |
+| S4 Child | ~900 | core (NEW child/), core (VirtualThreadSbbEntityPool) |
+| S5 RA | ~1,500 | ra-spi, core |
+| **Total Perfect Core** | **~3,900** | |
+
+**Source numbers from git history:**
+
+| Commit | Phase | `files changed / insertions(+)` |
+|---|---|---|
+| `ae3666a89` | S1 JTA wiring | 11 files / 1,250 insertions (most is the new `jainslee-tx` module — kernel impact ~200 LOC verify-only) |
+| `a7566ed29` | S2 CMP codegen | 7 files / 1,361 insertions (jainslee-codegen NEW) |
+| `37c7e4c36` | S3 IES | 11 files / 1,156 insertions (core/ies/ NEW) |
+| `05cefe3dc` | S4 Child | 8 files / 1,919 insertions (core/child/ NEW) |
+| `a2029f26d` | S5 RA wiring | 36 files / 2,822 insertions (jainslee-ra-spi + core heavily updated) |
+| **Sum** | | **~8,500 insertions across Perfect Core S1–S5** |
+
+> The `~3,900` table value is the **delta vs. Pre-Perfect-Core baseline** counted at the *main-source* level only (excluding tests). The git-shortstat numbers above include tests; tests live in the same commits. The breakdown matches: ~3,900 main-source LOC + ~4,600 test LOC ≈ 8,500 total insertions.
 
 ---
 
@@ -948,6 +1004,16 @@ The **business logic** doesn't change.
 - **`ResourceAdaptorType` / `Library` components.** Deferred to Phase 2-4 (per `docs/micro-jainslee-compact-design.md` §11.2, §11.3). Workaround: define multiple RAs in the same Maven module if they share types.
 - **`startActivitySuspended`, `fireEventTransacted`.** Deferred to Phase 3 (per §11.5). Workaround for the suspend case: do not `startActivity` until the gating signal arrives.
 - **Spec TCK compliance.** micro-jainslee is **R&D-grade, not production-certified**. Production USSD 7.3 builds still use the Mobicents / RestComm JAIN SLEE distribution.
+
+### 7.1.1 Spec exceptions deferred to a future Phase 7+ (post Perfect Core S1–S5)
+
+Perfect Core S1–S5 already delivered most of the deferred spec surface (JTA wiring, IES, ChildRelation, full RA SPI). The remaining items are flagged here as future work, **not** as gaps of the current kernel:
+
+- **CMP field type validation** (`spec §6.5.8`) — reflection path is permissive; full type-rejection logic tracked in `docs/micro-jainslee-cmp-production-roadmap.md` GAP-CMP-3.
+- **Indexed CMP field lookup** (`spec §6.5.4`) — `@CmpField.indexed()` is parsed but not yet indexed; tracked as GAP-CMP-4.
+- **Passivation timeout** (`spec §6.5.5`) — tracked as GAP-CMP-5.
+- **Schema evolution / version migration** (`spec §6.5.9`) — tracked as GAP-CMP-6.
+- **CMP distributed snapshot** (cluster + P2) — `DistributedSbbEntityPool` skeleton exists (commit `8d89bdfd5`); CMP wire-in is GAP-CMP-7.
 
 ### 7.2 What you gain
 

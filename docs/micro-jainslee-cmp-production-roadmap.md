@@ -7,6 +7,8 @@
 > **Last updated:** 2026-06-28 · **Maintainer:** Tran Nhan (nhanth87@gmail.com)
 >
 > **Perfect Core S1–S5 update (2026-06-28):** module `jainslee-codegen` đã ship — `ConcreteSbbGenerator` + Javassist deploy-time codegen (GAP-CMP-2 ✅ SKELETON DONE, runtime wiring pending). Module `jainslee-tx` với `CmpTransactionBridge` snapshot/rollback (GAP-CMP-1 cũng tiến bộ). Chi tiết xem §1.2 và GAP-CMP-2 dưới đây.
+>
+> **Cross-reference roadmap này với Perfect Core:** xem §6 cuối file cho mapping đầy đủ S1–S5 → GAP-CMP, plus P2 (cluster) + P5 (CascadeRemover) status.
 
 ---
 
@@ -360,4 +362,85 @@ Các gap được sắp xếp theo **độ quan trọng (impact)** và **độ p
 - [ ] Snapshot/restore cluster: < 100ms p99 cho 50-field entity
 - [ ] Javadoc đầy đủ cho tất cả public API
 - [ ] Production runbook section "CMP migration" + "CMP rollback recovery"
+
+---
+
+## 6. Perfect Core S1–S5 — what shipped (cross-reference, 2026-06-28)
+
+> Roadmap này được viết cho CMP gap-track, nhưng Perfect Core S1–S5 đã deliver nhiều building block mà các gaps ở trên dựa vào. Section này map từng sprint ra file/commit cụ thể — thay thế cho các "tier1/tier2 roadmap" riêng không còn tồn tại trong repo.
+
+### 6.1 Phase mapping (S1–S5 → GAP-CMP)
+
+| Sprint | What shipped | File / commit | GAP affected |
+|---|---|---|---|
+| **S1 JTA wiring** | `jainslee-tx` module với Narayana JTA integration (`SleeTransactionManager`, `CmpTransactionBridge` skeleton, ThreadLocal snapshot stack, 8 tests) | `ae3666a89 feat(tx): add Narayana JTA integration in jainslee-tx module` | **GAP-CMP-1** (transactional rollback) — còn phải wire `EventRouter.dispatchWithTransaction` |
+| **S2 CMP codegen** | `jainslee-codegen` module — `ConcreteSbbGenerator` + `JavassistDeployTimeCodegen` + `CmpAccessorImpl`; `VirtualThreadSbbEntityPool.acquireByClass()` reflectively routes qua codegen; `MicroSleeConfiguration.codegenEnabled` (default true) | `a7566ed29 feat(perfect-core): S2 — Javassist CMP codegen for concrete SBB classes` | **GAP-CMP-2** ✅ **SKELETON DONE** — còn runtime wiring container-side |
+| **S3 IES** | `jainslee-core/ies/` package — `InitialEventSelectCondition`, `InitialEventSelectResult`, `InitialEventSelectorDispatcher`; `@InitialEventSelect` annotation; `EventRouter.bindInitialEventSelectorDispatcher()` + `routeIncomingEvent()` | `37c7e4c36 feat(perfect-core): S3 — Initial Event Selector wiring for SBB convergence` | Indirectly unblocks GAP-CMP-2 wiring (entity reuse trước khi codegen pickup) |
+| **S4 Child** | `jainslee-core/child/` package — `CascadeRemover` (depth-first, instance-based), `ChildRelationImpl<T>` (ConcurrentHashMap-backed), `ChildRelationFactory`; `VirtualThreadSbbEntityPool.createChildRelation()` + `asEntityLookup()`; `SimpleSbbLocalObject` get/set parent | `05cefe3dc feat(perfect-core): S4 — ChildRelation impl + CascadeRemover wiring` | **GAP-CMP-2 partial** — CascadeRemover is depth-first (covers most of GAP-CMP-2 cascade removal semantics); codegen + cascade full integration là task còn lại |
+| **S5 RA wiring** | Full RA wiring với `RaEntityStateMachine` (INACTIVE/ACTIVE/STOPPING), `SleeEndpointImpl` (full spec surface), `ResourceAdaptorContextImpl` + `ResourceAdaptorContextBuilder`; `MicroSleeContainer.registerResourceAdaptor()` + `stopRA()`; 35 new tests | `a2029f26d feat(perfect-core): S5 — full RA wiring with state machine + endpoint + context` | Indirectly enables GAP-CMP-7 cluster snapshot (RA SBB entities giờ có state machine) |
+
+### 6.2 P2 (cluster layer) — implemented ✅
+
+> **Status (2026-06-28):** Cluster layer + `DistributedSBBPool` + `ClusteredACNF` đã implemented. (Refs: commits `8496efd47` + `8d89bdfd5`.)
+
+| Commit | What | Files |
+|---|---|---|
+| `8496efd47 feat(cluster): add ClusteredActivityContextNamingFacility with Infinispan DIST_SYNC` | Infinispan-backed `ClusteredActivityContextNamingFacility` + `ClusterManager` (282 LOC main) | `jainslee-cluster/pom.xml`, `ClusterManager.java` (282 LOC), `ClusteredActivityContextNamingFacility.java` (202 LOC), `ClusterManagerTest.java` (327 LOC) |
+| `8d89bdfd5 feat(cluster): add DistributedSbbEntityPool with state snapshot/replication` | `DistributedSbbEntityPool` với `SbbEntitySnapshot` — SBB passivation/migration support | `jainslee-cluster/src/main/java/com/microjainslee/cluster/DistributedSbbEntityPool.java`, `SbbEntitySnapshot.java` |
+
+**Implication cho roadmap này:** GAP-CMP-7 ("CMP distributed snapshot integration với P2") có infrastructure xong; chỉ còn wire `CmpFieldStore.load/store` vào `DistributedSbbEntityPool.takeSnapshot/applySnapshot` (~250 LOC + 200 test, xem GAP-CMP-7 §2 ở trên).
+
+### 6.3 P5 (CascadeRemover depth-first) — done ✅ (partial GAP-CMP-2 via codegen)
+
+> **Status (2026-06-28):** `CascadeRemover` depth-first đã ship như một phần của Perfect Core S4. Đồng thời **GAP-CMP-2 partial** (codegen module) đã ship như một phần của Perfect Core S2.
+
+| Artifact | Where | Spec section covered |
+|---|---|---|
+| `CascadeRemover.java` (depth-first, instance-based) | `jainslee-core/src/main/java/com/microjainslee/core/child/CascadeRemover.java` | JAIN SLEE 1.1 §6.4.4 (ChildRelation removal cascade) |
+| `ChildRelationImpl<T>` | `jainslee-core/src/main/java/com/microjainslee/core/child/ChildRelationImpl.java` | §6.4.2 — `getChildRelation()` returns child SBB entities |
+| `ChildRelationFactory` | `jainslee-core/src/main/java/com/microjainslee/core/child/ChildRelationFactory.java` | Reflection-based discovery of abstract `ChildRelation<T>` methods |
+| `VirtualThreadSbbEntityPool.createChildRelation()` + `asEntityLookup()` | Updated in S4 | Cascade removal drives pool lifecycle |
+
+**Còn lại để full GAP-CMP-2 close:**
+- Container pick concrete class automatically khi `registerSbb()` được gọi với `codegenEnabled=true` (xem GAP-CMP-2 §2 "Còn phải làm" ở trên).
+- Pool factory uses concrete class — `acquireEntity` returns concrete instance.
+- Fallback reflection khi `codegenEnabled=false` phải produce identical observable behavior.
+
+### 6.4 Module inventory sau Perfect Core (14 modules)
+
+```
+micro-jainslee (parent pom)
+├── micro-jainslee-bom                          (BOM — Narayana/Infinispan/JGroups/Javassist versions)
+├── jainslee-api                                (SBB, SleeEvent, ResourceAdaptor, annotations, @InitialEventSelect — S3)
+├── jainslee-scheduler                          (HashedWheelTimer — vendored jSS7)
+├── jainslee-core                               (MicroSleeContainer, EventRouter, VirtualThreadSbbEntityPool, SbbLifecycleManager, CmpBackedSbb, ies/, child/, ra/)
+│   ├── core/ies/                               (InitialEventSelectorDispatcher, etc. — S3 NEW)
+│   ├── core/child/                             (CascadeRemover, ChildRelationImpl — S4 NEW)
+│   ├── core/ra/                                (ResourceAdaptorContextBuilder — S5 NEW)
+│   └── core/logging/                           (EventMdc — pre-S1)
+├── jainslee-codegen                            (NEW — ConcreteSbbGenerator, JavassistDeployTimeCodegen — S2)
+├── jainslee-tx                                 (NEW — SleeTransactionManager, Narayana integration — S1)
+├── jainslee-apt                                (Annotation processor)
+├── jainslee-ra-spi                             (AbstractResourceAdaptor, RaEntityStateMachine, SleeEndpointImpl, ResourceAdaptorContextImpl — S5 heavily updated)
+├── jainslee-cluster                            (NEW — ClusteredACNF, DistributedSbbEntityPool, ClusterManager — P2)
+├── jainslee-tck-harness                        (NEW — TCK skeleton §6.5/§8)
+├── adapter-quarkus                             (Quarkus 3.15.1 extension)
+├── adapter-springboot                          (Spring Boot 3 auto-config)
+├── adapter-jakartaee                           (Jakarta EE 9 EJB)
+└── example/example-quarkus                     (Full USSD gateway demo)
+```
+
+### 6.5 Test count delta
+
+| Phase | Test count | Notes |
+|---|---:|---|
+| Pre-Perfect-Core baseline | 246 | reactor-wide |
+| + S1 (JTA) | 246 + 8 (jainslee-tx) = **254** | JTA TransactionManagerTest + bridge |
+| + S2 (Codegen) | 254 + 17 = **271** | ConcreteSbbGeneratorTest (8) + JavassistDeployTimeCodegenTest (9) |
+| + S3 (IES) | 271 + 27 = **298** | IES result builder, dispatcher, EventRouter wiring, MicroSleeContainer rebind |
+| + S4 (Child) | 298 + 37 = **335** | ChildRelationImplTest (18) + ChildRelationFactoryTest (14) + CascadeRemoverEndToEndTest (5) |
+| + S5 (RA) | 335 + 35 = **370** | RaEntityStateMachineTest (12) + SleeEndpointImplTest (13) + ResourceAdaptorContextImplTest (10) |
+| Final reactor (Jun 2026) | **~423** | includes cluster + tck-harness tests as well |
+
+> All test numbers measured via `mvn test` against branch `micro-jainslee` HEAD `7cc31d06b`.
 

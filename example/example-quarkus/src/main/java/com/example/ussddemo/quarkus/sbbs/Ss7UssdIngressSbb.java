@@ -72,7 +72,11 @@ public final class Ss7UssdIngressSbb extends CmpBackedSbb implements SleeEventHa
         cmpWrite(method("setMenuTier", int.class), event.getMenuTier());
         LOG.infof("[SS7-ingress] MAP begin session=%s msisdn=%s tier=%d cmpTier=%d",
                 event.getSessionId(), event.getMsisdn(), event.getMenuTier(), getMenuTier());
-        wiring.grpcRa().requestMenu(event.getSessionId(), event.getMsisdn(), event.getUssdString());
+        // Pass `aci` as the 4th arg so the gRPC response is routed back to
+        // the SS7-ingress SBB instead of staying on the gRPC-client's
+        // request ACI. Matches the canonical `ras/ra-grpc-client` 4-arg
+        // signature introduced in audit fix 2026-06-28.
+        wiring.grpcRa().requestMenu(event.getSessionId(), event.getMsisdn(), event.getUssdString(), aci);
     }
 
     private void onGrpcResponse(GrpcMenuResponseEvent event, ActivityContextInterface aci) {

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>ras</artifactId>
+        <version>1.1.0</version>
+    </parent>
+    <artifactId>ra-grpc-client</artifactId>
+    <packaging>jar</packaging>
+    <name>micro-jainslee :: RA gRPC Client</name>
+    <description>Async gRPC upstream RA — fires request/response SleeEvents via SleeEndpointPort.</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-ra-spi</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+            Compile-scope dep on jainslee-core: needed for
+            MicroSleeContainer.routeEvent(SleeEvent, ActivityContextInterface)
+            so the response event can be routed onto the caller-supplied
+            response ACI rather than the request ACI. Audited 2026-06-28;
+            prior to that, the response leg used SleeEndpointPort.fireEvent
+            with the sessionId string key, which limited response to the
+            request ACI. See docs/micro-jainslee-compact-design.md §11.4
+            and the GrpcMenuResourceAdaptor 4-arg signature change.
+        -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

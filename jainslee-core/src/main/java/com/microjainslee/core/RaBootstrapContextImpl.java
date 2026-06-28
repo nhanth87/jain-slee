@@ -13,6 +13,7 @@ package com.microjainslee.core;
 import com.microjainslee.api.ActivityContextHandle;
 import com.microjainslee.api.ResourceAdaptor;
 import com.microjainslee.api.ResourceAdaptorContext;
+import com.microjainslee.api.SimpleActivityContextHandle;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -46,7 +47,8 @@ public final class RaBootstrapContextImpl implements ResourceAdaptorContext {
         return entityName;
     }
 
-    public MicroSleeContainer getContainer() {
+    @Override
+    public Object getContainer() {
         return container;
     }
 

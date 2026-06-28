@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>micro-jainslee</artifactId>
+        <version>1.1.0</version>
+    </parent>
+
+    <artifactId>jainslee-cluster</artifactId>
+    <packaging>jar</packaging>
+
+    <name>micro-jainslee :: cluster (Infinispan + JGroups)</name>
+    <description>
+        Production P2.1 — Infinispan embedded cache manager + JGroups transport
+        for multi-JVM micro-jainslee deployments. Optional module: when
+        cluster.enabled = false the kernel stays single-JVM (R&amp;D mode). When
+        cluster.enabled = true, an EmbeddedCacheManager with a JGroups
+        transport is created and a &lt;K,V&gt; Cache can be obtained via
+        ClusterManager.getCache(name, CacheMode).
+    </description>
+
+    <properties>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <maven.compiler.release>25</maven.compiler.release>
+        <!-- Versions are inherited from micro-jainslee-bom (infinispan.version
+             = 15.0.0.Final, jgroups.version = 5.3.13.Final) -->
+        <junit.jupiter.version>5.11.4</junit.jupiter.version>
+        <assertj.version>3.26.3</assertj.version>
+    </properties>
+
+    <dependencies>
+        <!--
+          Infinispan embedded cache manager. Pinned at 15.0.0.Final (BOM).
+          Pulls in JGroups + JBoss Logging + Netty transitively.
+        -->
+        <dependency>
+            <groupId>org.infinispan</groupId>
+            <artifactId>infinispan-core</artifactId>
+        </dependency>
+
+        <!--
+          JGroups transport. Versioned by the BOM (5.3.13.Final) so it matches
+          the Infinispan 15.0.0.Final baseline.
+        -->
+        <dependency>
+            <groupId>org.jgroups</groupId>
+            <artifactId>jgroups</artifactId>
+        </dependency>
+
+        <!--
+          Public SPI. jainslee-core is only needed for MicroSleeConfiguration
+          (we do not import any concrete kernel class from core). We mark it
+          provided so the embedder always brings the real core — we never
+          re-export it.
+        -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-core</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Logging facade so we can call LogManager.getLogger(...) without
+             pulling log4j-core. The runtime back-end is supplied by the
+             embedding application. -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>2.23.1</version>
+        </dependency>
+
+        <!-- Tests -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.23.1</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <!--
+                      Force tests to run on a platform thread. Infinispan
+                      15 ships with JGroups / Netty code that holds
+                      synchronized blocks (see production-roadmap §5.1) and
+                      we want the same predictable behaviour as the rest of
+                      the P1 modules.
+                    -->
+                    <argLine>-Xss1m</argLine>
+                    <!-- Allow the cluster test to spend a few extra seconds
+                         waiting for the 2-node JGroups view to form. -->
+                    <forkedProcessTimeoutInSeconds>120</forkedProcessTimeoutInSeconds>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

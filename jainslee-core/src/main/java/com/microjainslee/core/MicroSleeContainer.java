@@ -155,6 +155,11 @@ public final class MicroSleeContainer {
                 serviceRegistry.stop(serviceID);
             }
         }
+        // RA teardown follows spec §11.3 state machine: Active → Stopping
+        // → Inactive → Unconfigured. AbstractResourceAdaptor chains
+        // raUnconfigure() → unsetResourceAdaptorContext() automatically;
+        // direct implementers (HttpIngressResourceAdaptor,
+        // GrpcMenuResourceAdaptor) get the no-op default.
         for (RaBootstrapContextImpl context : resourceAdaptors.values()) {
             ResourceAdaptor ra = context.getResourceAdaptor();
             if (ra != null) {

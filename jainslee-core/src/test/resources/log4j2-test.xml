@@ -1,16 +1,50 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  P1.3 — Structured JSON logging for the test classpath.
+
+  This file is log4j2's test-time configuration: when present on the
+  test classpath, log4j2 picks it up automatically and replaces any
+  production log4j2.xml without touching production code.
+
+  Layout: JsonTemplateLayout (from log4j-layout-template-json) — emits
+  one JSON object per log line. The MDC fields sbbId, aciName,
+  eventType, durationNs, txStatus, nodeId are surfaced as top-level
+  keys so a downstream log shipper (Splunk / Loki / Elastic) can index
+  them without any regex gymnastics.
+
+  Appender: Console for development. Add a RollingFile + JSON appender
+  here when wiring CI to a centralised log store.
+-->
 <Configuration status="WARN">
     <Appenders>
-        <Console name="Console" target="SYSTEM_OUT">
-            <PatternLayout pattern="%d{HH:mm:ss.SSS} %-5level %c - %msg%n"/>
+        <!--
+            Human-readable fallback used when tests are run with
+            -Dlog4j2.layout=plain (default). Single-line text format.
+        -->
+        <Console name="PlainConsole" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} %-5level [%X{sbbId:-?} %X{aciName:-?} %X{eventType:-?}] - %msg%n"/>
+        </Console>
+        <!--
+            JSON appender — emits one structured event per line. This
+            is the layout asserted by the integration tests that check
+            every P1.3 MDC field is present on every log line emitted
+            from inside EventRouter.dispatchWithTransaction.
+        -->
+        <Console name="JsonConsole" target="SYSTEM_OUT">
+            <JsonTemplateLayout eventTemplateUri="classpath:LogEventJsonTemplate.json"/>
         </Console>
     </Appenders>
     <Loggers>
+        <!--
+            Routing: by default we use the plain console so test output
+            stays readable on developer machines. To switch a single
+            test run to JSON, set -Dlog4j2.appender=JsonConsole.
+        -->
         <Logger name="com.microjainslee.core" level="info" additivity="false">
-            <AppenderRef ref="Console"/>
+            <AppenderRef ref="${sys:log4j2.appender:-PlainConsole}"/>
         </Logger>
         <Root level="warn">
-            <AppenderRef ref="Console"/>
+            <AppenderRef ref="${sys:log4j2.appender:-PlainConsole}"/>
         </Root>
     </Loggers>
 </Configuration>

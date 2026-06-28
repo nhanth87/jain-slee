@@ -8,6 +8,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [Unreleased] - 2026-06-28 - Removed legacy vendor Mobicents directories (api/, container/, release/) — replaced by micro-jainslee built from scratch with JAIN SLEE 1.1 spec subset (jainslee-api, jainslee-core, jainslee-tx, jainslee-codegen, jainslee-cluster, jainslee-tck-harness, jainslee-ra-spi). Vendored reference code preserved in git history.
+
 ## [Unreleased]
 
 ### Changed

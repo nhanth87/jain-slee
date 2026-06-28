@@ -1,0 +1,49 @@
+{
+  "timestamp": {
+    "$resolver": "timestamp",
+    "pattern": {
+      "format": "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+      "timeZone": "UTC"
+    }
+  },
+  "level": {
+    "$resolver": "level",
+    "field": "name"
+  },
+  "logger": {
+    "$resolver": "logger",
+    "field": "name"
+  },
+  "thread": {
+    "$resolver": "thread",
+    "field": "name"
+  },
+  "message": {
+    "$resolver": "message",
+    "stringified": true
+  },
+  "sbbId": {
+    "$resolver": "mdc",
+    "key": "sbbId"
+  },
+  "aciName": {
+    "$resolver": "mdc",
+    "key": "aciName"
+  },
+  "eventType": {
+    "$resolver": "mdc",
+    "key": "eventType"
+  },
+  "durationNs": {
+    "$resolver": "mdc",
+    "key": "durationNs"
+  },
+  "txStatus": {
+    "$resolver": "mdc",
+    "key": "txStatus"
+  },
+  "nodeId": {
+    "$resolver": "mdc",
+    "key": "nodeId"
+  }
+}

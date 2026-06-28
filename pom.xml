@@ -57,12 +57,12 @@
         <module>bom</module>
         <module>jainslee-api</module>
         <module>jainslee-scheduler</module>
+        <module>jainslee-ra-spi</module>
         <module>jainslee-core</module>
         <module>jainslee-tx</module>
         <module>jainslee-codegen</module>
         <module>jainslee-cluster</module>
         <module>jainslee-apt</module>
-        <module>jainslee-ra-spi</module>
         <module>jainslee-tck-harness</module>
         <module>ras</module>
         <module>adapters/adapter-quarkus</module>

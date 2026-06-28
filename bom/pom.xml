@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.microjainslee</groupId>
+    <artifactId>micro-jainslee-bom</artifactId>
+    <version>1.2.0-P1-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>micro-jainslee :: BOM</name>
+    <description>
+        Bill of Materials for micro-jainslee 1.2.0-P1 (Production 1).
+        Pins every third-party version used by jainslee-core / jainslee-tx /
+        jainslee-tck-harness / adapters so downstream USSD 7.3 builds only
+        have to import this BOM once to get a consistent classpath.
+        R&amp;D only — never for production packaging.
+    </description>
+
+    <!-- ============================================================ -->
+    <!--  Version properties — single source of truth                -->
+    <!-- ============================================================ -->
+    <properties>
+        <!-- Transaction layer (P1.1/P1.2 — Narayana JTA embedded) -->
+        <narayana.version>7.0.0.Final</narayana.version>
+
+        <!-- Distributed cache / cluster layer (P2 — placeholder, declared now) -->
+        <infinispan.version>15.0.0.Final</infinispan.version>
+        <jgroups.version>5.3.13.Final</jgroups.version>
+
+        <!-- Bytecode generation (used by Infinispan / Narayana marshalling) -->
+        <javassist.version>3.30.0-GA</javassist.version>
+
+        <!-- Testing (junit-jupiter = JUnit 5, junit = legacy 4) -->
+        <junit-jupiter.version>5.11.4</junit-jupiter.version>
+        <junit.version>4.13.2</junit.version>
+
+        <!-- Structured JSON logging (P1.3) -->
+        <log4j.version>2.23.1</log4j.version>
+    </properties>
+
+    <!-- ============================================================ -->
+    <!--  Dependency management — versions consumed by child modules -->
+    <!-- ============================================================ -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- ============== JTA / transaction layer ============== -->
+            <dependency>
+                <groupId>org.jboss.narayana.jta</groupId>
+                <artifactId>narayana-jta</artifactId>
+                <version>${narayana.version}</version>
+            </dependency>
+
+            <!-- ============== Distributed cache / cluster ============== -->
+            <dependency>
+                <groupId>org.infinispan</groupId>
+                <artifactId>infinispan-core</artifactId>
+                <version>${infinispan.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jgroups</groupId>
+                <artifactId>jgroups</artifactId>
+                <version>${jgroups.version}</version>
+            </dependency>
+
+            <!-- ============== Bytecode generation ============== -->
+            <dependency>
+                <groupId>org.javassist</groupId>
+                <artifactId>javassist</artifactId>
+                <version>${javassist.version}</version>
+            </dependency>
+
+            <!-- ============== Testing ============== -->
+            <!-- JUnit 5 (Jupiter) — new code uses this -->
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter</artifactId>
+                <version>${junit-jupiter.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <!-- JUnit 4 — legacy tests still in jainslee-core / jainslee-scheduler /
+                              jainslee-apt / jainslee-ra-spi / ras/ / adapters/ -->
+            <dependency>
+                <groupId>junit</groupId>
+                <artifactId>junit</artifactId>
+                <version>${junit.version}</version>
+                <scope>test</scope>
+            </dependency>
+
+            <!-- ============== Structured JSON logging ============== -->
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-api</artifactId>
+                <version>${log4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-core</artifactId>
+                <version>${log4j.version}</version>
+            </dependency>
+            <!-- JsonTemplateLayout — required for log4j2 JSON output (P1.3) -->
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-layout-template-json</artifactId>
+                <version>${log4j.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <!-- ============================================================ -->
+    <!--  Build — keep the BOM lightweight (no sources, no tests)    -->
+    <!-- ============================================================ -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <skipMain>true</skipMain>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

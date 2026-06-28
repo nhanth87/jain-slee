@@ -36,4 +36,22 @@ public interface ResourceAdaptorContext {
     default SleeEndpointPort getSleeEndpointPort() {
         return null;
     }
+
+    /**
+     * Optional escape hatch for RAs that need to route an event onto an
+     * already-resolved {@link com.microjainslee.api.ActivityContextInterface}
+     * — e.g. to publish a response event onto a different ACI than the
+     * request event used. Mirrors
+     * {@code MicroSleeContainer.routeEvent(SleeEvent, ActivityContextInterface)}.
+     * <p>
+     * Default {@code null} — the canonical {@code SleeEndpointPort} surface
+     * is {@link SleeEndpointPort#fireEvent} (handle-based) which already
+     * covers the common case. Implementations that have a back-reference
+     * to the live container (e.g. {@code RaBootstrapContextImpl}) return it
+     * from this method; the {@code AbstractResourceAdaptor} base class
+     * exposes it via a protected {@code container()} helper for subclasses.
+     */
+    default Object getContainer() {
+        return null;
+    }
 }

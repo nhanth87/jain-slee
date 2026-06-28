@@ -74,6 +74,22 @@ public class EventRouter {
      */
     private volatile Method executeInTransactionMethod;
 
+    /**
+     * Perfect Core S3 — Initial Event Selector dispatcher (typed as
+     * {@link Object} so {@code jainslee-core} does not pull in a compile-time
+     * edge to {@code com.microjainslee.core.ies}). Bound by
+     * {@link #bindInitialEventSelectorDispatcher(Object)}. When {@code null}
+     * the router skips IES and falls back to its legacy allocate-per-event
+     * behaviour.
+     */
+    private volatile Object iesDispatcher;
+
+    /**
+     * Cached reflective handle for {@code iesDispatcher.resolveTarget(...)}.
+     * Looked up once at bind-time.
+     */
+    private volatile Method iesResolveTargetMethod;
+
     public EventRouter(int bufferSize) {
         this(bufferSize, false, false);
     }
@@ -178,6 +194,107 @@ public class EventRouter {
         this.executeInTransactionMethod = m;
         LOG.info("EventRouter bound to JTA transaction context: {}",
                 txContext.getClass().getName());
+    }
+
+    /**
+     * Perfect Core S3 — bind an Initial Event Selector dispatcher so the
+     * router can resolve the correct SBB entity for incoming events.
+     *
+     * <p>The dispatcher is typed as {@link Object} so the kernel does not
+     * pull in a compile-time edge to
+     * {@code com.microjainslee.core.ies.InitialEventSelectorDispatcher}.
+     * The runtime contract is:
+     * <ul>
+     *   <li>{@code dispatcher} may be {@code null} — disables IES; router
+     *       keeps its legacy allocate-per-event behaviour.</li>
+     *   <li>Otherwise the class name MUST equal
+     *       {@code com.microjainslee.core.ies.InitialEventSelectorDispatcher}
+     *       and MUST expose a public method
+     *       {@code String resolveTarget(Object, ActivityContextInterface, Class)}.</li>
+     * </ul>
+     *
+     * <p>Bound by
+     * {@link com.microjainslee.core.MicroSleeContainer#setInitialEventSelectorDispatcher(Object)}
+     * at container start time.
+     */
+    public void bindInitialEventSelectorDispatcher(Object dispatcher) {
+        if (dispatcher == null) {
+            this.iesDispatcher = null;
+            this.iesResolveTargetMethod = null;
+            LOG.info("EventRouter IES dispatcher cleared");
+            return;
+        }
+        if (!"com.microjainslee.core.ies.InitialEventSelectorDispatcher"
+                .equals(dispatcher.getClass().getName())) {
+            throw new IllegalArgumentException(
+                    "IES dispatcher must be com.microjainslee.core.ies.InitialEventSelectorDispatcher, got: "
+                            + dispatcher.getClass().getName());
+        }
+        Method m;
+        try {
+            m = dispatcher.getClass().getMethod("resolveTarget",
+                    Object.class, ActivityContextInterface.class, Class.class);
+        } catch (NoSuchMethodException nsme) {
+            throw new IllegalArgumentException(
+                    "IES dispatcher must expose resolveTarget(Object, ActivityContextInterface, Class): "
+                            + dispatcher.getClass().getName(), nsme);
+        }
+        this.iesDispatcher = dispatcher;
+        this.iesResolveTargetMethod = m;
+        LOG.info("EventRouter bound to IES dispatcher: {}", dispatcher.getClass().getName());
+    }
+
+    /**
+     * Returns the currently-bound IES dispatcher (may be {@code null}).
+     * Visible for tests.
+     */
+    public Object getInitialEventSelectorDispatcher() {
+        return iesDispatcher;
+    }
+
+    /**
+     * Perfect Core S3 — resolve the target SBB entity for an incoming event
+     * using the bound IES dispatcher (if any).
+     *
+     * <ul>
+     *   <li>If no dispatcher is bound → returns {@code null} and the caller
+     *       should fall back to legacy allocate-per-event routing.</li>
+     *   <li>If the dispatcher returns {@code null} → event is silently
+     *       dropped per spec §7.5.5.</li>
+     *   <li>Otherwise the returned entity id is used as the dispatch target.</li>
+     * </ul>
+     *
+     * @param event          incoming event object
+     * @param aci            activity context interface
+     * @param targetSbbClass SBB class registered for this event type
+     * @return entity id, or {@code null} if no dispatcher is bound or the
+     *         event should be dropped
+     */
+    public String routeIncomingEvent(Object event, ActivityContextInterface aci,
+                                     Class<?> targetSbbClass) {
+        Object dispatcher = this.iesDispatcher;
+        Method m = this.iesResolveTargetMethod;
+        if (dispatcher == null || m == null) {
+            // No IES bound → caller should fall back to legacy routing.
+            return null;
+        }
+        try {
+            Object result = m.invoke(dispatcher, event, aci, targetSbbClass);
+            if (result == null) {
+                LOG.debug("IES dropped event {} (non-initial, no matching entity)",
+                        event == null ? "<null>" : event.getClass().getSimpleName());
+                return null;
+            }
+            return result.toString();
+        } catch (InvocationTargetException ite) {
+            LOG.error("IES dispatcher threw for event {} — dropping",
+                    event == null ? "<null>" : event.getClass().getSimpleName(),
+                    ite.getTargetException());
+            return null;
+        } catch (ReflectiveOperationException roe) {
+            LOG.error("IES dispatcher invocation failed", roe);
+            return null;
+        }
     }
 
     public void routeEvent(SleeEvent event, ActivityContextInterface aci) {

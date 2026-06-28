@@ -885,6 +885,33 @@ public final class MicroSleeContainer {
         this.initialEventSelectorCustomizer = customizer;
     }
 
+    /**
+     * Perfect Core S3 — bind an {@code com.microjainslee.core.ies.InitialEventSelectorDispatcher}
+     * so the {@link EventRouter} routes events through Initial Event Selection
+     * (convergence-name lookup) instead of allocating a fresh entity per event.
+     *
+     * <p>The dispatcher is typed as {@link Object} so the kernel does not pull
+     * in a compile-time edge to the {@code ies} package. The runtime contract
+     * is the same as
+     * {@link EventRouter#bindInitialEventSelectorDispatcher(Object)}:
+     * class name MUST equal {@code com.microjainslee.core.ies.InitialEventSelectorDispatcher}
+     * and MUST expose {@code String resolveTarget(Object, ActivityContextInterface, Class)}.
+     *
+     * <p>Idempotent: rebinding replaces the previous dispatcher. Passing
+     * {@code null} clears the binding and restores the legacy
+     * allocate-per-event behaviour.
+     */
+    public void setInitialEventSelectorDispatcher(Object dispatcher) {
+        if (dispatcher != null
+                && !"com.microjainslee.core.ies.InitialEventSelectorDispatcher"
+                        .equals(dispatcher.getClass().getName())) {
+            throw new IllegalArgumentException(
+                    "IES dispatcher must be com.microjainslee.core.ies.InitialEventSelectorDispatcher, got: "
+                            + dispatcher.getClass().getName());
+        }
+        eventRouter.bindInitialEventSelectorDispatcher(dispatcher);
+    }
+
     public void routeEvent(SleeEvent event, ActivityContextInterface aci) {
         if (aci instanceof InMemoryActivityContext) {
             InMemoryActivityContext activityContext = (InMemoryActivityContext) aci;

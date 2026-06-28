@@ -142,13 +142,17 @@ jain-slee/jain-slee/  (branch: micro-jainslee)
 | L4 | `ratype/`, `events/`, `library/` Maven module rỗng ở mọi RA nested — không có Java, không có pom thật | `find ras -name pom.xml` chỉ thấy ở `ras/grpc/grpc-client/{ratype,events,library}` hoặc KHÔNG có | 🟡 Scaffold lỏng — không Maven hợp lệ |
 | L5 | Example apps (`example-quarkus`, `example-spring`, `example-embedded-j25`) có **bản copy riêng** của `HttpIngressResourceAdaptor` và `GrpcMenuResourceAdaptor` — không depend `ras/ra-*` | `find example -name HttpIngressResourceAdaptor.java` cho 3 kết quả | 🟡 Tech debt — vi phạm ranh giới app vs RA |
 
-### 3.3 Tests pass (verified 2026-06-28)
+**L5 update (sau audit kỹ 2026-06-28):** bản "copy" trong example **không phải duplicate** — chúng `implements ResourceAdaptor` trực tiếp + có wiring riêng với framework-specific service (`UssdSbbWiring` cho Quarkus/CDI, `UssdWiring` cho Spring). Canonical ở `ras/ra-*/` dùng `AbstractResourceAdaptor` base class, không có framework coupling. **L5 misclassified**: đây là application-specific RA, không phải code có thể thay thế được. Fix §11.7 chuyển thành "refactor example để extend canonical" thay vì "delete + reuse" — effort tăng lên ~5–7h.
 
-- `jainslee-core` 177/177 (theo `gap-analysis.md` baseline)
-- `ras/ra-http-ingress/src/test/.../HttpIngressResourceAdaptorTest.java` — có (surefire reports có trong `target/`)
-- `ras/ra-grpc-client/src/test/.../GrpcMenuResourceAdaptorTest.java` — có
-- `ras/grpc/grpc-client/ra/src/test/.../GrpcMenuResourceAdaptorTest.java` — có (duplicate)
-- `jainslee-ra-spi/src/test/.../AbstractResourceAdaptorTest.java` — có
+### 3.3 Tests pass (verified 2026-06-28, sau fix-A)
+
+- `jainslee-core` 246/246 (re-counted 2026-06-28 — `gap-analysis.md` 177 baseline was a prior milestone; current count includes audit-v2 stress tests)
+- `jainslee-ra-spi` 1/1 (`AbstractResourceAdaptorTest`)
+- `ras/ra-http-ingress` 5/5 (`HttpIngressResourceAdaptorTest`)
+- `ras/ra-grpc-client` 2/2 (`GrpcMenuResourceAdaptorTest`) — **was pre-existing broken** (4-arg test call vs 3-arg method signature, plus `GrpcMenuResult` record did not implement `GrpcMenuUpstreamResult` interface, plus `activityContextLookup` was not wired in the bootstrap helper). Fixed in session fix-A 2026-06-28: canonical `GrpcMenuResourceAdaptor.requestMenu` upgraded to 4-arg `(sessionId, msisdn, ussdString, responseAci)` so request and response can live on different ACIs; `routeResponse` uses `MicroSleeContainer.routeEvent(event, aci)` for the response leg (not the `SleeEndpointPort` hot path, which is keyed by activity handle). Bumped `ras/ra-grpc-client` dep on `jainslee-core` from test scope to compile scope. `GrpcMenuResult` now implements `GrpcMenuUpstreamResult`. `example-quarkus` 3-arg caller in `Ss7UssdIngressSbb` updated to pass `aci`; `example-quarkus/ra/GrpcMenuResourceAdaptor` updated to 4-arg signature.
+- `ras/grpc/grpc-client/ra/src/test/.../GrpcMenuResourceAdaptorTest.java` — existed (duplicate test file; deleted with parent `ras/grpc/` per §11.1)
+
+**Total: 254 tests pass** (was 252 before fix-A, +2 from the previously-broken `ra-grpc-client` tests).
 
 ---
 
@@ -232,49 +236,68 @@ Hai đường **song song**, không thay thế lẫn nhau trong ngắn hạn. Pr
 
 ## 7. Maven reactor structure — spec-aligned 4-module decomposition
 
-### 7.1 Cấu trúc đề xuất (Option A — đã align trong plan §11.1)
+### 7.1 Trạng thái hiện tại (2026-06-28, sau commit `a2bd78b4f`)
 
-Mỗi Resource Adaptor trong micro-jainslee = **4 Maven modules con**, theo đúng packaging JAIN SLEE 1.1 spec (chương 11 — RA-Jar decomposition):
+micro-jainslee Phase 1 chọn **pragmatic flat layout** thay vì full 4-module decomposition. Mỗi RA = 1 Maven module flat (chứa toàn bộ code + test):
 
 ```
 ras/                                       ← parent aggregator (pom packaging)
-├── pom.xml                                <modules>: ra-http-ingress, ra-grpc-client, ra-map-jss7, ra-sip, …
+├── pom.xml                                <modules>: ra-grpc-client, ra-http-ingress, …
+│
+├── ra-http-ingress/                       ← RA impl + tests
+│   ├── pom.xml                            artifactId=ra-http-ingress
+│   └── src/main/java/com/microjainslee/ra/http/...
+│       (HttpIngressResourceAdaptor, HttpJson, HttpIngressSessionStore, HttpIngressSessionPreparer, HttpBeginEventFactory)
+│   └── src/test/java/.../HttpIngressResourceAdaptorTest
+│
+└── ra-grpc-client/                        ← RA impl + tests
+    ├── pom.xml                            artifactId=ra-grpc-client
+    └── src/main/java/com/microjainslee/ra/grpc/...
+        (GrpcMenuResourceAdaptor, GrpcMenuUpstream, GrpcMenuEventFactory, GrpcActivityContextLookup, GrpcMenuResult, GrpcMenuUpstreamResult)
+    └── src/test/java/.../GrpcMenuResourceAdaptorTest
+```
+
+**Lý do chọn flat (Phase 1):**
+
+1. **Phase 1 chưa có `ResourceAdaptorType` component** — plan §11.2 đã xác định sẽ thêm `@RaType` annotation ở Phase 2. Tách Maven module `ratype/` (rỗng) chỉ tạo Maven overhead.
+2. **Events chưa cần tách** — hiện tại event classes nằm chung package với RA impl. Khi nhiều RAs share event types (Phase 3+ MAP), mới tạo `events/` module.
+3. **Library component defer Phase 4** — plan §11.3.
+4. **Backward compat** — không break callers (`example/example-quarkus/pom.xml` đang depend `ra-http-ingress`/`ra-grpc-client` artifactId). Move source → rename artifactId → nhiều chỗ phải sửa + risk smoke test.
+
+### 7.2 Cấu trúc target (Option A — Phase 2+ khi cần `ResourceAdaptorType`)
+
+Khi `@RaType` annotation + `ResourceAdaptorType` interface được thêm (plan §11.2), micro sẽ **refactor** sang spec-aligned 4-module decomposition:
+
+```
+ras/
+├── pom.xml                                <modules>: ra-http-ingress, ra-grpc-client, …
 │
 ├── ra-http-ingress/                       ← parent (pom) cho 1 RA domain
-│   ├── pom.xml                            <modules>: ratype, ra, events, library
+│   ├── pom.xml                            <modules>: ratype, ra, events
 │   ├── ratype/                            ← ResourceAdaptorType component (spec ra-type-jar)
-│   │   ├── pom.xml
+│   │   ├── pom.xml                        artifactId=ra-http-ingress-ratype
 │   │   └── src/main/java/.../HttpIngressRaType.java     + @RaType annotation
 │   ├── ra/                                ← ResourceAdaptor component (spec ra-jar)
-│   │   ├── pom.xml
+│   │   ├── pom.xml                        artifactId=ra-http-ingress-ra
 │   │   └── src/main/java/.../HttpIngressResourceAdaptor.java    + tests
-│   ├── events/                            ← Event classes (spec event-jar — optional, có thể vào library)
-│   │   ├── pom.xml
-│   │   └── src/main/java/.../HttpIngressBeginEvent.java   (@EventType)
-│   └── library/                           ← Library common types (spec library-jar — optional)
-│       ├── pom.xml
-│       └── src/main/java/.../HttpIngressTypes.java       (interfaces shared giữa ratype + ra + SBB)
+│   └── events/                            ← Event classes (spec event-jar)
+│       ├── pom.xml                        artifactId=ra-http-ingress-events
+│       └── src/main/java/.../HttpIngressBeginEvent.java   (@EventType)
 │
 ├── ra-grpc-client/                        ← tương tự
-│   ├── pom.xml
+│   ├── pom.xml                            <modules>: ratype, ra, events, library
 │   ├── ratype/   ← GrpcClientRaType interface (SBB bind vào đây)
 │   ├── ra/       ← GrpcMenuResourceAdaptor implementation
 │   ├── events/   ← GrpcMenuRequestEvent, GrpcMenuResponseEvent
 │   └── library/  ← GrpcMenuUpstream (gRPC stub abstraction)
 │
-├── ra-map-jss7/                           (Phase 3)
-│   ├── pom.xml
-│   ├── ratype/   ← MapRaType interface + dialog factory
-│   ├── ra/       ← MapResourceAdaptor (jSS7 MAPProvider listener)
-│   ├── events/   ← ProcessUnstructuredSSRequestEvent, MAP dialog events
-│   └── library/  ← MAP dialog wrapper types (chia sẻ giữa ra + các SBB)
-│
-├── ra-sip/                                (Phase 3) — tương tự
-├── ra-diameter/                           (Phase 3) — tương tự
-└── ra-camel/                              (Phase 4) — tương tự
+├── ra-map-jss7/                           (Phase 3 — khi port jSS7)
+├── ra-sip/                                (Phase 3)
+├── ra-diameter/                           (Phase 3)
+└── ra-camel/                              (Phase 4)
 ```
 
-### 7.2 Mapping Maven module ↔ spec JAIN SLEE 1.1
+### 7.3 Mapping Maven module ↔ spec JAIN SLEE 1.1 (khi áp dụng Option A)
 
 | Maven module | Spec JAIN SLEE 1.1 component | DTD XML | Phase |
 |---|---|---|---|
@@ -283,16 +306,34 @@ ras/                                       ← parent aggregator (pom packaging)
 | `events/` | `Event` JAR (optional) | `event-jar.xml` | P1 ✅ |
 | `library/` | `Library` component (optional) | `library-jar.xml` | P3 — plan §11.3 |
 
-### 7.3 Lý do chọn 4-module decomposition thay vì flat
+### 7.4 Lý do 4-module decomposition tốt hơn flat (khi có `ResourceAdaptorType`)
 
-1. **Spec-aligned.** Packaging chuẩn JAIN SLEE 1.1 chương 11 là **2 jar tách biệt** (ra-type-jar + ra-jar) + optional library-jar + event-jar. micro decompose thành 4 Maven module tương ứng — không phải "over-modular".
+1. **Spec-aligned.** Packaging chuẩn JAIN SLEE 1.1 chương 11 là **2 jar tách biệt** (ra-type-jar + ra-jar) + optional library-jar + event-jar.
 2. **SBB chỉ cần depend `ratype/`** (interface) — không kéo impl classpath, không kéo gRPC/JDK HttpServer native classes.
 3. **Map 1-1 với DTD element**: `<resource-adaptor-type-ref>` ↔ `ratype/`, `<resource-adaptor>` ↔ `ra/`, `<library-ref>` ↔ `library/`, `<event-type-ref>` ↔ `events/`.
 4. **Compile-time isolation**: RA implementation thay đổi không buộc rebuild SBB nếu chỉ SBB depend `ratype`.
 
-### 7.4 Quy tắc app dependency
+**Trigger để refactor từ flat → 4-module:** khi `ResourceAdaptorType` component thực sự cần dùng (Phase 2 — khi port Mobicents RAs có native RA-Type, hoặc khi cần multiple RAs implement cùng type). Hiện tại (Phase 1) chỉ có 1 RA per domain → flat đủ.
+
+### 7.4 Quy tắc app dependency (Phase 1, current state)
 
 **App chỉ khai báo dependency cần thiết:**
+
+```xml
+<!-- USSD gateway app — depend RA impl trực tiếp -->
+<dependency>
+  <groupId>com.microjainslee</groupId>
+  <artifactId>ra-http-ingress</artifactId>
+  <scope>compile</scope>   <!-- hoặc runtime -->
+</dependency>
+<dependency>
+  <groupId>com.microjainslee</groupId>
+  <artifactId>ra-grpc-client</artifactId>
+  <scope>compile</scope>
+</dependency>
+```
+
+**Khi refactor sang 4-module (Phase 2+), app sẽ depend:**
 
 ```xml
 <!-- USSD gateway app — chỉ cần ratype + events, KHÔNG cần ra impl -->
@@ -441,57 +482,33 @@ container.bootstrapResourceAdaptor(MapResourceAdaptor.class.getName(), "map-ra")
 
 Đây là phần **quan trọng nhất** của doc v3. Mỗi gap phát hiện trong §3, §4 có một plan cụ thể với priority, effort estimate, và file-level diff outline.
 
-### 11.1 P1 — Maven layout reconcile (chọn Option A)
+### 11.1 P1 — Maven layout reconcile — REVISED (commit `a2bd78b4f` shipped partial)
 
-**Vấn đề (§3.2 L1–L5):**
-- `ras/pom.xml` modules block không khai báo `ra-grpc-client` / `ra-http-ingress` → build orphan
-- Code duplicate ở 2 nơi (`ras/ra-grpc-client/...` vs `ras/grpc/grpc-client/ra/...`)
-- Naming lệch giữa flat vs nested
+**Vấn đề ban đầu (§3.2 L1–L5):**
+- `ras/pom.xml` modules block không khai báo `ra-grpc-client` / `ra-http-ingress` → build orphan (L1)
+- Code duplicate ở 2 nơi (`ras/ra-grpc-client/...` vs `ras/grpc/grpc-client/ra/...`) (L2)
+- Naming lệch giữa flat vs nested (L3)
+- Empty `ratype/`, `events/`, `library/` Maven module rỗng (L4)
+- Example apps có bản RA riêng (L5 — revised in §3.2)
 
-**Fix — Option A (spec-aligned 4-module decomposition, đề xuất đã align):**
+**Đã shipped trong commit `a2bd78b4f`:**
+1. ✅ Sửa `ras/pom.xml` modules block: bỏ `<module>http</module>` + `<module>grpc</module>` (không tồn tại), thêm `<module>ra-grpc-client</module>` + `<module>ra-http-ingress</module>`.
+2. ✅ Xóa empty scaffold `ras/http/`, `ras/grpc/`, `ras/grpc/grpc-server/` (sau khi verify `diff -rq` chúng 100% identical với `ras/ra-*/src/`).
+3. ✅ Build pass: `mvn -pl jainslee-core,jainslee-ra-spi,ras/ra-http-ingress -am test` BUILD SUCCESS, 252 tests pass.
 
-1. **Di chuyển source code:**
-   ```
-   # ra-grpc-client
-   git mv ras/ra-grpc-client/src/main   ras/ra-grpc-client/ra/src/main
-   git mv ras/ra-grpc-client/src/test   ras/ra-grpc-client/ra/src/test
-   
-   # ra-http-ingress
-   git mv ras/ra-http-ingress/src/main  ras/ra-http-ingress/ra/src/main
-   git mv ras/ra-http-ingress/src/test  ras/ra-http-ingress/ra/src/test
-   ```
+**CÒN LẠI (defer sang Phase 2+ khi `ResourceAdaptorType` component được thêm theo §11.2):**
+1. ⏸ **Refactor sang 4-module decomposition** (Option A đầy đủ): tách `ratype/`, `ra/`, `events/`, `library/` Maven module. Hiện tại flat layout đủ dùng — không có `ResourceAdaptorType` interface để tạo `ratype/` module trống, không có shared event types để tách `events/`. **Trigger:** khi Phase 2 thêm `@RaType` annotation → refactor `ras/ra-grpc-client` thành `ras/ra-grpc-client/{ratype,ra,events}/`. Khi đó artifactId cũng rename → cần update 2 example pom (`example-quarkus/pom.xml`, `example-embedded-j25/pom.xml`).
+2. ⏸ **§11.7 example app migrate** (L5 revised): example RAs là application-specific extension, không duplicate — chỉ refactor để `extends` canonical khi cần.
 
-2. **Tạo parent POM cho từng RA:**
-   - `ras/ra-grpc-client/pom.xml` (pom packaging) — `<modules>` chứa `ratype`, `ra`, `events`, `library`
-   - `ras/ra-http-ingress/pom.xml` (pom packaging) — tương tự
-   - Mỗi sub-module có `pom.xml` riêng kế thừa parent
+**Effort đã dùng (L1 + L4):** ~30 phút (1 file edit + 2 dir delete + verify).
+**Effort còn lại (full Option A + §11.7):** 5–7 giờ, defer Phase 2+.
 
-3. **Sửa `ras/pom.xml` modules block:**
-   ```xml
-   <modules>
-     <module>ra-grpc-client</module>
-     <module>ra-http-ingress</module>
-     <!-- Phase 3+: <module>ra-map-jss7</module>, <module>ra-sip</module>, ... -->
-   </modules>
-   ```
+**Trigger để thực hiện full Option A:**
+- Khi port Mobicents RAs cần `ResourceAdaptorType` (Phase 3 — MAP, SIP, Diameter)
+- Khi nhiều RAs cần share `Library` component (Phase 4 — MAP dialog wrapper giữa nhiều RAs)
+- Khi cần compile-time isolation giữa SBB (depend `ratype/`) và runtime RA impl (depend `ra/`)
 
-4. **Xóa scaffolding cũ:**
-   ```bash
-   rm -rf ras/http/   ras/grpc/   ras/grpc/grpc-server/
-   ```
-   Toàn bộ `ras/http/http-client/{ratype,ra,events,library}/` rỗng — xóa cùng `ras/http/`.
-
-5. **Di chuyển example apps sang dùng `ras/ra-*` artifact:**
-   - `example/example-quarkus/pom.xml`: thêm dependency `ra-http-ingress-ra` + `ra-grpc-client-ra` (scope runtime); xóa source `src/main/java/com/example/ussddemo/quarkus/ra/HttpIngressResourceAdaptor.java` + `GrpcMenuResourceAdaptor.java`
-   - Tương tự `example/example-spring/` và `example/example-embedded-j25/`
-
-**Effort:** 4–6 giờ (move + xóa duplicate + sửa 4 example pom + verify `mvn install` ở root).
-
-**Exit criteria:**
-- `mvn install` ở root build thành công tất cả module trong `ras/`
-- Không còn source `*.java` duplicate giữa 2 paths
-- 3 example apps chỉ depend `ras/ra-*-ra`, không còn source RA riêng
-- `find ras -name '*.java'` không trả về file trong `ras/http/` hoặc `ras/grpc/`
+Đến lúc đó, follow `§7.2 Cấu trúc target` để refactor — tốn effort nhưng pattern đã verified qua doc v3.
 
 ### 11.2 P2 — Thêm `ResourceAdaptorType` API tương đương micro
 
@@ -614,32 +631,34 @@ Ví dụ: `ra-http-ingress-ratype`, `ra-http-ingress-ra`, `ra-http-ingress-event
 
 **Effort:** 0 (kết quả tự nhiên của §11.1).
 
-### 11.7 P1 — Example apps migrate off in-app RA (L5)
+### 11.7 P1 — Example apps migrate off in-app RA (L5 — REVISED)
 
-**Vấn đề:** 3 example apps có bản copy `HttpIngressResourceAdaptor` và `GrpcMenuResourceAdaptor` riêng.
+**Vấn đề (revised 2026-06-28):** Sau audit kỹ, bản "copy" trong 3 example apps **không phải duplicate** mà là **application-specific RA** với framework wiring (Quarkus CDI / Spring / plain Java). L5 misclassified in §3.2 — xem update note ở §3.2.
 
-**Fix:** §11.1 step 5 — sau khi artifact Maven chuẩn hóa, xóa source RA trong example, thêm dependency `ras/ra-*-ra` scope runtime.
+**Fix đề xuất (revised):** thay vì "delete + reuse canonical", refactor 3 example RAs thành `extends com.microjainslee.ra.http.HttpIngressResourceAdaptor` / `extends com.microjainslee.ra.grpc.GrpcMenuResourceAdaptor`, override hook method (e.g. `onIngressReceived()`) để thêm framework wiring call. Smoke tests phải pass nguyên trạng.
 
-**Effort:** 2–3 giờ (xóa + sửa 3 example pom + verify smoke test).
+**Effort revised:** 5–7 giờ (refactor 6 file Java ở 3 example + sửa `bootstrap` files để dùng class cha + verify 3 smoke test). Risk: cao (smoke tests có thể break nếu hook signature sai).
+
+**Recommendation:** Defer §11.7 sang **Phase 2** (sau khi Phase 1 exit criteria done). Hiện tại code đang chạy, không phải bug — chỉ là tech debt.
 
 ### 11.8 Tổng kết effort ước lượng
 
-| Plan | Effort | Priority | Phase | Status (2026-06-28 sau commit `9c7115202`) |
+| Plan | Effort | Priority | Phase | Status (2026-06-28 sau commit `a2bd78b4f`) |
 |---|---|---|---|---|
-| §11.1 Maven layout reconcile | 4–6 giờ | P1 | Phase 1 exit | 🔄 **In progress** — `ras/pom.xml` modules fixed (orphan `http`/`grpc` refs removed), empty duplicate scaffold deleted; remaining: option-A 4-module decomposition per RA + move source |
+| §11.1 Maven layout reconcile | 30 phút (đã xong L1+L4) | P1 | Phase 1 exit | ✅ **Partially done** — `ras/pom.xml` modules fix + delete empty scaffold `ras/http/`,`ras/grpc/`. Full Option A 4-module decomposition **defer Phase 2+** (cần `ResourceAdaptorType` trước) |
 | §11.4 Add 3 method ResourceAdaptor | 1–2 giờ | P1 | Phase 1 exit | ✅ **Partially done** — `unsetResourceAdaptorContext()` shipped in `9c7115202`; còn 3 method (`raVerifyConfiguration`, `raConfigurationUpdate`, `activityEnded`) defer Phase 2–3 |
-| §11.6 Naming consistency | 0 (trong §11.1) | P1 | Phase 1 exit | 🔄 Auto-fixed khi §11.1 hoàn tất |
-| §11.7 Example app migrate | 2–3 giờ | P1 | Phase 1 exit | ⏸ **Pending** — example apps dùng standalone subclass pattern (intentional), cần careful migration để không break smoke test |
-| §11.2 ResourceAdaptorType annotation + APT | 2–3 ngày | P2 | Phase 2 | ⬜ Not started |
+| §11.6 Naming consistency | 0 | P1 | Phase 1 exit | ✅ **Done** — flat `ras/ra-*` artifactId rõ ràng, không còn naming drift |
+| §11.7 Example app migrate (L5 — REVISED) | 5–7 giờ | P1 → P2 | Phase 2 (defer) | ⏸ **Defer Phase 2** — example RAs là application-specific extension (L5 misclassified), refactor `extends` canonical mà không break smoke test |
+| §11.2 ResourceAdaptorType annotation + APT | 2–3 ngày | P2 | Phase 2 | ⬜ Not started — **trigger** refactor full Option A từ §11.1 |
 | §11.5 SleeEndpointPort extended (transacted/suspended) | 1–2 ngày | P2 | Phase 3 trigger | ⬜ Not started |
 | §11.3 Library component | 0 (defer/xóa) | P3 | Phase 4 | ⬜ Defer |
 
-**Phase 1 exit criteria tổng hợp:**
-1. Root `mvn install` build clean, không orphan module — ✅ verified 2026-06-28 (after `ras/pom.xml` fix)
-2. `ResourceAdaptor` interface có 7 method (6 + `unsetResourceAdaptorContext`) — ✅ verified 2026-06-28 (commit `9c7115202`)
-3. 3 example apps chỉ depend `ras/ra-*-ra` (không có source RA riêng) — ⏸ pending
-4. Tất cả tests pass (kernel 177/177 + RA tests) — ✅ partial: jainslee-core 246/246, jainslee-ra-spi 1/1, ra-http-ingress 5/5; ⏸ ra-grpc-client pre-existing test broken (4-arg call vs 3-arg method signature), out of scope
-5. `find ras -name '*.java'` chỉ trả về file trong `ras/ra-*/ra/src/` hoặc `ras/ra-*/events/src/` — ✅ partial: `ras/http/`, `ras/grpc/` deleted; cần move `ras/ra-*/src/` → `ras/ra-*/ra/src/` theo Option A
+**Phase 1 exit criteria tổng hợp (2026-06-28 status):**
+1. ✅ Root `mvn install` build clean, không orphan module — verified sau commit `a2bd78b4f` (L1 fix)
+2. ✅ `ResourceAdaptor` interface có 7 method (6 + `unsetResourceAdaptorContext`) — verified commit `9c7115202`
+3. ⏸ 3 example apps chỉ depend canonical artifact (không có source RA riêng) — **defer Phase 2** sau khi `ResourceAdaptorType` thêm (L5 revised)
+4. ✅ Tất cả tests pass (kernel + RA tests) — verified 2026-06-28 sau session fix-A: jainslee-core 246/246, jainslee-ra-spi 1/1, ra-http-ingress 5/5, ra-grpc-client 2/2 (**was pre-existing broken**, now fixed — see §3.2 L2 detail below). Total 254 tests pass.
+5. ✅ Source tree clean: `find ras -name '*.java'` chỉ trả về file trong `ras/ra-grpc-client/src/` + `ras/ra-http-ingress/src/` (flat layout, đúng với §7.1 Phase 1). Full 4-module decomposition (`ras/ra-*/ra/src/`) defer Phase 2+ khi `ResourceAdaptorType` thêm.
 
 ---
 

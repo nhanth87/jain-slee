@@ -28,13 +28,24 @@ import com.microjainslee.api.TimerPort;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.microjainslee.core.removal.EntityRemovalBus;
+import com.microjainslee.core.removal.EntityRemovalEvent;
+import com.microjainslee.core.removal.EntityRemovalEvent.RemovalReason;
+import com.microjainslee.core.removal.SessionLifecycleLogger;
+
 import java.io.File;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * Embedded JAIN-SLEE micro-container foundation with no JBoss Modules, VFS, MSC, or JMX dependency.
@@ -78,6 +89,25 @@ public final class MicroSleeContainer {
     private volatile State state = State.CREATED;
     private volatile ClassLoader deploymentClassLoader;
     private volatile InitialEventSelectorCustomizer initialEventSelectorCustomizer;
+
+    // Sprint S6 — Observability & Removal Notification.
+    private final EntityRemovalBus entityRemovalBus = new EntityRemovalBus();
+    private final AtomicLong entityRemovalCounter = new AtomicLong();
+    /**
+     * Sprint S6 — IES dispatcher reference (typed via reflection at bind time
+     * so {@code MicroSleeContainer} does not pull a compile-time edge to the
+     * {@code ies} package). Used to (a) capture the convergence key right
+     * before an entity is released, and (b) wire
+     * {@link VirtualThreadSbbEntityPool.IesCleanupAdapter} on the
+     * {@link EntityRemovalBus} when the dispatcher is bound.
+     */
+    private volatile Object iesDispatcher;
+    /**
+     * Sprint S6 — structured lifecycle logger auto-registered during
+     * {@link #start()} and removed during {@link #stop()} to avoid
+     * leaking subscribers across stop/start cycles.
+     */
+    private volatile SessionLifecycleLogger sessionLifecycleLogger;
     // Production P2.1 — optional cluster manager. Bound reflectively by
     // #bindCluster(Object) when MicroSleeConfiguration.isClusterEnabled() is
     // true. Stored as java.lang.Object so the kernel stays free of any
@@ -510,6 +540,14 @@ public final class MicroSleeContainer {
         CmpFieldStoreLocator.set(cmpFieldStore);
         sbbEntityPool.prewarm(sbbEntityPool.getMin());
         state = State.STARTED;
+        // Sprint S6 — register the structured lifecycle logger on the
+        // removal bus. Registered exactly once per start() call; the
+        // stop() method unsubscribes so we never leak listeners across
+        // stop/start cycles.
+        if (this.sessionLifecycleLogger == null) {
+            this.sessionLifecycleLogger = new SessionLifecycleLogger();
+            entityRemovalBus.subscribe(this.sessionLifecycleLogger);
+        }
         // Production P2.1 — bring up the JGroups transport (in cluster mode)
         // after the kernel has finished its own start sequence. Bound
         // before autoDeployFromClasspathIndex() so SBBs that consult
@@ -558,6 +596,12 @@ public final class MicroSleeContainer {
         entityTypesById.clear();
         CmpFieldStoreLocator.set(null);
         profileFacility.shutdown();
+        // Sprint S6 — unsubscribe the structured lifecycle logger so a
+        // subsequent start() registers a fresh subscriber (no double-fire).
+        if (this.sessionLifecycleLogger != null) {
+            entityRemovalBus.unsubscribe(this.sessionLifecycleLogger);
+            this.sessionLifecycleLogger = null;
+        }
         // Production P2.1 — release JGroups threads + Infinispan resources
         // after the kernel has finished its own teardown. invokeStopOn... is
         // best-effort: a failure is logged but never thrown, so the
@@ -666,6 +710,23 @@ public final class MicroSleeContainer {
         if (localObject != null && !localObject.isRemoved()) {
             localObject.remove();
         }
+    }
+
+    /**
+     * Sprint S9.2 — return the {@link SimpleSbbLocalObject} registered
+     * against {@code sbbId}, or {@code null} when no entity has been
+     * registered with that id. Used by the cluster rehydration path
+     * (DistributedSbbEntityPool.applySnapshot) to look up the freshly
+     * reconstructed entity before re-attaching it to its ACIs.
+     *
+     * @param sbbId the SBB entity id (may be {@code null})
+     * @return the local object, or {@code null}
+     */
+    public SimpleSbbLocalObject getSbbLocalObject(String sbbId) {
+        if (sbbId == null) {
+            return null;
+        }
+        return sbbs.get(sbbId);
     }
 
     public SbbTypeRegistry getSbbTypeRegistry() {
@@ -1058,6 +1119,110 @@ public final class MicroSleeContainer {
                             + dispatcher.getClass().getName());
         }
         eventRouter.bindInitialEventSelectorDispatcher(dispatcher);
+        // Sprint S6 — wire IES cleanup via the removal bus (closes GAP-SR-7).
+        // We subscribe a fresh IesCleanupAdapter for every new dispatcher so
+        // rebinding swaps the cleanup chain atomically.
+        if (dispatcher != null) {
+            this.iesDispatcher = dispatcher;
+            try {
+                entityRemovalBus.subscribe(
+                        new VirtualThreadSbbEntityPool.IesCleanupAdapter(
+                                (com.microjainslee.core.ies.InitialEventSelectorDispatcher) dispatcher));
+            } catch (ClassCastException cce) {
+                // Defensive — should not happen given the class-name check above.
+                LOG.warn("IES dispatcher type cast failed: {}", cce.getMessage());
+            }
+        } else {
+            this.iesDispatcher = null;
+        }
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // Sprint S6 — Observability & Removal Notification API
+    // ───────────────────────────────────────────────────────────────
+
+    /**
+     * Register a subscriber that will be invoked synchronously every time
+     * an SBB entity is removed. Subscribers MUST be fast and MUST NOT call
+     * back into the container (deadlock risk).
+     */
+    public void addEntityRemovalListener(Consumer<EntityRemovalEvent> listener) {
+        entityRemovalBus.subscribe(listener);
+    }
+
+    /**
+     * Unregister a previously-added removal listener. Best-effort no-op
+     * when {@code listener} was never registered.
+     */
+    public void removeEntityRemovalListener(Consumer<EntityRemovalEvent> listener) {
+        entityRemovalBus.unsubscribe(listener);
+    }
+
+    /**
+     * Total removal events ever published by this container. Monotonic,
+     * never reset. Mirrors {@link EntityRemovalBus#getPublishCount()} so
+     * embedders that only see the {@code MicroSleeContainer} handle can
+     * still observe the metric.
+     */
+    public long getEntityRemovalCount() {
+        return entityRemovalCounter.get();
+    }
+
+    /**
+     * Direct access to the underlying {@link EntityRemovalBus} for embedders
+     * that want to attach a subscriber without going through the
+     * {@code addEntityRemovalListener} convenience method.
+     */
+    public EntityRemovalBus getEntityRemovalBus() {
+        return entityRemovalBus;
+    }
+
+    /**
+     * Sprint S6 — capture the IES convergence name that points at
+     * {@code entityId} (if any). Returns {@code null} when the IES
+     * dispatcher has not been bound, or when the entity has no
+     * convergence mapping.
+     *
+     * <p>Implemented via reflection to keep {@code MicroSleeContainer}
+     * free of a compile-time edge to {@code com.microjainslee.core.ies}.
+     */
+    private String captureConvergenceKeyFor(String entityId) {
+        Object dispatcher = this.iesDispatcher;
+        if (dispatcher == null || entityId == null) {
+            return null;
+        }
+        try {
+            java.lang.reflect.Method m = dispatcher.getClass().getMethod(
+                    "getConvergenceKeyFor", String.class);
+            Object value = m.invoke(dispatcher, entityId);
+            return value instanceof String ? (String) value : null;
+        } catch (ReflectiveOperationException roe) {
+            // IES dispatcher missing the method (e.g. stub or test mock).
+            return null;
+        }
+    }
+
+    /**
+     * Sprint S6 — map a {@link SimpleSbbLocalObject.RemovalCause} into the
+     * finer-grained {@link RemovalReason} carried on the bus.
+     */
+    private static RemovalReason resolveRemovalReason(SimpleSbbLocalObject obj) {
+        if (obj == null) {
+            return RemovalReason.SBB_SELF_REMOVE;
+        }
+        SimpleSbbLocalObject.RemovalCause cause = obj.getRemovalCause();
+        if (cause == null) {
+            return RemovalReason.SBB_SELF_REMOVE;
+        }
+        switch (cause) {
+            case TIMER:            return RemovalReason.TIMER_EXPIRED;
+            case SELF:             return RemovalReason.SBB_SELF_REMOVE;
+            case CASCADE:          return RemovalReason.CASCADE_CHILD;
+            case HOT_REDEPLOY:     return RemovalReason.HOT_REDEPLOY;
+            case OPERATOR:         return RemovalReason.OPERATOR;
+            case EXCEPTION_ROLLBACK: return RemovalReason.EXCEPTION_ROLLBACK;
+            default:               return RemovalReason.SBB_SELF_REMOVE;
+        }
     }
 
     public void routeEvent(SleeEvent event, ActivityContextInterface aci) {
@@ -1130,6 +1295,89 @@ public final class MicroSleeContainer {
 
     public AcnfBackend getActivityContextNamingFacility() {
         return activityContextNamingFacility;
+    }
+
+    /**
+     * Sprint S9.4 — return the set of ACNF names whose bound
+     * {@link ActivityContextInterface} currently has {@code sbbId}
+     * attached to it.
+     *
+     * <p>Used by the cluster snapshot path (S9.1) and the rehydration
+     * path (S7.3) to round-trip the set of ACIs an SBB entity was
+     * attached to across the wire.
+     *
+     * <p>Implementation: linear scan over the bound contexts
+     * collection. Acceptable because this is called only on entity
+     * release (not on the per-event hot path). The set is unmodifiable
+     * — callers MUST copy it if they intend to mutate.
+     *
+     * @param sbbId the SBB entity id (may be {@code null}, in which
+     *              case the result is always empty)
+     * @return the unmodifiable set of ACI names this SBB is attached
+     *         to, or an empty set if the SBB is not registered
+     */
+    public Set<String> getAttachedAciNames(String sbbId) {
+        if (sbbId == null) {
+            return Collections.emptySet();
+        }
+        SimpleSbbLocalObject local = sbbs.get(sbbId);
+        if (local == null) {
+            return Collections.emptySet();
+        }
+        Set<String> result = new LinkedHashSet<>();
+        for (ActivityContextInterface aci : activityContextNamingFacility.getBoundContexts()) {
+            if (aci instanceof InMemoryActivityContext) {
+                InMemoryActivityContext imac = (InMemoryActivityContext) aci;
+                if (imac.getAttachedSbbs().contains(local)) {
+                    String name = aci.getActivityContextName();
+                    if (name != null) {
+                        result.add(name);
+                    }
+                }
+            }
+        }
+        return Collections.unmodifiableSet(result);
+    }
+
+    /**
+     * Sprint S9.2 — re-attach an SBB entity (identified by its
+     * {@link SimpleSbbLocalObject}) to every ACI named in the supplied
+     * set. Used by the cluster rehydration path to bring a freshly
+     * reconstructed entity back to the same set of attachments it had
+     * before failover.
+     *
+     * <p>Each re-attach goes through {@link #attach(String, SbbLocalObject)}
+     * so the timer/tx side-effects are identical to a normal local
+     * attach. ACI names that are not currently bound are silently
+     * skipped with a WARN — they may be owned by a node that has
+     * since been removed from the cluster view.
+     *
+     * @param sbbLocalObject the entity to re-attach (must be non-null)
+     * @param aciNames       the set of ACI names to re-attach to
+     *                       (must be non-null; may be empty)
+     * @return the number of ACIs the entity was successfully re-attached to
+     */
+    public int reattachToAcis(SbbLocalObject sbbLocalObject, Set<String> aciNames) {
+        Objects.requireNonNull(sbbLocalObject, "sbbLocalObject");
+        Objects.requireNonNull(aciNames, "aciNames");
+        int attached = 0;
+        for (String name : aciNames) {
+            if (name == null) {
+                continue;
+            }
+            ActivityContextInterface aci = activityContextNamingFacility.lookup(name);
+            if (aci == null) {
+                LOG.warn("reattachToAcis: ACI '{}' is not bound on this node — skipping", name);
+                continue;
+            }
+            try {
+                attach(name, sbbLocalObject);
+                attached++;
+            } catch (RuntimeException ex) {
+                LOG.warn("reattachToAcis: failed to re-attach '{}': {}", name, ex.getMessage());
+            }
+        }
+        return attached;
     }
 
     /**
@@ -1354,6 +1602,16 @@ public final class MicroSleeContainer {
                                 // best effort
                             }
                         }
+                        // Sprint S6 — capture convergence key BEFORE the pool
+                        // release clears the entity slot. Subscribers may
+                        // still read CMP state through removedObject.
+                        String convergenceKey = captureConvergenceKeyFor(id);
+                        // Publish removal event (synchronous, fast subscribers only).
+                        RemovalReason reason = resolveRemovalReason(removedObject);
+                        entityRemovalBus.publish(new EntityRemovalEvent(
+                                id, convergenceKey, reason, System.currentTimeMillis()));
+                        entityRemovalCounter.incrementAndGet();
+                        // Release pool AFTER bus so subscribers can still read CMP.
                         sbbEntityPool.release(entity);
                         cmpFieldStore.remove(id);
                     }

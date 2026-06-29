@@ -173,6 +173,30 @@ public class InitialEventSelectorDispatcher {
         convergenceIndex.entrySet().removeIf(e -> e.getValue().equals(entityId));
     }
 
+    /**
+     * Sprint S6 — inverse of {@link #removeConvergencesFor(String)}: return
+     * the convergence name that maps to {@code entityId}, or {@code null}
+     * if there is no such mapping (or the entity was never IES-bound).
+     *
+     * <p>Used by {@code MicroSleeContainer} when an SBB entity is being
+     * removed, so the removal event published on
+     * {@code EntityRemovalBus} can carry the convergence key for downstream
+     * subscribers (lifecycle logger, store auto-fail). Returns the FIRST
+     * convergence name found — an entity is not expected to map to more
+     * than one convergence at a time.
+     */
+    public String getConvergenceKeyFor(String entityId) {
+        if (entityId == null) {
+            return null;
+        }
+        for (java.util.Map.Entry<String, String> entry : convergenceIndex.entrySet()) {
+            if (entityId.equals(entry.getValue())) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
     /** Size of the convergence index — useful for metrics/health. */
     public int activeConvergenceCount() {
         return convergenceIndex.size();

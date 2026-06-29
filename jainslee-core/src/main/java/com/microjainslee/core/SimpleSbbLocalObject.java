@@ -41,6 +41,27 @@ public final class SimpleSbbLocalObject implements SbbLocalObject {
         void onRemoved(SimpleSbbLocalObject localObject);
     }
 
+    /**
+     * Sprint S6 — coarse-grained cause code stamped onto each SBB entity just
+     * before {@link #remove()} runs. The container reads it via
+     * {@link #getRemovalCause()} and maps it to a
+     * {@link com.microjainslee.core.removal.EntityRemovalEvent.RemovalReason}
+     * before publishing on the removal bus.
+     *
+     * <p>Default is {@link #SELF} (the SBB removed itself). Callers that know
+     * more — a timer-fire path, a cascade-remover path, the hot-redeploy
+     * path — call {@link #setRemovalCause(RemovalCause)} before
+     * {@code remove()} so observers get the right reason on the bus.
+     */
+    public enum RemovalCause {
+        SELF,
+        CASCADE,
+        TIMER,
+        HOT_REDEPLOY,
+        OPERATOR,
+        EXCEPTION_ROLLBACK
+    }
+
     private final SbbID sbbID;
     private final Sbb sbb;
     private final VirtualThreadSbbEntityPool entityPool;
@@ -51,6 +72,12 @@ public final class SimpleSbbLocalObject implements SbbLocalObject {
     private final boolean pooledEntity;
     private volatile int priority;
     private volatile boolean removed;
+    /**
+     * Sprint S6 — populated by the container right before {@link #remove()}
+     * so the {@code RemovalListener} / {@code EntityRemovalBus} can carry the
+     * why-was-it-removed information to downstream subscribers. Never reset.
+     */
+    private volatile RemovalCause removalCause = RemovalCause.SELF;
     /**
      * Parent SBB entity id, set when this local object is created as a child
      * via {@link com.microjainslee.core.child.ChildRelationImpl#create()}.
@@ -157,6 +184,25 @@ public final class SimpleSbbLocalObject implements SbbLocalObject {
     @Override
     public boolean isRemoved() {
         return removed;
+    }
+
+    /**
+     * Sprint S6 — the cause code stamped onto this entity by whatever code
+     * path triggered {@link #remove()}. Default is {@link RemovalCause#SELF}.
+     */
+    public RemovalCause getRemovalCause() {
+        return removalCause;
+    }
+
+    /**
+     * Sprint S6 — let callers (timer scheduler, cascade remover, hot-redeploy
+     * path) record WHY the entity is being removed so downstream observers
+     * (removal bus, lifecycle logger) get useful diagnostics.
+     */
+    public void setRemovalCause(RemovalCause removalCause) {
+        if (removalCause != null) {
+            this.removalCause = removalCause;
+        }
     }
 
     @Override

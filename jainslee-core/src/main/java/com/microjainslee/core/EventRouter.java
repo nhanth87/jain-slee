@@ -58,6 +58,31 @@ public class EventRouter {
     private final AtomicLong skippedMaskCount = new AtomicLong();
 
     /**
+     * Sprint S6 — running count of events that arrived for an SBB entity
+     * which had already been recycled ({@code pool.findEntity()} returned
+     * {@code null}). Surfaced via {@link #getMissingEntityCount()} so
+     * operators can detect dead-slot deliveries (Gap-SR-1). Never reset.
+     */
+    private final AtomicLong missingEntityCount = new AtomicLong();
+
+    /**
+     * Sprint S6 placeholder for Sprint S7 — running count of events that
+     * were successfully re-delivered through a rehydration path. Will stay
+     * zero until {@code SessionRecoveryService} lands in S7.
+     */
+    private final AtomicLong rehydratedCount = new AtomicLong();
+
+    /**
+     * Sprint S7 placeholder — optional recovery service (typed as
+     * {@link Object} so the kernel does not depend on a recovery module
+     * at compile time). When non-null the router will call
+     * {@code tryRehydrateAndDeliver(...)} before giving up on a missing
+     * entity. Stored reflectively via {@link #bindSessionRecoveryService(Object)}.
+     */
+    private volatile Object sessionRecoveryService;
+    private volatile java.lang.reflect.Method tryRehydrateMethod;
+
+    /**
      * Production P1.2 — external JTA transaction context (typed as
      * {@link Object} so the kernel stays JTA-free). Bound by
      * {@link #bindJtaTransactionContext(Object)}. When non-null, every
@@ -480,6 +505,24 @@ public class EventRouter {
         VirtualThreadSbbEntityPool.SbbEntity entity =
                 findEntity(pool, localObject.getSbbID().getId(), localObject);
         if (entity == null) {
+            // Sprint S6 — count + log instead of silent drop (Gap-SR-1).
+            // The entity has been recycled between route and dispatch,
+            // usually because a fast cascade / timer removed it before
+            // delivery. Surface the metric so operators can see it.
+            missingEntityCount.incrementAndGet();
+            String sbbId = localObject.getSbbID() != null
+                    ? localObject.getSbbID().getId() : "?";
+            LOG.warn("[EventRouter] MISSING_ENTITY: sbbId={} event={} aci={} — "
+                            + "entity removed before delivery. Attempting rehydration (S7).",
+                    sbbId,
+                    event.getClass().getSimpleName(),
+                    aci != null ? aci.getActivityContextName() : "?");
+            // Sprint S7 hook — if recovery service has a snapshot → re-dispatch.
+            if (tryRehydrate(sbbId, event, aci, handler)) {
+                rehydratedCount.incrementAndGet();
+                return false;
+            }
+            // Still drop if no snapshot — but the log + metric are in.
             try {
                 handler.onEvent(event, aci);
                 return false;
@@ -636,5 +679,84 @@ public class EventRouter {
      */
     public long getSkippedMaskCount() {
         return skippedMaskCount.get();
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // Sprint S6 — Missing-entity metric + S7 rehydration placeholder
+    // ───────────────────────────────────────────────────────────────
+
+    /**
+     * Sprint S6 — total number of events whose target SBB entity had been
+     * recycled by the time {@link #deliverEvent} ran. Useful for detecting
+     * Gap-SR-1 (SBB death between events strands the session). Never reset.
+     */
+    public long getMissingEntityCount() {
+        return missingEntityCount.get();
+    }
+
+    /**
+     * Sprint S6 placeholder for Sprint S7 — total events successfully
+     * delivered through the rehydration path. Stays zero until
+     * {@link #bindSessionRecoveryService(Object)} is called with a service
+     * that exposes a {@code tryRehydrateAndDeliver(...)} method.
+     */
+    public long getRehydratedCount() {
+        return rehydratedCount.get();
+    }
+
+    /**
+     * Sprint S7 placeholder — bind a recovery service so the router can
+     * call {@code tryRehydrateAndDeliver(...)} when {@code pool.findEntity()}
+     * returns {@code null}. The service is typed as {@link Object} so
+     * {@code jainslee-core} does not pull in a compile-time dependency on
+     * a recovery module. Sprint S7 will deliver a concrete
+     * {@code SessionRecoveryService} that exposes
+     * {@code boolean tryRehydrateAndDeliver(String sbbId, Object event,
+     * ActivityContextInterface aci, SleeEventHandler handler)}.
+     *
+     * <p>Passing {@code null} clears the binding. The router tolerates a
+     * missing method (returns {@code false}) so test stubs work transparently.
+     */
+    public void bindSessionRecoveryService(Object service) {
+        this.sessionRecoveryService = service;
+        if (service == null) {
+            this.tryRehydrateMethod = null;
+            return;
+        }
+        try {
+            this.tryRehydrateMethod = service.getClass().getMethod(
+                    "tryRehydrateAndDeliver",
+                    String.class, Object.class,
+                    ActivityContextInterface.class, SleeEventHandler.class);
+        } catch (NoSuchMethodException nsme) {
+            LOG.warn("Recovery service {} does not expose "
+                    + "tryRehydrateAndDeliver(String, Object, ActivityContextInterface, SleeEventHandler)",
+                    service.getClass().getName());
+            this.tryRehydrateMethod = null;
+        }
+    }
+
+    /**
+     * Sprint S6/7 — invoke the (optionally) bound recovery service. Returns
+     * {@code true} only when the service reported it successfully
+     * re-delivered the event; the caller then increments
+     * {@link #rehydratedCount} and skips the inline drop.
+     */
+    private boolean tryRehydrate(String sbbId, SleeEvent event,
+                                 ActivityContextInterface aci,
+                                 SleeEventHandler handler) {
+        Object service = this.sessionRecoveryService;
+        Method m = this.tryRehydrateMethod;
+        if (service == null || m == null) {
+            return false;
+        }
+        try {
+            Object result = m.invoke(service, sbbId, event, aci, handler);
+            return Boolean.TRUE.equals(result);
+        } catch (ReflectiveOperationException roe) {
+            LOG.warn("[EventRouter] tryRehydrateAndDeliver failed for sbbId={}: {}",
+                    sbbId, roe.getMessage());
+            return false;
+        }
     }
 }

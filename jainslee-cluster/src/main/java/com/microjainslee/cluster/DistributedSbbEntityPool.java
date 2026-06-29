@@ -264,7 +264,7 @@ public final class DistributedSbbEntityPool {
                 klass.getName(),
                 sbbId,
                 values,
-                new LinkedHashSet<String>(), // attached ACIs tracked separately by P2.2
+                resolveAttachedAciNames(sbbId),
                 System.currentTimeMillis());
     }
 
@@ -276,6 +276,11 @@ public final class DistributedSbbEntityPool {
      * {@code target.getClass().getName()}; a mismatch raises
      * {@link IllegalArgumentException} so we never silently cross-
      * populate unrelated SBB classes.
+     *
+     * <p><b>Sprint S9.2.</b> After the CMP fields have been written,
+     * the freshly reconstructed SBB is re-attached to every ACI named
+     * in {@code snapshot.attachedAciNames} so the routing topology is
+     * restored to the same set the entity had on the producing node.
      *
      * @param snapshot the snapshot to apply (must be non-null)
      * @param target   the SBB instance to write into (must be non-null)
@@ -301,10 +306,6 @@ public final class DistributedSbbEntityPool {
             Object value = e.getValue();
             Method setter = settersByName.get(fieldName);
             if (setter == null) {
-                // Skip silently - the snapshot was taken against a
-                // newer/older version of the class that may have had
-                // extra CMP fields. The producer node's CMP state is
-                // best-effort.
                 LOG.warn("applySnapshot: no setter for @CmpField '{}' on {}; skipping",
                         fieldName, klass.getName());
                 continue;
@@ -317,6 +318,19 @@ public final class DistributedSbbEntityPool {
                         "Failed to write @CmpField '" + fieldName
                                 + "' via " + setter + " on " + klass.getName(), ex);
             }
+        }
+        // Sprint S9.2 — re-attach the reconstructed SBB to every ACI it
+        // was attached to on the producing node. The microSleeContainer
+        // reference is supplied through setContainer() at bind time so
+        // the cluster module does not pull a compile-time edge to
+        // jainslee-core. When no container is bound (the off-line test
+        // path) the re-attach is skipped.
+        Object container = containerRef.get();
+        if (container != null) {
+            reattachSbb(container, snapshot.getSbbId(), snapshot.getAttachedAciNames());
+        } else if (!snapshot.getAttachedAciNames().isEmpty()) {
+            LOG.debug("applySnapshot: no MicroSleeContainer bound; skipping ACI re-attach for sbbId={}",
+                    snapshot.getSbbId());
         }
     }
 
@@ -358,5 +372,106 @@ public final class DistributedSbbEntityPool {
             cursor = cursor.getSuperclass();
         }
         return result;
+    }
+
+    /**
+     * Sprint S9.4 — supply the {@link com.microjainslee.core.MicroSleeContainer}
+     * reference so {@link #takeSnapshot} can populate the
+     * {@link SbbEntitySnapshot#getAttachedAciNames()} field with the
+     * ACI names the entity is currently attached to.
+     *
+     * <p>Type-erased on purpose: the cluster module does not depend on
+     * jainslee-core at compile time. The container is invoked through
+     * reflection by {@link #resolveAttachedAciNames} and
+     * {@link #reattachSbb}. Stored in an {@link java.util.concurrent.atomic.AtomicReference}
+     * so the kernel can rebind it across start/stop cycles without
+     * breaking in-flight snapshots.
+     */
+    private final java.util.concurrent.atomic.AtomicReference<Object> containerRef =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /**
+     * Bind the live container reference so subsequent
+     * {@code takeSnapshot} calls populate
+     * {@link SbbEntitySnapshot#getAttachedAciNames()}. Pass {@code null}
+     * to clear (the snapshot path will then record an empty set).
+     *
+     * @param container the live {@code MicroSleeContainer}, or {@code null}
+     */
+    public void bindContainer(Object container) {
+        containerRef.set(container);
+        if (container != null) {
+            LOG.debug("DistributedSbbEntityPool: container reference bound");
+        } else {
+            LOG.debug("DistributedSbbEntityPool: container reference cleared");
+        }
+    }
+
+    /**
+     * @return the currently bound container reference, or {@code null}
+     *         when no container has been wired (off-line test path).
+     */
+    public Object getContainer() {
+        return containerRef.get();
+    }
+
+    /**
+     * Sprint S9.4 — reflectively invoke
+     * {@code MicroSleeContainer.getAttachedAciNames(sbbId)} and return
+     * the result. Returns an empty set when no container is bound or
+     * the reflection call fails; a snapshot failure must never escape
+     * because this is on the entity-release hot path.
+     */
+    private Set<String> resolveAttachedAciNames(String sbbId) {
+        Object container = containerRef.get();
+        if (container == null) {
+            return new LinkedHashSet<>();
+        }
+        try {
+            Object result = container.getClass()
+                    .getMethod("getAttachedAciNames", String.class)
+                    .invoke(container, sbbId);
+            if (result instanceof Set) {
+                return new LinkedHashSet<String>((Set<String>) result);
+            }
+            return new LinkedHashSet<>();
+        } catch (Exception ex) {
+            LOG.debug("resolveAttachedAciNames('{}') failed: {}", sbbId, ex.toString());
+            return new LinkedHashSet<>();
+        }
+    }
+
+    /**
+     * Sprint S9.2 — drive the
+     * {@code MicroSleeContainer.reattachToAcis(SbbLocalObject, Set<String>)}
+     * API reflectively so this class stays free of a compile-time
+     * dependency on jainslee-core. A failure is logged at WARN and
+     * never thrown — the snapshot path is best-effort by design.
+     *
+     * @param container the kernel (must be non-null)
+     * @param sbbId     the SBB entity id (used for diagnostics only)
+     * @param aciNames  the ACI names to re-attach to (may be empty)
+     */
+    private void reattachSbb(Object container, String sbbId, Set<String> aciNames) {
+        if (aciNames == null || aciNames.isEmpty()) {
+            return;
+        }
+        try {
+            Class<?> sbbLocalObjectCls = Class.forName("com.microjainslee.api.SbbLocalObject");
+            Object localObject = container.getClass()
+                    .getMethod("getSbbLocalObject", String.class)
+                    .invoke(container, sbbId);
+            if (localObject == null) {
+                LOG.warn("applySnapshot: no SbbLocalObject registered for sbbId={} - skipping re-attach",
+                        sbbId);
+                return;
+            }
+            Object count = container.getClass()
+                    .getMethod("reattachToAcis", sbbLocalObjectCls, Set.class)
+                    .invoke(container, localObject, new LinkedHashSet<String>(aciNames));
+            LOG.info("[Cluster] re-attached sbbId={} to {} ACI(s)", sbbId, count);
+        } catch (Exception ex) {
+            LOG.warn("applySnapshot: re-attach threw for sbbId={}: {}", sbbId, ex.toString());
+        }
     }
 }

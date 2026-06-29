@@ -32,6 +32,7 @@ import com.microjainslee.core.removal.EntityRemovalBus;
 import com.microjainslee.core.removal.EntityRemovalEvent;
 import com.microjainslee.core.removal.EntityRemovalEvent.RemovalReason;
 import com.microjainslee.core.removal.SessionLifecycleLogger;
+import com.microjainslee.core.ordering.OutOfOrderBuffer;
 
 import java.io.File;
 import java.io.IOException;
@@ -102,6 +103,40 @@ public final class MicroSleeContainer {
      * {@link EntityRemovalBus} when the dispatcher is bound.
      */
     private volatile Object iesDispatcher;
+
+    /**
+     * Sprint S8.5 — shared dedup window for {@link com.microjainslee.ra.SleeEndpointImpl}.
+     *
+     * <p>Created lazily on {@link #start()} (60-second window, 65 536-entry
+     * LRU) and passed into {@link com.microjainslee.core.ra.ResourceAdaptorContextBuilder}
+     * so every {@code SleeEndpointImpl} the container builds gets its
+     * {@code DedupCheck} and {@code dedup hit counter} wired automatically.
+     * Embedders that don't want a dedup window can call
+     * {@link #setDedupWindow(com.microjainslee.core.ordering.DedupWindow)}
+     * with {@code null} before {@code start()} returns, or call
+     * {@link #disableDedupWindow()} right after construction.</p>
+     */
+    private volatile com.microjainslee.core.ordering.DedupWindow dedupWindow;
+
+    /**
+     * Sprint S8.5 — flag that lets embedders opt out of the default
+     * 60-second window. Checked once inside {@link #start()}; afterwards
+     * the {@link #dedupWindow} field stays non-null for the lifetime of
+     * the container (or until explicitly cleared).
+     */
+    private volatile boolean dedupWindowDisabled;
+    /**
+     * Sprint S8 — per-convergence out-of-order buffer for non-initial
+     * {@code SequencedEvent}s that arrive before the SBB entity is
+     * allocated (S8.3). The buffer is created lazily in {@link #start()}
+     * and shut down in {@link #stop()}; if the IES dispatcher is bound
+     * after {@code start()}, the buffer is pushed into the dispatcher
+     * reflectively during {@link #setInitialEventSelectorDispatcher(Object)}.
+     *
+     * <p>Defaults: capacity 16 per convergence, TTL 30 000 ms,
+     * evictor sweep 30 000 ms.</p>
+     */
+    private volatile OutOfOrderBuffer outOfOrderBuffer;
     /**
      * Sprint S6 — structured lifecycle logger auto-registered during
      * {@link #start()} and removed during {@link #stop()} to avoid
@@ -537,6 +572,18 @@ public final class MicroSleeContainer {
             eventRouter.bindSbbEntityPool(sbbEntityPool);
             LOG.info("Re-created SBB entity pool after previous stop()");
         }
+        // Sprint S8.5 — lazy-init the shared dedup window used by every
+        // SleeEndpointImpl the container builds. The window lives for
+        // the lifetime of the container; stop() does NOT destroy it, so
+        // a subsequent start() can keep using it without a gap. Embedded
+        // apps that want to opt out must call #disableDedupWindow() (or
+        // inject a custom window via #setDedupWindow()) before start().
+        if (this.dedupWindow == null && !this.dedupWindowDisabled) {
+            this.dedupWindow = new com.microjainslee.core.ordering.DedupWindow(
+                    60_000L, com.microjainslee.core.ordering.DedupWindow.DEFAULT_MAX_ENTRIES);
+            LOG.info("DedupWindow wired: windowMs=60000 maxEntries={}",
+                    com.microjainslee.core.ordering.DedupWindow.DEFAULT_MAX_ENTRIES);
+        }
         CmpFieldStoreLocator.set(cmpFieldStore);
         sbbEntityPool.prewarm(sbbEntityPool.getMin());
         state = State.STARTED;
@@ -547,6 +594,19 @@ public final class MicroSleeContainer {
         if (this.sessionLifecycleLogger == null) {
             this.sessionLifecycleLogger = new SessionLifecycleLogger();
             entityRemovalBus.subscribe(this.sessionLifecycleLogger);
+        }
+        // Sprint S8 — lazy-create the out-of-order buffer if no embedder has
+        // supplied one. Capacity 16/convergence, 30s TTL, 30s sweep. If the
+        // IES dispatcher was already bound (rare but legal), push the buffer
+        // into it now so non-initial SequencedEvents start being buffered
+        // from this very start().
+        if (this.outOfOrderBuffer == null) {
+            this.outOfOrderBuffer = new OutOfOrderBuffer(16, 30_000L, 30_000L);
+            LOG.info("MicroSleeContainer auto-created OutOfOrderBuffer (capacity=16, windowMs=30000, sweepMs=30000)");
+        }
+        Object iesDispatcherAtStart = this.iesDispatcher;
+        if (iesDispatcherAtStart != null) {
+            installOobIntoDispatcher(iesDispatcherAtStart);
         }
         // Production P2.1 — bring up the JGroups transport (in cluster mode)
         // after the kernel has finished its own start sequence. Bound
@@ -601,6 +661,16 @@ public final class MicroSleeContainer {
         if (this.sessionLifecycleLogger != null) {
             entityRemovalBus.unsubscribe(this.sessionLifecycleLogger);
             this.sessionLifecycleLogger = null;
+        }
+        // Sprint S8 — shut down the OOB evictor executor. Best-effort:
+        // a failure here would mask the real stop() cause, so we swallow.
+        if (this.outOfOrderBuffer != null) {
+            try {
+                this.outOfOrderBuffer.shutdown();
+            } catch (Throwable t) {
+                LOG.warn("OutOfOrderBuffer.shutdown() threw during stop(): {}", t.getMessage(), t);
+            }
+            this.outOfOrderBuffer = null;
         }
         // Production P2.1 — release JGroups threads + Infinispan resources
         // after the kernel has finished its own teardown. invokeStopOn... is
@@ -1095,6 +1165,117 @@ public final class MicroSleeContainer {
     }
 
     /**
+     * Sprint S8 — install (or replace) the {@link OutOfOrderBuffer} used
+     * by the IES dispatcher. If an IES dispatcher is already bound,
+     * the buffer is pushed into it immediately via reflection. Pass
+     * {@code null} to disable OOB (events will be dropped per spec
+     * §7.5.5 again).
+     */
+    public void setOutOfOrderBuffer(OutOfOrderBuffer buffer) {
+        OutOfOrderBuffer previous = this.outOfOrderBuffer;
+        this.outOfOrderBuffer = buffer;
+        if (previous != null && previous != buffer) {
+            try {
+                previous.shutdown();
+            } catch (Throwable t) {
+                LOG.warn("OutOfOrderBuffer.shutdown() on swap threw: {}", t.getMessage(), t);
+            }
+        }
+        Object dispatcher = this.iesDispatcher;
+        if (dispatcher != null) {
+            installOobIntoDispatcher(dispatcher);
+        }
+        LOG.info("MicroSleeContainer OutOfOrderBuffer: {}",
+                buffer == null ? "DISABLED" : "ENABLED");
+    }
+
+    /** Currently-installed OutOfOrderBuffer (may be {@code null}). */
+    public OutOfOrderBuffer getOutOfOrderBuffer() {
+        return outOfOrderBuffer;
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Sprint S8.5 — shared dedup window for SleeEndpointImpl
+    // ──────────────────────────────────────────────────────────
+
+    /**
+     * Sprint S8.5 — accessor for the kernel-managed dedup window.
+     * Returns {@code null} when no window is wired (either the default
+     * has been disabled or {@link #start()} has not yet run).
+     *
+     * <p>{@link com.microjainslee.core.ra.ResourceAdaptorContextBuilder}
+     * consults this on every {@code build(...)} and, when a window is
+     * present, wires it into the freshly-built {@code SleeEndpointImpl}
+     * via {@code withDedupCheck(...)} + {@code withDedupHitCount(...)}.
+     * Embedders that build the endpoint by hand can call
+     * {@code endpoint.withDedupCheck(...)} themselves and point at the
+     * same window instance for shared state.</p>
+     */
+    public com.microjainslee.core.ordering.DedupWindow getDedupWindow() {
+        return dedupWindow;
+    }
+
+    /**
+     * Sprint S8.5 — install a custom dedup window. Pass {@code null}
+     * before {@link #start()} to disable the dedup default. Calling
+     * after {@link #start()} replaces the window in-place;
+     * already-built {@code SleeEndpointImpl}s keep the reference they
+     * captured at build-time, so the swap is mostly useful for tests.
+     */
+    public void setDedupWindow(com.microjainslee.core.ordering.DedupWindow window) {
+        this.dedupWindow = window;
+        if (window == null) {
+            this.dedupWindowDisabled = true;
+        } else {
+            this.dedupWindowDisabled = false;
+        }
+        LOG.info("MicroSleeContainer DedupWindow: {}", window == null ? "DISABLED" : "ENABLED");
+    }
+
+    /**
+     * Sprint S8.5 — convenience: skip the dedup window entirely. Must
+     * be called before {@link #start()} to take effect; after that the
+     * window is already constructed and the flag is ignored.
+     */
+    public void disableDedupWindow() {
+        this.dedupWindowDisabled = true;
+        this.dedupWindow = null;
+        LOG.info("MicroSleeContainer DedupWindow: DISABLED (opt-out)");
+    }
+
+    /**
+     * Sprint S8.5 — reflectively push the OOB + EventRouter references
+     * into the bound IES dispatcher. Both setters are optional — a
+     * missing setter is logged but does not throw, so an older IES
+     * class still works (the OOB is then simply unused).
+     */
+    private void installOobIntoDispatcher(Object dispatcher) {
+        if (dispatcher == null) return;
+        try {
+            java.lang.reflect.Method setOob = dispatcher.getClass()
+                    .getMethod("setOutOfOrderBuffer", OutOfOrderBuffer.class);
+            setOob.invoke(dispatcher, this.outOfOrderBuffer);
+        } catch (NoSuchMethodException nsme) {
+            LOG.debug("IES dispatcher {} does not expose setOutOfOrderBuffer — OOB unwired",
+                    dispatcher.getClass().getName());
+        } catch (ReflectiveOperationException roe) {
+            LOG.warn("Failed to install OutOfOrderBuffer into IES dispatcher: {}",
+                    roe.getMessage(), roe);
+        }
+        try {
+            java.lang.reflect.Method setErp = dispatcher.getClass()
+                    .getMethod("setEventRouterPort", EventRouter.class);
+            setErp.invoke(dispatcher, this.eventRouter);
+        } catch (NoSuchMethodException nsme) {
+            LOG.debug("IES dispatcher {} does not expose setEventRouterPort — drain re-route disabled",
+                    dispatcher.getClass().getName());
+        } catch (ReflectiveOperationException roe) {
+            LOG.warn("Failed to install EventRouter into IES dispatcher: {}",
+                    roe.getMessage(), roe);
+        }
+    }
+
+    /**
      * Perfect Core S3 — bind an {@code com.microjainslee.core.ies.InitialEventSelectorDispatcher}
      * so the {@link EventRouter} routes events through Initial Event Selection
      * (convergence-name lookup) instead of allocating a fresh entity per event.
@@ -1134,6 +1315,14 @@ public final class MicroSleeContainer {
             }
         } else {
             this.iesDispatcher = null;
+        }
+        // Sprint S8 — now that the dispatcher is bound, push the
+        // OutOfOrderBuffer + EventRouter into it so non-initial
+        // SequencedEvents are buffered (S8.3) and drained on entity
+        // allocation (S8.4). Reflective because MicroSleeContainer does
+        // not compile-depend on the IES setters.
+        if (dispatcher != null) {
+            installOobIntoDispatcher(dispatcher);
         }
     }
 

@@ -12,6 +12,8 @@ package com.microjainslee.core.ies;
 
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.Sbb;
+import com.microjainslee.api.SequencedEvent;
+import com.microjainslee.core.ordering.OutOfOrderBuffer;
 import com.microjainslee.api.annotations.InitialEventSelect;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -78,6 +80,34 @@ public class InitialEventSelectorDispatcher {
     /** sbbClass → IES method (reflection cache). */
     private final ConcurrentHashMap<Class<?>, Method> iesMethodCache = new ConcurrentHashMap<>();
 
+    /**
+     * Sprint S8.3 — optional reference to the per-convergence
+     * out-of-order buffer. When set, non-initial {@link SequencedEvent}s
+     * that arrive before the entity is allocated are buffered (rather
+     * than dropped silently) and drained FIFO when the entity is
+     * allocated (S8.4).
+     *
+     * <p>{@code null} means "OOB disabled" → legacy drop-on-miss
+     * behaviour. Volatile so the kernel can install / swap buffers at
+     * runtime without taking a lock.</p>
+     */
+    private volatile OutOfOrderBuffer outOfOrderBuffer;
+
+    /**
+     * Sprint S8.4 — optional reference to the {@link
+     * com.microjainslee.core.EventRouter} used to re-dispatch events
+     * drained from the OOB buffer. Held as
+     * {@link com.microjainslee.core.EventRouter} (concrete type) rather
+     * than the {@code EventRouterPort} SPI seam because both classes
+     * live in {@code jainslee-core}; the kernel already depends on
+     * EventRouter directly.
+     *
+     * <p>When {@code null}, drained events are logged but not
+     * re-routed — useful for unit tests that exercise the IES dispatch
+     * logic in isolation.</p>
+     */
+    private volatile com.microjainslee.core.EventRouter eventRouterPort;
+
     public InitialEventSelectorDispatcher(SbbEntityPool pool) {
         if (pool == null) {
             throw new IllegalArgumentException("SbbEntityPool is required");
@@ -137,9 +167,18 @@ public class InitialEventSelectorDispatcher {
 
         // No existing entity found.
         if (!result.isInitialEvent()) {
-            // Spec §7.5.5: non-initial event with no matching entity → drop silently.
-            LOG.debug("IES: non-initial event, no entity for convergence [{}] — dropped",
-                    convergenceName);
+            // Spec §7.5.5: non-initial event with no matching entity → drop silently,
+            // UNLESS the event implements SequencedEvent AND an OOB buffer is wired
+            // (Sprint S8.3). In that case we buffer the event and let the initial
+            // BEGIN event drain it back into the dispatch path.
+            if (outOfOrderBuffer != null && event instanceof SequencedEvent se) {
+                boolean accepted = outOfOrderBuffer.enqueue(se, aci);
+                LOG.debug("IES: non-initial SequencedEvent buffered for convergence [{}] (accepted={})",
+                        convergenceName, accepted);
+            } else {
+                LOG.debug("IES: non-initial event, no entity for convergence [{}] — dropped",
+                        convergenceName);
+            }
             return null;
         }
 
@@ -151,6 +190,41 @@ public class InitialEventSelectorDispatcher {
             LOG.debug("IES new entity: [{}] → {} ({})",
                     convergenceName, newId, sbbClass.getSimpleName());
 
+            // Sprint S8.4 — drain any OOB-buffered events for this convergence
+            // BEFORE returning the new entity id. The events were queued while
+            // we waited for the initial BEGIN; now that the entity exists we
+            // re-dispatch them FIFO so the caller sees them in arrival order.
+            if (outOfOrderBuffer != null) {
+                java.util.List<OutOfOrderBuffer.BufferedEvent> pending =
+                        outOfOrderBuffer.drainAll(convergenceName);
+                for (OutOfOrderBuffer.BufferedEvent buf : pending) {
+                    // The buffered events were placed here by an earlier call to
+                    // this resolveTarget(); we already returned null for them.
+                    // Re-dispatch through the router so they reach the freshly
+                    // allocated entity in arrival order.
+                    if (eventRouterPort != null) {
+                        // SequencedEvent is a marker — events that flow through
+                        // EventRouter are typically also SleeEvent (see
+                        // GrpcMenuRequestEvent). Guard the cast so a producer
+                        // that breaks the contract doesn't crash the dispatcher.
+                        Object rawEvent = buf.event();
+                        if (rawEvent instanceof com.microjainslee.api.SleeEvent) {
+                            eventRouterPort.routeEvent(
+                                    (com.microjainslee.api.SleeEvent) rawEvent,
+                                    (com.microjainslee.api.ActivityContextInterface) buf.activityContext());
+                        } else {
+                            LOG.warn("IES: dropped drained OOB event of {} — does not implement SleeEvent",
+                                    rawEvent == null ? "<null>" : rawEvent.getClass().getName());
+                        }
+                    }
+                    LOG.debug("IES: drained OOB event for convergence [{}]", convergenceName);
+                }
+                if (!pending.isEmpty()) {
+                    LOG.info("IES: drained {} OOB event(s) for new entity [{}]",
+                            pending.size(), convergenceName);
+                }
+            }
+
             // Auto-cleanup on entity removal.
             final String key = convergenceName;
             pool.onEntityRemoved(newId, id -> {
@@ -160,6 +234,37 @@ public class InitialEventSelectorDispatcher {
         }
 
         return newId;
+    }
+
+    /**
+     * Sprint S8.3 — install an {@link OutOfOrderBuffer} so non-initial
+     * {@link SequencedEvent}s are buffered (rather than dropped) when
+     * no matching entity exists yet. Pass {@code null} to disable.
+     */
+    public void setOutOfOrderBuffer(OutOfOrderBuffer buffer) {
+        this.outOfOrderBuffer = buffer;
+        LOG.info("IES OutOfOrderBuffer: {}", buffer == null ? "DISABLED" : "ENABLED");
+    }
+
+    /**
+     * Sprint S8.4 — install the {@link com.microjainslee.core.EventRouter}
+     * used to re-dispatch events drained from the OOB buffer. Without
+     * this setter, drained events are only logged — never re-routed.
+     * Pass {@code null} to clear the reference (e.g. on shutdown).
+     */
+    public void setEventRouterPort(com.microjainslee.core.EventRouter router) {
+        this.eventRouterPort = router;
+        LOG.info("IES EventRouterPort: {}", router == null ? "DISABLED" : "ENABLED");
+    }
+
+    /** Test/inspection hook — currently installed OOB (may be {@code null}). */
+    public OutOfOrderBuffer getOutOfOrderBuffer() {
+        return outOfOrderBuffer;
+    }
+
+    /** Test/inspection hook — currently installed EventRouter (may be {@code null}). */
+    public com.microjainslee.core.EventRouter getEventRouterPort() {
+        return eventRouterPort;
     }
 
     /**

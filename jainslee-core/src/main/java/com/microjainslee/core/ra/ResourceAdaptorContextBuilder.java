@@ -23,6 +23,7 @@ import com.microjainslee.core.EventRouter;
 import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.core.SimpleAlarmFacility;
 import com.microjainslee.core.SleeTimerSchedulerBridge;
+import com.microjainslee.core.ordering.DedupWindow;
 import com.microjainslee.ra.AcquireActivityContext;
 import com.microjainslee.ra.EventRouterPort;
 import com.microjainslee.ra.NoopAlarmFacility;
@@ -66,10 +67,38 @@ public final class ResourceAdaptorContextBuilder {
      * {@link ResourceAdaptorContextImpl} in one shot, and returns the
      * context (with the state-machine + endpoint stashed in the
      * {@link Built} record so the caller can drive the lifecycle).
+     *
+     * <p>Sprint S8.5 — automatically pulls the shared
+     * {@link com.microjainslee.core.ordering.DedupWindow} from the
+     * container (when one is wired) and binds it to the freshly-built
+     * endpoint via {@code withDedupCheck(...)} + {@code withDedupHitCount(...)}.
+     * Callers that want an explicit window can use the longer
+     * {@link #build(MicroSleeContainer, ResourceAdaptor, String, DedupWindow)}
+     * overload.</p>
      */
     public static Built build(MicroSleeContainer container,
                               ResourceAdaptor ra,
                               String raEntityName) {
+        // Default path: defer to the container's wired dedup window.
+        // start() creates a 60-second window by default; callers that
+        // need a different one can install it with
+        // container.setDedupWindow(...) before calling registerResourceAdaptor.
+        return build(container, ra, raEntityName, container == null ? null : container.getDedupWindow());
+    }
+
+    /**
+     * Sprint S8.5 overload — pass a {@link DedupWindow} explicitly.
+     * Pass {@code null} (or simply omit it via the 3-arg overload) to
+     * disable dedup for this build. The window is bound to the
+     * endpoint's {@link SleeEndpointImpl#withDedupCheck(DedupCheck)}
+     * and {@link SleeEndpointImpl#withDedupHitCount(java.util.function.ToLongBiFunction)}
+     * so all three SleeEndpoint methods honour it (state-machine
+     * reentry, validation order, and {@code getDedupHitCount()}).
+     */
+    public static Built build(MicroSleeContainer container,
+                              ResourceAdaptor ra,
+                              String raEntityName,
+                              DedupWindow dedupWindow) {
         if (container == null) throw new IllegalArgumentException("container is required");
         if (ra == null) throw new IllegalArgumentException("ra is required");
         if (raEntityName == null || raEntityName.isEmpty()) {
@@ -102,6 +131,21 @@ public final class ResourceAdaptorContextBuilder {
         SleeEndpointImpl endpoint = new SleeEndpointImpl(
                 routerPort, aciFactory, acnf, stateMachine);
 
+        // Sprint S8.5 — wire the (optional) dedup window. When a window
+        // is supplied, capture it in a `final` local so the lambdas
+        // below bind to the exact reference the caller passed in. Both
+        // checks are no-ops when the window is null (preserves the
+        // legacy hot path).
+        final DedupWindow wiredWindow = dedupWindow;
+        if (wiredWindow != null) {
+            endpoint.withDedupCheck(
+                    (convergence, seqNum, nowMs) -> wiredWindow.isDuplicate(convergence, seqNum, nowMs));
+            endpoint.withDedupHitCount(
+                    (convergence, seqNum) -> wiredWindow.getDedupHitCount());
+            LOG.debug("DedupWindow wired into endpoint for entity [{}] (windowMs={})",
+                    raEntityName, wiredWindow.getWindowMs());
+        }
+
         // Facilities from the container
         AlarmFacility alarm = container.getAlarmFacility();
         SleeTimerSchedulerBridge bridge = container.getTimerBridge();
@@ -124,7 +168,8 @@ public final class ResourceAdaptorContextBuilder {
         // can publish events through the kernel-aware path.
         ctx.setResourceAdaptor(ra);
 
-        LOG.info("Built RA context for entity [{}]", raEntityName);
+        LOG.info("Built RA context for entity [{}] (dedup={})", raEntityName,
+                wiredWindow == null ? "DISABLED" : "ENABLED");
         return new Built(ctx, stateMachine, endpoint);
     }
 

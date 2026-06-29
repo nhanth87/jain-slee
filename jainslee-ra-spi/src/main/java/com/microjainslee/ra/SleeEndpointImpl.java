@@ -19,6 +19,7 @@ import com.microjainslee.api.Address;
 import com.microjainslee.api.EventType;
 import com.microjainslee.api.FiredUnrecognizedEventException;
 import com.microjainslee.api.FireableEventType;
+import com.microjainslee.api.SequencedEvent;
 import com.microjainslee.api.SleeEndpoint;
 import com.microjainslee.api.UnrecognizedActivityException;
 import org.apache.logging.log4j.LogManager;
@@ -26,6 +27,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.ToLongBiFunction;
 
 /**
  * Perfect Core S5 — full spec-compliant {@link SleeEndpoint}.
@@ -56,15 +58,58 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@code jainslee-core} and reach it through {@link EventRouterPort}
  * (a thin sealed interface) so {@code jainslee-ra-spi} stays
  * compile-time independent from the kernel module.
+ *
+ * <h2>S8 dedup hook</h2>
+ * Sprint S8 adds an optional {@link DedupCheck} indirection. Because
+ * {@code jainslee-ra-spi} cannot take a compile-time dependency on
+ * {@code jainslee-core} (where {@code DedupWindow} lives), the dedup
+ * contract is expressed as a tiny functional interface
+ * {@link DedupCheck} that returns {@code true} if the
+ * {@code (convergence, seqNum)} pair has already been seen inside the
+ * current dedup window. The kernel injects a lambda that delegates to
+ * the real {@code DedupWindow} via {@link #withDedupCheck(DedupCheck)}.
+ * When no check is supplied the legacy hot path is preserved
+ * (no dedup, fully backward compatible).
  */
 public class SleeEndpointImpl implements SleeEndpoint {
 
     private static final Logger LOG = LogManager.getLogger(SleeEndpointImpl.class);
 
+    /**
+     * Sprint S8 — minimal contract for an (convergence, seqNum)
+     * dedup check. The lambda receives the now-ms timestamp from the
+     * kernel's clock so callers can supply a fake clock in tests.
+     */
+    @FunctionalInterface
+    public interface DedupCheck {
+        /**
+         * @return {@code true} when {@code (convergence, seqNum)} has
+         *         already been delivered inside the current dedup
+         *         window (caller should drop the duplicate);
+         *         {@code false} when it is new (caller should admit
+         *         the event and the implementation should record it).
+         */
+        boolean isDuplicate(String convergence, long seqNum, long nowMs);
+    }
+
     private final EventRouterPort eventRouter;
     private final AcquireActivityContext aciFactory;
     private final ActivityContextNamingFacility acnf;
     private final RaEntityStateMachine stateMachine;
+
+    /** Optional S8 dedup hook; {@code null} means "no dedup" (default). */
+    private volatile DedupCheck dedupCheck;
+
+    /** Optional S8 dedup hit counter; supplied together with {@link #dedupCheck}. */
+    private volatile ToLongBiFunction<String, Long> dedupHitCountRef;
+
+    /**
+     * Optional S8 now-ms supplier. Defaults to
+     * {@link System#currentTimeMillis()}; tests can inject a fake
+     * clock via {@link #withClock(java.util.function.LongSupplier)}.
+     */
+    private volatile java.util.function.LongSupplier nowSupplier =
+            System::currentTimeMillis;
 
     /** Active handles: handle.getId() -> ActivityContextInterface */
     private final ConcurrentHashMap<String, ActivityContextInterface> activeHandles =
@@ -84,6 +129,42 @@ public class SleeEndpointImpl implements SleeEndpoint {
         this.aciFactory = aciFactory;
         this.acnf = acnf;
         this.stateMachine = stateMachine;
+    }
+
+    // Sprint S8 — pluggable hooks. All three are optional; the legacy
+    // SleeEndpoint remains fully backward compatible when none are set.
+
+    /**
+     * Install a dedup check. The lambda should return {@code true}
+     * when the (convergence, seqNum) pair was seen inside the dedup
+     * window; the endpoint will then drop the event silently with a
+     * DEBUG log line.
+     */
+    public SleeEndpointImpl withDedupCheck(DedupCheck dedupCheck) {
+        this.dedupCheck = dedupCheck;
+        return this;
+    }
+
+    /**
+     * Optional metric accessor — when supplied, {@link #getDedupHitCount()}
+     * returns the kernel's running total rather than zero.
+     */
+    public SleeEndpointImpl withDedupHitCount(ToLongBiFunction<String, Long> hitFn) {
+        this.dedupHitCountRef = hitFn;
+        return this;
+    }
+
+    /** Replace the now-ms clock. Primarily for tests. */
+    public SleeEndpointImpl withClock(java.util.function.LongSupplier clock) {
+        if (clock == null) throw new IllegalArgumentException("clock is required");
+        this.nowSupplier = clock;
+        return this;
+    }
+
+    /** Returns 0 when no {@link DedupCheck} has been wired. */
+    public long getDedupHitCount() {
+        ToLongBiFunction<String, Long> ref = this.dedupHitCountRef;
+        return ref == null ? 0L : ref.applyAsLong("", 0L);
     }
 
     /**
@@ -222,7 +303,26 @@ public class SleeEndpointImpl implements SleeEndpoint {
             throw new IllegalArgumentException("Event object cannot be null");
         }
 
-        // 5. Route through EventRouter (respects LMAX Disruptor queue)
+        // 5. Sprint S8 — dedup check for SequencedEvents. When the RA
+        //    fires the same (convergence, seqNum) twice in the dedup
+        //    window, drop the second copy silently with a DEBUG log.
+        //    Events that do NOT implement SequencedEvent skip this
+        //    block entirely (backward compatible).
+        DedupCheck dd = this.dedupCheck;
+        if (dd != null && event instanceof SequencedEvent se) {
+            String conv = se.getConvergenceName();
+            long seq = se.getSequenceNumber();
+            if (conv != null && !conv.isEmpty() && seq > 0L) {
+                long now = this.nowSupplier.getAsLong();
+                if (dd.isDuplicate(conv, seq, now)) {
+                    LOG.debug("[SleeEndpoint] DEDUP_HIT convergence={} seq={} — dropping duplicate",
+                            conv, seq);
+                    return; // drop silently — caller can read dedupHitCountRef
+                }
+            }
+        }
+
+        // 6. Route through EventRouter (respects LMAX Disruptor queue)
         LOG.debug("RA firing: handle={} event={}", handleId,
                 event.getClass().getSimpleName());
         eventRouter.routeEvent(event, aci);

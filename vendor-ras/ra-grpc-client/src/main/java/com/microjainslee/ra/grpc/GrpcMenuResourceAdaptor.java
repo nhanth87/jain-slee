@@ -14,14 +14,27 @@ import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.SleeEvent;
 import com.microjainslee.ra.spi.AbstractResourceAdaptor;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Async gRPC menu Resource Adaptor — fires request/response {@link SleeEvent}s
+ * Async gRPC menu Resource Adaptor - fires request/response {@link SleeEvent}s
  * on the USSD session activity via {@link com.microjainslee.api.SleeEndpointPort}.
+ *
+ * <h2>Sprint S8 - sequence stamping</h2>
+ * <p>Every {@code requestMenu} call now stamps a per-session
+ * monotonically increasing sequence number from {@link #sequenceCounters}.
+ * The request event is built through
+ * {@link GrpcMenuEventFactory#createRequestEvent(String, String, String, long)}
+ * which the kernel honors for dedup and out-of-order buffering via
+ * {@link com.microjainslee.api.SequencedEvent}. The counter survives
+ * session churn (a fresh USSD dialog gets a new counter via
+ * {@code computeIfAbsent}).</p>
  */
 public final class GrpcMenuResourceAdaptor extends AbstractResourceAdaptor {
 
@@ -31,6 +44,14 @@ public final class GrpcMenuResourceAdaptor extends AbstractResourceAdaptor {
     private GrpcMenuEventFactory eventFactory;
     private GrpcActivityContextLookup activityContextLookup;
     private ExecutorService workerPool;
+
+    /**
+     * Sprint S8 - per-session atomic sequence counter. Populated on
+     * first {@link #requestMenu} for a given session; survives until
+     * the RA is reconfigured.
+     */
+    private final ConcurrentMap<String, AtomicLong> sequenceCounters =
+            new ConcurrentHashMap<>();
 
     public void setGrpcMenuUpstream(GrpcMenuUpstream upstream) {
         this.upstream = upstream;
@@ -65,6 +86,7 @@ public final class GrpcMenuResourceAdaptor extends AbstractResourceAdaptor {
         if (workerPool != null) {
             workerPool.shutdown();
         }
+        sequenceCounters.clear();
     }
 
     @Override
@@ -73,6 +95,7 @@ public final class GrpcMenuResourceAdaptor extends AbstractResourceAdaptor {
             workerPool.shutdownNow();
             workerPool = null;
         }
+        sequenceCounters.clear();
         super.raUnconfigure();
     }
 
@@ -107,9 +130,27 @@ public final class GrpcMenuResourceAdaptor extends AbstractResourceAdaptor {
             LOG.warning(() -> "gRPC menu RA unknown session activity: " + sessionId);
             return;
         }
+        // Sprint S8 - stamp a per-session monotonic sequence number.
+        long seq = sequenceCounters
+                .computeIfAbsent(sessionId, k -> new AtomicLong(0L))
+                .incrementAndGet();
         // Request event: session ACI via SleeEndpointPort (canonical hot path).
-        publish(sessionId, eventFactory.createRequestEvent(sessionId, msisdn, ussdString));
+        // Use the sequence-aware overload so a SequencedEvent factory
+        // can record the seq for dedup; legacy 3-arg factories get
+        // the default fallback (seq dropped) via the interface default.
+        publish(sessionId,
+                eventFactory.createRequestEvent(sessionId, msisdn, ussdString, seq));
         workerPool.submit(() -> doCall(sessionId, msisdn, ussdString, responseAci));
+    }
+
+    /**
+     * Diagnostic accessor - current sequence counter for {@code sessionId}
+     * (or {@code 0} when no request has been seen for the session).
+     */
+    public long currentSequenceFor(String sessionId) {
+        if (sessionId == null) return 0L;
+        AtomicLong c = sequenceCounters.get(sessionId);
+        return c == null ? 0L : c.get();
     }
 
     private void doCall(String sessionId, String msisdn, String ussdString,
@@ -140,7 +181,7 @@ public final class GrpcMenuResourceAdaptor extends AbstractResourceAdaptor {
             mc.routeEvent(event, responseAci);
             return;
         }
-        LOG.warning(() -> "gRPC menu RA cannot route response to ACI — "
+        LOG.warning(() -> "gRPC menu RA cannot route response to ACI - "
                 + "no live MicroSleeContainer available; response event dropped");
     }
 }

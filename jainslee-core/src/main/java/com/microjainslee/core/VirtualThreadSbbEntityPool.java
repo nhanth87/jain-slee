@@ -11,6 +11,8 @@
 package com.microjainslee.core;
 
 import com.microjainslee.api.Sbb;
+import com.microjainslee.core.ies.InitialEventSelectorDispatcher;
+import com.microjainslee.core.removal.EntityRemovalEvent;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -18,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -466,4 +469,48 @@ public final class VirtualThreadSbbEntityPool {
     }
 
     private static final class NoopSbb implements Sbb { }
+
+    // ───────────────────────────────────────────────────────────────
+    // Sprint S6 — IES cleanup adapter (closes GAP-SR-7)
+    // ───────────────────────────────────────────────────────────────
+
+    /**
+     * SPI adapter: bridges {@link com.microjainslee.core.removal.EntityRemovalBus}
+     * events into the IES dispatcher's convergence-cleanup callback. Registered
+     * once during container startup via
+     * {@code MicroSleeContainer.setInitialEventSelectorDispatcher(...)}.
+     *
+     * <p><b>Why an inner class?</b> Keeps the SPI concern isolated; the pool
+     * itself remains agnostic of IES internals and the kernel can wire the
+     * two together through the bus without the pool knowing about IES at all.
+     *
+     * <p><b>GAP-SR-7</b>: previously the {@code InitialEventSelectorDispatcher}
+     * never received a removal notification when an SBB entity was recycled,
+     * leaving stale convergence mappings in the dispatcher index. This
+     * adapter wires {@code removeConvergencesFor(entityId)} so every entity
+     * removal cleans up its convergence(s) automatically.
+     */
+    public static final class IesCleanupAdapter
+            implements Consumer<EntityRemovalEvent> {
+
+        private final InitialEventSelectorDispatcher iesDispatcher;
+
+        public IesCleanupAdapter(InitialEventSelectorDispatcher iesDispatcher) {
+            if (iesDispatcher == null) {
+                throw new IllegalArgumentException("iesDispatcher is required");
+            }
+            this.iesDispatcher = iesDispatcher;
+        }
+
+        @Override
+        public void accept(EntityRemovalEvent event) {
+            if (event == null) {
+                return;
+            }
+            String entityId = event.entityId();
+            if (entityId != null) {
+                iesDispatcher.removeConvergencesFor(entityId);
+            }
+        }
+    }
 }

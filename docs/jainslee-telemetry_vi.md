@@ -1,30 +1,30 @@
-# jainslee-telemetry — Zero-CPU Self-Healing Engine
+# jainslee-telemetry — Công Cụ Tự Phục Hồi Không Tốn CPU
 
 > **Module:** `jainslee-telemetry`
 >
-> **Replaces:** JAIN SLEE 1.1 AlarmFacility, UsageFacility, TraceFacility
+> **Thay thế:** JAIN SLEE 1.1 AlarmFacility, UsageFacility, TraceFacility
 >
-> **Philosophy:** Passive collection, zero polling, AtomicLong counters, single daemon VT scheduler
+> **Triết lý:** Thu thập thụ động, không polling, bộ đếm AtomicLong, một daemon VT scheduler duy nhất
 
 ---
 
-## Overview
+## Tổng Quan
 
-The `jainslee-telemetry` module provides a modern, zero-overhead observability layer
+Module `jainslee-telemetry` cung cấp một lớp quan sát (observability) hiện đại, không tốn chi phí
 
-for micro-jainslee. Instead of the heavyweight JMX MBeans, JMS-based alarms, and
+cho micro-jainslee. Thay vì sử dụng JMX MBeans nặng nề, cảnh báo dựa trên JMS, và
 
-polling-based usage tracking required by JAIN SLEE 1.1, this module uses:
+theo dõi usage dựa trên polling theo yêu cầu của JAIN SLEE 1.1, module này sử dụng:
 
-- **AtomicLong counters** — zero-lock, zero-contention metric accumulation
-- **Ring buffers** — bounded, lock-free error and alarm history
-- **Single daemon Virtual Thread** — one VT schedules all periodic scans (resource,
+- **Bộ đếm AtomicLong** — tích lũy metric không khóa, không tranh chấp
+- **Ring buffers** — lịch sử lỗi và cảnh báo có giới hạn, không khóa
+- **Một Virtual Thread daemon duy nhất** — một VT lên lịch tất cả các lần quét định kỳ (tài nguyên,
 
-  stale detection, auto-reconfig evaluate) at 30s intervals
-- **Micrometer + Prometheus** — industry-standard metrics export, no custom wire format
-- **Passive callbacks from EventRouter** — no polling, no interception, just a
+  phát hiện stale, đánh giá auto-reconfig) mỗi 30 giây
+- **Micrometer + Prometheus** — xuất metric theo chuẩn công nghiệp, không có định dạng truyền tải tùy chỉnh
+- **Callback thụ động từ EventRouter** — không polling, không can thiệp, chỉ một
 
-  one-line `.record()` after each event dispatch
+  dòng `.record()` sau mỗi lần dispatch sự kiện
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -38,18 +38,18 @@ polling-based usage tracking required by JAIN SLEE 1.1, this module uses:
 │  │              │  │   ├─ RaCollector        (AtomicLong)       ││
 │  │              │  │   ├─ ErrorCollector     (RingBuffer 1000)  ││
 │  │              │  │   ├─ ResourceMonitor    (Daemon VT, 30s)   ││
-│  └──────────────┘  │   ├─ SpunkDetector      (onEvent callback) ││
-│                     │   ├─ StaleDetector      (heartbeat + scan)││
-│  ┌──────────────┐  │   ├─ AlarmEngine        (RingBuffer 500)   ││
-│  │jainslee-core │  │   ├─ AutoReconfigEngine (30s evaluate) ⚡  ││
-│  │              │  │   └─ PrometheusExporter (OpenMetrics)      ││
-│  │  Container ◄─┤  │                                            ││
-│  │  EventRouter◄┼──┤ onEventProcessed() → SbbCollector.record() ││
-│  │  SbbPool    │  │ onError()          → ErrorCollector.record()││
-│  └──────────────┘  └───────────────────────────────────────────┘ │
+│  │              │  │   ├─ SpunkDetector      (callback onEvent) ││
+│  │              │  │   ├─ StaleDetector      (heartbeat + quét) ││
+│  │  ┌──────────────┐  │   ├─ AlarmEngine        (RingBuffer 500)   ││
+│  │  │jainslee-core │  │   ├─ AutoReconfigEngine (đánh giá 30s) ⚡  ││
+│  │  │              │  │   └─ PrometheusExporter (OpenMetrics)      ││
+│  │  │  Container ◄─┤  │                                            ││
+│  │  │  EventRouter◄┼──┤ onEventProcessed() → SbbCollector.record() ││
+│  │  │  SbbPool    │  │ onError()          → ErrorCollector.record()││
+│  │  └──────────────┘  └───────────────────────────────────────────┘ │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────────┐│
-│  │  jainslee-telemetry-vertx (GUI — separate module)            ││
+│  │  jainslee-telemetry-vertx (GUI — module riêng)               ││
 │  │  GET /telemetry/        → index.html (steampunk dashboard)   ││
 │  │  GET /api/telemetry/*   → JSON endpoints                     ││
 │  └──────────────────────────────────────────────────────────────┘│
@@ -58,11 +58,11 @@ polling-based usage tracking required by JAIN SLEE 1.1, this module uses:
 
 ---
 
-## Architecture
+## Kiến Trúc
 
 ### TelemetryPort API (`jainslee-api`)
 
-The public contract lives in `jainslee-api` as a single interface:
+Hợp đồng công khai nằm trong `jainslee-api` dưới dạng một interface duy nhất:
 
 ```java
 public interface TelemetryPort {
@@ -76,26 +76,26 @@ public interface TelemetryPort {
     AutoReconfigEngine autoReconfig();
     boolean isAutoReconfigEnabled();
     void setAutoReconfigEnabled(boolean enabled);
-    String scrape();               // OpenMetrics text format
-    TelemetrySnapshot snapshot();  // consolidated for GUI
+    String scrape();               // Định dạng OpenMetrics text
+    TelemetrySnapshot snapshot();  // tổng hợp cho GUI
 }
 ```
 
 ### MicrometerTelemetryPort (`jainslee-telemetry`)
 
-The production implementation wraps a `PrometheusMeterRegistry` and wires all
+Implementation sản xuất bao bọc một `PrometheusMeterRegistry` và kết nối tất cả
 
-collectors together in a single constructor.
+các collector lại với nhau trong một constructor duy nhất.
 
 ---
 
-## Collectors
+## Các Bộ Thu Thập (Collectors)
 
 ### 1. SbbCollector
 
-Tracks every SBB entity lifecycle and event processing. Called **passively** by
+Theo dõi mọi vòng đời của SBB entity và quá trình xử lý sự kiện. Được gọi **thụ động** bởi
 
-EventRouter after each dispatch — no polling, no interception overhead.
+EventRouter sau mỗi lần dispatch — không polling, không có chi phí can thiệp.
 
 ```java
 public final class SbbCollector {
@@ -121,20 +121,20 @@ public final class SbbCollector {
 ```
 
 
-| Metric (Prometheus)                   | Type    | Description               |
-| ------------------------------------- | ------- | ------------------------- |
-| `microjainslee_sbb_entities_total`    | Gauge   | Total entities created    |
-| `microjainslee_sbb_entities_active`   | Gauge   | Currently active entities |
-| `microjainslee_sbb_events_total`      | Counter | Events processed          |
-| `microjainslee_sbb_events_per_second` | Gauge   | Throughput                |
-| `microjainslee_sbb_latency_avg_us`    | Gauge   | Average dispatch latency  |
-| `microjainslee_sbb_latency_p99_us`    | Gauge   | 99th percentile latency   |
-| `microjainslee_sbb_errors_total`      | Counter | Total error count         |
+| Metric (Prometheus)                   | Loại    | Mô tả                         |
+| ------------------------------------- | ------- | ----------------------------- |
+| `microjainslee_sbb_entities_total`    | Gauge   | Tổng số entity đã tạo         |
+| `microjainslee_sbb_entities_active`   | Gauge   | Entity hiện đang hoạt động    |
+| `microjainslee_sbb_events_total`      | Counter | Sự kiện đã xử lý              |
+| `microjainslee_sbb_events_per_second` | Gauge   | Thông lượng                   |
+| `microjainslee_sbb_latency_avg_us`    | Gauge   | Độ trễ dispatch trung bình    |
+| `microjainslee_sbb_latency_p99_us`    | Gauge   | Độ trễ phân vị thứ 99         |
+| `microjainslee_sbb_errors_total`      | Counter | Tổng số lỗi                   |
 
 
 ### 2. RaCollector
 
-Monitors every Resource Adaptor: state, port binding, event throughput.
+Giám sát mọi Resource Adaptor: trạng thái, liên kết cổng, thông lượng sự kiện.
 
 ```java
 public final class RaCollector {
@@ -152,18 +152,18 @@ public final class RaCollector {
 ```
 
 
-| Metric                                     | Type                         | Description         |
-| ------------------------------------------ | ---------------------------- | ------------------- |
-| `microjainslee_ra_state`                   | Gauge (1=ACTIVE, 0=INACTIVE) | Per-RA state        |
-| `microjainslee_ra_events_fired_total`      | Counter                      | Events fired by RA  |
-| `microjainslee_ra_commands_received_total` | Counter                      | Commands sent to RA |
+| Metric                                     | Loại                         | Mô tả                   |
+| ------------------------------------------ | ---------------------------- | ----------------------- |
+| `microjainslee_ra_state`                   | Gauge (1=ACTIVE, 0=INACTIVE) | Trạng thái từng RA      |
+| `microjainslee_ra_events_fired_total`      | Counter                      | Sự kiện được RA bắn ra  |
+| `microjainslee_ra_commands_received_total` | Counter                      | Lệnh gửi đến RA         |
 
 
 ### 3. ErrorCollector
 
-Lock-free ring buffer of the last 1000 errors. No locks — AtomicLong write pointer.
+Ring buffer không khóa chứa 1000 lỗi gần nhất. Không khóa — con trỏ ghi AtomicLong.
 
-Fixed size 1000 entries, `writeIndex` wraps with `& (SIZE - 1)` (power-of-two).
+Kích thước cố định 1000 mục, `writeIndex` quay vòng với `& (SIZE - 1)` (lũy thừa của hai).
 
 ```java
 public final class ErrorCollector {
@@ -182,7 +182,7 @@ public final class ErrorCollector {
 
 ### 4. ResourceMonitor
 
-Captures JVM resource state via a single daemon Virtual Thread.
+Thu thập trạng thái tài nguyên JVM qua một Virtual Thread daemon duy nhất.
 
 ```java
 public final class ResourceMonitor {
@@ -194,30 +194,30 @@ public final class ResourceMonitor {
     ) {}
 
     ResourceSnapshot snapshot();
-    Stream<ResourceSnapshot> history();  // last 60 min (120 samples)
+    Stream<ResourceSnapshot> history();  // 60 phút gần nhất (120 mẫu)
     void start(long interval, TimeUnit unit);
     void stop();
 }
 ```
 
 
-| Metric                                   | Type    | Description                |
-| ---------------------------------------- | ------- | -------------------------- |
-| `microjainslee_resource_heap_used_mb`    | Gauge   | Heap used (MB)             |
-| `microjainslee_resource_heap_max_mb`     | Gauge   | Max heap (MB)              |
-| `microjainslee_resource_heap_usage_pct`  | Gauge   | Heap usage %               |
-| `microjainslee_resource_cpu_load`        | Gauge   | Process CPU load (0.0–1.0) |
-| `microjainslee_resource_threads_active`  | Gauge   | Active platform threads    |
-| `microjainslee_resource_threads_virtual` | Gauge   | Active virtual threads     |
-| `microjainslee_resource_gc_count`        | Counter | GC collections             |
-| `microjainslee_resource_gc_time_ms`      | Counter | GC pause time (ms)         |
+| Metric                                   | Loại    | Mô tả                           |
+| ---------------------------------------- | ------- | ------------------------------- |
+| `microjainslee_resource_heap_used_mb`    | Gauge   | Heap đã dùng (MB)               |
+| `microjainslee_resource_heap_max_mb`     | Gauge   | Heap tối đa (MB)                |
+| `microjainslee_resource_heap_usage_pct`  | Gauge   | % Heap đã sử dụng               |
+| `microjainslee_resource_cpu_load`        | Gauge   | Tải CPU tiến trình (0.0–1.0)    |
+| `microjainslee_resource_threads_active`  | Gauge   | Platform thread đang hoạt động  |
+| `microjainslee_resource_threads_virtual` | Gauge   | Virtual thread đang hoạt động   |
+| `microjainslee_resource_gc_count`        | Counter | Số lần GC                       |
+| `microjainslee_resource_gc_time_ms`      | Counter | Thời gian tạm dừng GC (ms)      |
 
 
 ### 5. SpunkDetector
 
-Detects anomalous SBB behavior ("spunk") — SBBs that are misbehaving or
+Phát hiện hành vi SBB bất thường ("spunk") — các SBB hoạt động sai hoặc
 
-resource-hogging.
+ngốn tài nguyên.
 
 ```java
 public final class SpunkDetector {
@@ -232,19 +232,19 @@ public final class SpunkDetector {
 ```
 
 
-| Spunk Condition     | Threshold                                 | Severity |
-| ------------------- | ----------------------------------------- | -------- |
-| Event loop blocking | `latency > 100ms`                         | WARNING  |
-| Memory spike        | `memDelta > 100MB` in single entity       | WARNING  |
-| CPU hog             | Single SBB type &gt; 50% total CPU        | CRITICAL |
-| Entity explosion    | &gt; 1000 child entities created in 1 min | WARNING  |
+| Điều kiện Spunk       | Ngưỡng                                    | Mức độ   |
+| --------------------- | ----------------------------------------- | -------- |
+| Event loop bị chặn    | `latency > 100ms`                         | WARNING  |
+| Tăng đột biến bộ nhớ  | `memDelta > 100MB` trong một entity       | WARNING  |
+| Ngốn CPU              | Một loại SBB &gt; 50% tổng CPU            | CRITICAL |
+| Bùng nổ entity        | &gt; 1000 entity con được tạo trong 1 phút | WARNING  |
 
 
 ### 6. StaleDetector
 
-Identifies entities that haven't received events — either idle (warning) or
+Xác định các entity đã không nhận sự kiện — hoặc là không hoạt động (cảnh báo) hoặc
 
-leaked (critical, requires force-release).
+bị rò rỉ (nghiêm trọng, yêu cầu force-release).
 
 ```java
 public final class StaleDetector {
@@ -259,15 +259,15 @@ public final class StaleDetector {
 ```
 
 
-| Condition     | Threshold            | Action                               |
-| ------------- | -------------------- | ------------------------------------ |
-| Idle entity   | No event &gt; 5 min  | `AlarmLevel.INFO` warning            |
-| Leaked entity | No event &gt; 30 min | `AlarmLevel.CRITICAL` + auto-release |
+| Điều kiện              | Ngưỡng                          | Hành động                            |
+| ---------------------- | ------------------------------- | ------------------------------------ |
+| Entity không hoạt động | Không có sự kiện &gt; 5 phút    | Cảnh báo `AlarmLevel.INFO`           |
+| Entity bị rò rỉ        | Không có sự kiện &gt; 30 phút   | `AlarmLevel.CRITICAL` + auto-release |
 
 
 ### 7. AlarmEngine
 
-Replaces JAIN SLEE 1.1 `AlarmFacility`. Ring buffer of 500 alarms.
+Thay thế JAIN SLEE 1.1 `AlarmFacility`. Ring buffer chứa 500 cảnh báo.
 
 ```java
 public enum AlarmLevel { INFO, WARNING, CRITICAL, FATAL }
@@ -286,24 +286,24 @@ public final class AlarmEngine {
 }
 ```
 
-**Alarm lifecycle:**
+**Vòng đời cảnh báo:**
 
 ```
-fire() → ACTIVE → acknowledge() → archived in history ring buffer
-                                    (retained for 60 minutes)
+fire() → ACTIVE → acknowledge() → lưu trữ trong history ring buffer
+                                    (giữ lại trong 60 phút)
 ```
 
 ---
 
 ## ⚡ Auto-Reconfig Engine
 
-The AutoReconfigEngine automatically adjusts JAIN SLEE configuration based on
+AutoReconfigEngine tự động điều chỉnh cấu hình JAIN SLEE dựa trên
 
-real-time metrics. **No human intervention required.**
+các metric thời gian thực. **Không cần can thiệp thủ công.**
 
-### Evaluation Cycle
+### Chu Kỳ Đánh Giá
 
-Single daemon VT evaluates every 30 seconds:
+Một VT daemon duy nhất đánh giá mỗi 30 giây:
 
 ```java
 public final class AutoReconfigEngine {
@@ -323,29 +323,29 @@ public final class AutoReconfigEngine {
 }
 ```
 
-### Reconfig Conditions &amp; Actions
+### Các Điều Kiện & Hành Động Reconfig
 
 
-| #   | Condition           | Threshold                                 | Action                               | Alarm    | Cooldown          |
-| --- | ------------------- | ----------------------------------------- | ------------------------------------ | -------- | ----------------- |
-| 1   | High memory         | Heap &gt; 85%                             | Halve SBB pool max                   | WARNING  | 5 min             |
-| 2   | Critical memory     | Heap &gt; 95%                             | Release stale entities + System.gc() | CRITICAL | 2 min             |
-| 3   | CPU pressure        | CPU &gt; 80% sustained 2 cycles           | Reduce RA event-loop threads by 25%  | WARNING  | 10 min            |
-| 4   | CPU recovered       | CPU &lt; 50% sustained 3 cycles           | Restore RA threads to original       | INFO     | —                 |
-| 5   | Load spike          | EPS &gt; 3× baseline per SBB type         | Expand SBB pool × 2                  | INFO     | 5 min             |
-| 6   | Load normalized     | EPS &lt; 1.5× baseline sustained 5 cycles | Shrink pool back to normal           | INFO     | —                 |
-| 7   | Error storm         | &gt; 100 errors/min for single SBB type   | Suspend SBB type                     | CRITICAL | 15 min            |
-| 8   | Error storm cleared | 0 errors for suspended SBB in 5 min       | Resume SBB type                      | INFO     | —                 |
-| 9   | Entity leak         | Idle &gt; 30 min                          | Force-release entity                 | CRITICAL | None (per entity) |
-| 10  | RA crashed          | RA state = ERROR                          | Restart RA                           | CRITICAL | 2 min             |
+| #   | Điều kiện               | Ngưỡng                                    | Hành động                            | Mức báo động | Thời gian hồi      |
+| --- | ----------------------- | ----------------------------------------- | ------------------------------------ | ------------ | ------------------ |
+| 1   | Bộ nhớ cao              | Heap &gt; 85%                             | Giảm một nửa SBB pool max            | WARNING      | 5 phút             |
+| 2   | Bộ nhớ nghiêm trọng     | Heap &gt; 95%                             | Giải phóng entity stale + System.gc() | CRITICAL     | 2 phút             |
+| 3   | Áp lực CPU              | CPU &gt; 80% duy trì 2 chu kỳ             | Giảm 25% luồng event-loop của RA     | WARNING      | 10 phút            |
+| 4   | CPU đã phục hồi         | CPU &lt; 50% duy trì 3 chu kỳ             | Khôi phục luồng RA về ban đầu        | INFO         | —                  |
+| 5   | Tăng đột biến tải       | EPS &gt; 3× baseline cho mỗi loại SBB     | Mở rộng SBB pool × 2                 | INFO         | 5 phút             |
+| 6   | Tải trở lại bình thường | EPS &lt; 1.5× baseline duy trì 5 chu kỳ   | Thu hẹp pool về bình thường          | INFO         | —                  |
+| 7   | Bão lỗi                 | &gt; 100 lỗi/phút cho một loại SBB        | Tạm ngưng loại SBB đó                | CRITICAL     | 15 phút            |
+| 8   | Bão lỗi đã tan          | 0 lỗi cho SBB bị tạm ngưng trong 5 phút   | Tiếp tục loại SBB đó                 | INFO         | —                  |
+| 9   | Rò rỉ entity            | Không hoạt động &gt; 30 phút              | Force-release entity                 | CRITICAL     | Không (theo entity) |
+| 10  | RA bị sập               | Trạng thái RA = ERROR                     | Khởi động lại RA                     | CRITICAL     | 2 phút             |
 
 
-### Container API for Reconfig
+### Container API cho Reconfig
 
-The engine calls back into `MicroSleeContainer`:
+Engine gọi ngược vào `MicroSleeContainer`:
 
 ```java
-// MicroSleeContainer — methods exposed for auto-reconfig
+// MicroSleeContainer — các phương thức được lộ ra cho auto-reconfig
 void reduceSbbPoolMax(int newMax);
 void expandSbbPool(int newMax);
 void suspendSbbType(String sbbType);
@@ -354,19 +354,19 @@ void restartRa(String raName);
 void releaseEntity(String entityId);
 ```
 
-### Cooldown Behavior
+### Hành Vi Cooldown
 
-Each condition has a cooldown period to prevent oscillation. During cooldown,
+Mỗi điều kiện có một khoảng thời gian cooldown để ngăn dao động. Trong thời gian cooldown,
 
-the same condition is skipped even if the threshold is still breached. Cooldown
+cùng điều kiện đó sẽ bị bỏ qua ngay cả khi ngưỡng vẫn bị vi phạm. Cooldown
 
-is tracked per-condition with a `Map<Condition, Long>` of last-fire timestamps.
+được theo dõi theo từng điều kiện với một `Map<Condition, Long>` chứa timestamp lần kích hoạt cuối.
 
 ---
 
-## Integration Guide
+## Hướng Dẫn Tích Hợp
 
-### Step 1: Add Dependency
+### Bước 1: Thêm Dependency
 
 ```xml
 [[ORCA_RAW_HTML_BLOCK:%3Cdependency%3E]]
@@ -381,33 +381,33 @@ is tracked per-condition with a `Map<Condition, Long>` of last-fire timestamps.
 [[ORCA_RAW_HTML_BLOCK:%3C%2Fdependency%3E]]
 ```
 
-### Step 2: Wire in Bootstrap
+### Bước 2: Kết Nối Trong Bootstrap
 
 ```java
 @PostConstruct
 void init() {
     container.start();
 
-    // 1. Create telemetry engine
+    // 1. Tạo telemetry engine
     var registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
     var telemetry = new MicrometerTelemetryPort(registry, container);
     container.bindTelemetryPort(telemetry);
 
-    // 2. Start collectors
+    // 2. Khởi động các collector
     telemetry.sbbCollector().start();
     telemetry.raCollector().start();
     telemetry.resourceMonitor().start(30, TimeUnit.SECONDS);
     telemetry.spunkDetector().start();
     telemetry.staleDetector().start(60, TimeUnit.SECONDS);
 
-    // 3. Start auto-reconfig (optional but recommended)
+    // 3. Khởi động auto-reconfig (tùy chọn nhưng khuyến nghị)
     telemetry.autoReconfig().start(30, TimeUnit.SECONDS);
     telemetry.setAutoReconfigEnabled(true);
 
-    // 4. Wire EventRouter to feed telemetry
+    // 4. Kết nối EventRouter để cấp dữ liệu cho telemetry
     container.getEventRouter().setTelemetryPort(telemetry);
 
-    // 5. Mount dashboard routes
+    // 5. Gắn các route cho dashboard
     var router = Router.router(vertx);
     router.route("/telemetry/*")
         .handler(StaticHandler.create("webroot/telemetry"));
@@ -418,14 +418,14 @@ void init() {
 }
 ```
 
-### Step 3: EventRouter Integration Points
+### Bước 3: Các Điểm Tích Hợp EventRouter
 
-The EventRouter calls into telemetry at two points — after each successful
+EventRouter gọi vào telemetry tại hai điểm — sau mỗi lần dispatch thành công
 
-dispatch and on error:
+và khi có lỗi:
 
 ```java
-// In EventRouter.dispatch():
+// Trong EventRouter.dispatch():
 long start = System.nanoTime();
 long memBefore = Runtime.getRuntime().totalMemory() -
                  Runtime.getRuntime().freeMemory();
@@ -453,7 +453,7 @@ try {
 }
 ```
 
-### Step 4: Verify
+### Bước 4: Xác Minh
 
 ```bash
 curl http://localhost:8080/api/telemetry/metrics
@@ -463,31 +463,31 @@ open http://localhost:8080/telemetry/
 
 ---
 
-## App-Defined Custom Metrics (Extensible)
+## Custom Metrics Do Ứng Dụng Định Nghĩa (Có Thể Mở Rộng)
 
-Every app domain can register its own counters and gauges at runtime.  
-They automatically appear in `snapshot().customMetrics`, Prometheus scrape,  
-and the dashboard GUI — **zero extra wiring**.
+Mỗi miền ứng dụng có thể đăng ký các counter và gauge riêng tại runtime.  
+Chúng tự động xuất hiện trong `snapshot().customMetrics`, Prometheus scrape,  
+và dashboard GUI — **không cần thêm bất kỳ kết nối nào**.
 
-### Usage
+### Cách Sử Dụng
 
 ```java
 TelemetryPort telemetry = container.getTelemetryPort();
 
-// Counter (increment-only, zero-CPU)
+// Counter (chỉ tăng, không tốn CPU)
 var tcapTotal = telemetry.customCounter("ss7_tcap_total", "opcode", "begin");
 tcapTotal.increment();
 
 var mapAtsi = telemetry.customCounter("ss7_map_messages", "opcode", "atsi");
-mapAtsi.increment(5);  // batch increment
+mapAtsi.increment(5);  // tăng theo batch
 
-// Gauge (sampled, zero-CPU — keep supplier trivial)
+// Gauge (lấy mẫu, không tốn CPU — giữ supplier đơn giản)
 var staleDialogues = new AtomicLong();
 telemetry.customGauge("ss7_stale_dialogues", staleDialogues::get,
     "host", appConfig.host());
 ```
 
-### Prometheus output
+### Đầu ra Prometheus
 
 ```
 ss7_tcap_total{opcode="begin"} 142
@@ -497,18 +497,18 @@ ss7_stale_dialogues{host="HOST-A"} 3
 
 ### Dashboard
 
-Custom metrics appear in the "App Metrics" card, with 📊 for counters  
-and 📈 for gauges. Updates every 2 seconds automatically.
+Custom metrics xuất hiện trong thẻ "App Metrics", với 📊 cho counters  
+và 📈 cho gauges. Tự động cập nhật mỗi 2 giây.
 
-## Integration Guide
+## Hướng Dẫn Tích Hợp
 
-## API Reference
+## Tham Khảo API
 
-All endpoints served by the telemetry Vert.x router under `/api/telemetry/*`.
+Tất cả các endpoint được phục vụ bởi telemetry Vert.x router dưới `/api/telemetry/*`.
 
 ### GET /api/telemetry/snapshot
 
-Full consolidated state for the dashboard GUI.
+Trạng thái tổng hợp đầy đủ cho dashboard GUI.
 
 ```json
 {
@@ -538,7 +538,7 @@ Full consolidated state for the dashboard GUI.
 
 ### GET /api/telemetry/metrics
 
-Prometheus OpenMetrics text format. Scrape this with Prometheus.
+Định dạng Prometheus OpenMetrics text. Scrape endpoint này với Prometheus.
 
 ```
 # HELP microjainslee_sbb_entities_active Active SBB entities
@@ -564,15 +564,15 @@ microjainslee_sbb_events_per_second{sbb_type="HelloWorldSbb"} 1234.5
 
 ### POST /api/telemetry/alarms/{id}/acknowledge
 
-Acknowledge (clear) an alarm. Returns `204 No Content`.
+Xác nhận (xóa) một cảnh báo. Trả về `204 No Content`.
 
 ### GET /api/telemetry/alarms/history?minutes=60
 
-Alarm history for the specified time window.
+Lịch sử cảnh báo trong khoảng thời gian chỉ định.
 
 ### GET /api/telemetry/resources/history?minutes=60
 
-Resource snapshot history (one entry per 30s).
+Lịch sử snapshot tài nguyên (một mục mỗi 30 giây).
 
 ### POST /api/telemetry/reconfig
 
@@ -580,7 +580,7 @@ Resource snapshot history (one entry per 30s).
 {"enabled": true}
 ```
 
-Enable or disable the AutoReconfigEngine.
+Bật hoặc tắt AutoReconfigEngine.
 
 ### GET /api/telemetry/health
 
@@ -598,9 +598,9 @@ Enable or disable the AutoReconfigEngine.
 
 ---
 
-## Prometheus + Grafana Integration
+## Tích Hợp Prometheus + Grafana
 
-### Prometheus Scrape Config
+### Cấu Hình Prometheus Scrape
 
 ```yaml
 scrape_configs:
@@ -611,24 +611,24 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-### Sample Grafana Dashboard Panels
+### Các Panel Mẫu Cho Grafana Dashboard
 
 
-| Panel         | Metric                                          | Visualization       |
-| ------------- | ----------------------------------------------- | ------------------- |
-| Active SBBs   | `microjainslee_sbb_entities_active`             | Stat (large number) |
-| Events/sec    | `microjainslee_sbb_events_per_second`           | Time series (line)  |
-| Latency p99   | `microjainslee_sbb_latency_p99_us`              | Time series (area)  |
-| Heap Usage    | `microjainslee_resource_heap_usage_pct`         | Gauge (semi-circle) |
-| CPU Load      | `microjainslee_resource_cpu_load`               | Time series         |
-| Error Rate    | `rate(microjainslee_sbb_errors_total[1m])`      | Time series (red)   |
-| RA Events     | `rate(microjainslee_ra_events_fired_total[1m])` | Time series         |
-| Active Alarms | `microjainslee_alarms_active`                   | Table               |
+| Panel                  | Metric                                          | Trực quan hóa        |
+| ---------------------- | ----------------------------------------------- | -------------------- |
+| SBB đang hoạt động     | `microjainslee_sbb_entities_active`             | Stat (số lớn)        |
+| Sự kiện/giây           | `microjainslee_sbb_events_per_second`           | Time series (đường)  |
+| Độ trễ p99             | `microjainslee_sbb_latency_p99_us`              | Time series (vùng)   |
+| Sử dụng Heap           | `microjainslee_resource_heap_usage_pct`         | Gauge (bán nguyệt)   |
+| Tải CPU                | `microjainslee_resource_cpu_load`               | Time series          |
+| Tỉ lệ lỗi              | `rate(microjainslee_sbb_errors_total[1m])`      | Time series (đỏ)     |
+| Sự kiện RA             | `rate(microjainslee_ra_events_fired_total[1m])` | Time series          |
+| Cảnh báo đang hoạt động| `microjainslee_alarms_active`                   | Bảng                 |
 
 
 ---
 
-## Configuration Reference
+## Tham Khảo Cấu Hình
 
 ### application.properties
 
@@ -640,7 +640,7 @@ microjainslee.telemetry.stale-detector-interval=60s
 microjainslee.telemetry.auto-reconfig.enabled=true
 microjainslee.telemetry.auto-reconfig.interval=30s
 
-# Thresholds
+# Ngưỡng
 microjainslee.telemetry.memory.warning-threshold=85
 microjainslee.telemetry.memory.critical-threshold=95
 microjainslee.telemetry.cpu.warning-threshold=80
@@ -653,25 +653,25 @@ microjainslee.telemetry.cooldown.cpu=10m
 microjainslee.telemetry.cooldown.load=5m
 microjainslee.telemetry.cooldown.error=15m
 
-# Stale thresholds
+# Ngưỡng stale
 microjainslee.telemetry.stale.warning=5m
 microjainslee.telemetry.stale.leak=30m
 
-# Spunk thresholds
+# Ngưỡng spunk
 microjainslee.telemetry.spunk.blocking-threshold-ms=100
 microjainslee.telemetry.spunk.memory-spike-mb=100
 ```
 
 ---
 
-## Module Structure
+## Cấu Trúc Module
 
 ```
 micro-jainslee/
 ├── jainslee-api/
 │   └── org/microjainslee/api/telemetry/
-│       └── TelemetryPort.java              ← public interface
-├── jainslee-telemetry/                     ← NEW MODULE
+│       └── TelemetryPort.java              ← interface công khai
+├── jainslee-telemetry/                     ← MODULE MỚI
 │   ├── pom.xml                             ← deps: micrometer, prometheus
 │   └── org/microjainslee/telemetry/
 │       ├── MicrometerTelemetryPort.java
@@ -684,17 +684,17 @@ micro-jainslee/
 │       ├── AlarmEngine.java
 │       ├── AutoReconfigEngine.java
 │       └── PrometheusExporter.java
-├── jainslee-telemetry-vertx/               ← NEW MODULE (GUI)
+├── jainslee-telemetry-vertx/               ← MODULE MỚI (GUI)
 │   ├── pom.xml                             ← deps: vertx-web
 │   └── src/main/resources/webroot/telemetry/
 │       ├── index.html                      ← steampunk dashboard
-│       └── telemetry.js                    ← fetch loop + rendering
+│       └── telemetry.js                    ← vòng lặp fetch + rendering
 ├── jainslee-core/
-│   ├── MicroSleeContainer.java             ← + bindTelemetryPort(), reconfig API
-│   ├── EventRouter.java                    ← + setTelemetryPort(), onEvent hooks
+│   ├── MicroSleeContainer.java             ← + bindTelemetryPort(), API reconfig
+│   ├── EventRouter.java                    ← + setTelemetryPort(), hook onEvent
 │   └── VirtualThreadSbbEntityPool.java     ← + notifyTelemetry()
 └── example/
-    ├── example-quarkus-helloworld-web/     ← wired with telemetry
-    └── example-spring-helloworld-web/      ← wired with telemetry
+    ├── example-quarkus-helloworld-web/     ← đã kết nối với telemetry
+    └── example-spring-helloworld-web/      ← đã kết nối với telemetry
 ```
 

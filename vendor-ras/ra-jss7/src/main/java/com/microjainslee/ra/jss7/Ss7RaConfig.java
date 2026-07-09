@@ -123,37 +123,44 @@ public final class Ss7RaConfig {
     /**
      * Estimate maximum theoretical TPS based on thread count and ASN.1 codec benchmarks.
      *
-     * <p>Based on BerCodecBenchmark results (v4):
+     * <p>Based on BerCursorConcurrencyTest v5 (realistic SEQUENCE{INT+OCT} roundtrip):
      * <ul>
-     *   <li>Roundtrip encode+decode: ~270 μs (3,700 ops/s single-thread)</li>
-     *   <li>Zero-copy decode only: ~50 μs (20,000 ops/s single-thread)</li>
-     *   <li>Encode only: ~37 μs (27,000 ops/s single-thread)</li>
+     *   <li>Roundtrip encode+decode: ~4.5 μs (222,000 ops/s single-thread)</li>
+     *   <li>Zero-copy decode only: ~1.5 μs (666,000 ops/s single-thread)</li>
+     *   <li>Encode only: ~1.0 μs (1,000,000 ops/s single-thread)</li>
+     *   <li>BerWriter pool tier (SMALL 1KB): 54 ns/op → 18.5M encode/s</li>
      * </ul>
      *
-     * <p>TCAP/SCCP stack overhead: ~3-5x (routing, dialog management, dispatching).
-     * So actual TPS ≈ codec TPS × threads / stack_overhead.</p>
+     * <p>TCAP/SCCP/M3UA stack overhead: ~2-4x (routing, dialog mgmt, dispatching).
+     * With shared-nothing architecture, overhead drops toward 2×.</p>
+     *
+     * <p>To reach 1M TPS: ~9 threads with 2× overhead, ~18 with 4×.</p>
      *
      * @return a multi-line summary string
      */
     public String estimateThroughput() {
         int threads = Math.min(deliveryMessageThreadCount, sctpWorkerThreads);
-        double rtPerThread = 3700;    // roundtrip ops/s per thread (BerCodecBenchmark)
-        double zcPerThread = 20000;   // zero-copy decode ops/s per thread
-        double encodePerThread = 27000; // encode ops/s per thread
-        double stackOverhead = 4.0;   // TCAP/SCCP overhead multiplier
+        double rtPerThread = 222_000;  // v5 realistic SEQUENCE roundtrip ops/s/thread
+        double zcPerThread = 666_000;  // v5 zero-copy decode only
+        double encodePerThread = 1_000_000; // v5 encode only
+        double stackOverhead = 4.0;    // TCAP/SCCP overhead multiplier (shared-nothing → 2×)
 
         long rtTps = (long) (rtPerThread * threads / stackOverhead);
         long zcTps = (long) (zcPerThread * threads / stackOverhead);
         long encodeTps = (long) (encodePerThread * threads / stackOverhead);
+        long m1mThreads4x = (long) Math.ceil(1_000_000 / (rtPerThread / 4.0));
+        long m1mThreads2x = (long) Math.ceil(1_000_000 / (rtPerThread / 2.0));
 
         return String.format(
             "Throughput estimate (%d threads, %.0fx stack overhead):%n" +
             "  Roundtrip (encode+decode): ~%,d TPS%n" +
             "  Zero-copy decode only:    ~%,d TPS%n" +
             "  Encode only:              ~%,d TPS%n" +
+            "  1M TPS requires: %d threads (4× overhead) or %d threads (2× overhead)%n" +
             "  Config: -D%ssctp-worker-threads=%d -D%sdelivery-threads=%d",
             threads, stackOverhead,
             rtTps, zcTps, encodeTps,
+            m1mThreads4x, m1mThreads2x,
             PROP_PREFIX, sctpWorkerThreads, PROP_PREFIX, deliveryMessageThreadCount);
     }
 

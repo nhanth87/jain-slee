@@ -94,6 +94,16 @@ public final class Ss7Stack {
     public synchronized void start() throws Exception {
         if (started) return;
         LOG.info("[ra-jss7] bootstrapping jSS7 stack: {}", cfg);
+
+        // ── config validation + throughput estimate ──
+        List<String> warnings = cfg.validate();
+        if (!warnings.isEmpty()) {
+            for (String w : warnings) LOG.warn("[ra-jss7] ⚠️ config: {}", w);
+        } else {
+            LOG.info("[ra-jss7] ✅ config validated — all optimal");
+        }
+        LOG.info("[ra-jss7] {}", cfg.estimateThroughput());
+
         initSctp();
         initM3ua();
         initSccp();

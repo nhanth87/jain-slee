@@ -6,6 +6,8 @@
 
 package com.microjainslee.ra.jss7;
 
+import java.util.List;
+
 /**
  * Configuration for the jSS7 protocol stack bootstrapped by
  * {@link com.microjainslee.ra.jss7.transport.Ss7Stack}.
@@ -83,6 +85,77 @@ public final class Ss7RaConfig {
     private boolean capEnabled = true;
 
     public Ss7RaConfig() { }
+
+    /**
+     * Validate configuration and emit warnings for suboptimal settings.
+     * Call after all setters / system property overrides.
+     *
+     * @return a list of warning messages (empty if all optimal)
+     */
+    public List<String> validate() {
+        List<String> warnings = new java.util.ArrayList<>();
+        int cpus = Runtime.getRuntime().availableProcessors();
+
+        if (deliveryMessageThreadCount < cpus) {
+            warnings.add(String.format(
+                "M3UA delivery threads (%d) < CPUs (%d) — bottleneck! Set -D%sdelivery-threads=%d",
+                deliveryMessageThreadCount, cpus, PROP_PREFIX, cpus));
+        }
+        if (sctpWorkerThreads < cpus) {
+            warnings.add(String.format(
+                "SCTP worker threads (%d) < CPUs (%d) — I/O bottleneck! Set -D%ssctp-worker-threads=%d",
+                sctpWorkerThreads, cpus, PROP_PREFIX, cpus));
+        }
+        if (deliveryMessageThreadCount < sctpWorkerThreads) {
+            warnings.add(String.format(
+                "M3UA delivery threads (%d) < SCTP workers (%d) — messages serialize through fewer threads than I/O threads",
+                deliveryMessageThreadCount, sctpWorkerThreads));
+        }
+        if (maxDialogs < 5000) {
+            warnings.add(String.format(
+                "maxDialogs (%d) is low — may limit concurrent TCAP dialogs under load",
+                maxDialogs));
+        }
+
+        return warnings;
+    }
+
+    /**
+     * Estimate maximum theoretical TPS based on thread count and ASN.1 codec benchmarks.
+     *
+     * <p>Based on BerCodecBenchmark results (v4):
+     * <ul>
+     *   <li>Roundtrip encode+decode: ~270 μs (3,700 ops/s single-thread)</li>
+     *   <li>Zero-copy decode only: ~50 μs (20,000 ops/s single-thread)</li>
+     *   <li>Encode only: ~37 μs (27,000 ops/s single-thread)</li>
+     * </ul>
+     *
+     * <p>TCAP/SCCP stack overhead: ~3-5x (routing, dialog management, dispatching).
+     * So actual TPS ≈ codec TPS × threads / stack_overhead.</p>
+     *
+     * @return a multi-line summary string
+     */
+    public String estimateThroughput() {
+        int threads = Math.min(deliveryMessageThreadCount, sctpWorkerThreads);
+        double rtPerThread = 3700;    // roundtrip ops/s per thread (BerCodecBenchmark)
+        double zcPerThread = 20000;   // zero-copy decode ops/s per thread
+        double encodePerThread = 27000; // encode ops/s per thread
+        double stackOverhead = 4.0;   // TCAP/SCCP overhead multiplier
+
+        long rtTps = (long) (rtPerThread * threads / stackOverhead);
+        long zcTps = (long) (zcPerThread * threads / stackOverhead);
+        long encodeTps = (long) (encodePerThread * threads / stackOverhead);
+
+        return String.format(
+            "Throughput estimate (%d threads, %.0fx stack overhead):%n" +
+            "  Roundtrip (encode+decode): ~%,d TPS%n" +
+            "  Zero-copy decode only:    ~%,d TPS%n" +
+            "  Encode only:              ~%,d TPS%n" +
+            "  Config: -D%ssctp-worker-threads=%d -D%sdelivery-threads=%d",
+            threads, stackOverhead,
+            rtTps, zcTps, encodeTps,
+            PROP_PREFIX, sctpWorkerThreads, PROP_PREFIX, deliveryMessageThreadCount);
+    }
 
     /**
      * Factory: read all config from system properties, falling back to defaults.

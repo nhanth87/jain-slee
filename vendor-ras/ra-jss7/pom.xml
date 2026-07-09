@@ -114,6 +114,13 @@
             <version>${ss7.version}</version>
         </dependency>
 
+        <!-- ── neutral single-file config + stack compiler (jSS7 side) ── -->
+        <dependency>
+            <groupId>org.restcomm.protocols.ss7.config</groupId>
+            <artifactId>ss7-config</artifactId>
+            <version>${ss7.version}</version>
+        </dependency>
+
         <!-- ── SCTP transport (Netty) ────────────────────────────── -->
         <dependency>
             <groupId>org.mobicents.protocols.sctp</groupId>

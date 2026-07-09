@@ -7,7 +7,7 @@
 package com.microjainslee.ra.jss7.collab;
 
 import com.microjainslee.ra.jss7.event.Ss7CapEvent;
-import com.microjainslee.ra.jss7.transport.Ss7Stack;
+import org.restcomm.protocols.ss7.config.Ss7Stack;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -52,18 +52,18 @@ public final class CapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     // ── helpers ──────────────────────────────────────────────
     private void service(CAPMessage m) {
         if (publisher == null || m == null) return;
-        String did = did(m.getCAPDialog());
+        Long did = did(m.getCAPDialog());
         publisher.publish(did, new Ss7CapEvent.Service(did, m.getMessageType(), m));
     }
 
     private void dialog(CAPDialog d, Ss7CapEvent.Kind kind, String detail) {
         if (publisher == null) return;
-        String did = did(d);
+        Long did = did(d);
         publisher.publish(did, new Ss7CapEvent.Dialog(did, kind, detail));
     }
 
-    private static String did(CAPDialog d) {
-        return d == null || d.getLocalDialogId() == null ? "?" : String.valueOf(d.getLocalDialogId());
+    private static Long did(CAPDialog d) {
+        return d == null ? null : d.getLocalDialogId();
     }
 
     // ── generated CAP listener coverage ──────────────────

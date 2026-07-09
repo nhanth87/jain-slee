@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<heartbeattime value="10000"/>
+<aspFactoryList>
+	<aspFactory name="STPT1A_ASP1" assocName="STPT1A_AS1" started="true" maxseqnumber="256" aspid="1" heartbeat="false"/>
+	<aspFactory name="STPT1A_ASP2" assocName="STPT1A_AS2" started="true" maxseqnumber="256" aspid="3" heartbeat="false"/>
+	<aspFactory name="STPT1B_ASP1" assocName="STPT1B_AS1" started="true" maxseqnumber="256" aspid="5" heartbeat="false"/>
+	<aspFactory name="STPT1B_ASP2" assocName="STPT1B_AS2" started="true" maxseqnumber="256" aspid="7" heartbeat="false"/>
+	<aspFactory name="STPT2A_ASP1" assocName="STPT2A_AS1" started="true" maxseqnumber="256" aspid="5" heartbeat="false"/>
+	<aspFactory name="STPT2A_ASP2" assocName="STPT2A_AS2" started="true" maxseqnumber="256" aspid="5" heartbeat="false"/>
+	<aspFactory name="STPT2B_ASP1" assocName="STPT2B_AS1" started="true" maxseqnumber="256" aspid="7" heartbeat="false"/>
+	<aspFactory name="STPT2B_ASP2" assocName="STPT2B_AS2" started="true" maxseqnumber="256" aspid="7" heartbeat="false"/>
+	<aspFactory name="STPT3A_ASP1" assocName="STPT3A_AS1" started="true" maxseqnumber="256" aspid="9" heartbeat="false"/>
+	<aspFactory name="STPT3A_ASP2" assocName="STPT3A_AS2" started="true" maxseqnumber="256" aspid="11" heartbeat="false"/>
+	<aspFactory name="STPT3B_ASP1" assocName="STPT3B_AS1" started="true" maxseqnumber="256" aspid="13" heartbeat="false"/>
+	<aspFactory name="STPT3B_ASP2" assocName="STPT3B_AS2" started="true" maxseqnumber="256" aspid="15" heartbeat="false"/>
+</aspFactoryList>
+<asList>
+	<as name="AS1" minAspActiveForLb="1" functionality="AS" exchangeType="SE" ipspType="CLIENT">
+		<routingContext size="1">
+			<rc value="0"/>
+		</routingContext>
+		<trafficMode mode="2"/>
+		<defTrafficMode mode="2"/>
+		<asps>
+			<asp name="STPT1A_ASP1"/>
+			<asp name="STPT1A_ASP2"/>
+			<asp name="STPT1B_ASP1"/>
+			<asp name="STPT1B_ASP2"/>
+			<asp name="STPT2A_ASP1"/>
+			<asp name="STPT2B_ASP2"/>
+			<asp name="STPT3A_ASP1"/>
+			<asp name="STPT3A_ASP2"/>
+			<asp name="STPT3B_ASP1"/>
+			<asp name="STPT3B_ASP2"/>
+		</asps>
+	</as>
+</asList>
+<route>
+	<key value="4796:8752:-1"/>
+	<routeAs trafficModeType="2" as="AS1"/>
+</route>

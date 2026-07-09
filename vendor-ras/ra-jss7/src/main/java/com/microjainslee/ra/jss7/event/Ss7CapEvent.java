@@ -21,14 +21,14 @@ import org.restcomm.protocols.ss7.cap.api.CAPMessageType;
  */
 public sealed interface Ss7CapEvent extends SleeEvent {
 
-    String dialogId();
+    Long dialogId();
 
     /** A CAP service operation — request, response or error. */
-    record Service(String dialogId, CAPMessageType type, CAPMessage message)
+    record Service(Long dialogId, CAPMessageType type, CAPMessage message)
             implements Ss7CapEvent {}
 
     /** A CAP dialog lifecycle notification. */
-    record Dialog(String dialogId, Kind kind, String detail)
+    record Dialog(Long dialogId, Kind kind, String detail)
             implements Ss7CapEvent {}
 
     /** CAP dialog lifecycle kinds (see {@code CAPDialogListener}). */

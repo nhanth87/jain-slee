@@ -15,42 +15,53 @@ import java.util.List;
 /**
  * Generic TCAP outbound command hierarchy — SBB → RA direction.
  * Each command carries raw components; the RA encodes and sends via jSS7.
+ *
+ * <p>{@code dialogId} is the jSS7-native {@code Long} local-dialog-id.
+ * For {@link TcapBegin}, pass {@code null} (RA assigns the real id after
+ * creating the jSS7 Dialog and fires a {@code Ss7Event.TcapBegin} with
+ * {@code isNetworkInitiated=false} so the SBB learns the assigned id).
+ * All other commands MUST carry the actual jSS7-assigned id.</p>
  */
 public sealed interface Ss7Command extends OutboundCommand {
 
-    String dialogId();
+    Long dialogId();
     Ss7Address targetAddress();
 
     // ── TCAP dialog primitives ───────────────────────────────
 
-    /** Begin a new TCAP dialogue. */
+    /**
+     * Begin a new TCAP dialogue.
+     * {@code dialogId} should be {@code null} for a new outbound dialog;
+     * the RA will assign the real jSS7 id and fire a {@code TcapBegin}
+     * event back so the SBB can learn it.
+     */
     record TcapBegin(
-            String dialogId, Ss7Address targetAddress, Ss7Address localAddress,
+            Long dialogId, Ss7Address targetAddress, Ss7Address localAddress,
             int applicationContext, List<Ss7TcapComponent> components,
             int networkId
     ) implements Ss7Command {}
 
     /** Continue an existing TCAP dialogue. */
     record TcapContinue(
-            String dialogId, Ss7Address targetAddress,
+            Long dialogId, Ss7Address targetAddress,
             List<Ss7TcapComponent> components, int networkId
     ) implements Ss7Command {}
 
     /** Normally end a TCAP dialogue (may include final components). */
     record TcapEnd(
-            String dialogId, Ss7Address targetAddress,
+            Long dialogId, Ss7Address targetAddress,
             List<Ss7TcapComponent> components, int networkId
     ) implements Ss7Command {}
 
     /** Abort a TCAP dialogue. */
     record TcapAbort(
-            String dialogId, Ss7Address targetAddress,
+            Long dialogId, Ss7Address targetAddress,
             int abortReason, int networkId
     ) implements Ss7Command {}
 
     /** Send a unidirectional TCAP message. */
     record TcapUni(
-            String dialogId, Ss7Address targetAddress, Ss7Address localAddress,
+            Long dialogId, Ss7Address targetAddress, Ss7Address localAddress,
             List<Ss7TcapComponent> components, int networkId
     ) implements Ss7Command {}
 }

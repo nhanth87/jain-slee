@@ -7,7 +7,7 @@
 package com.microjainslee.ra.jss7.collab;
 
 import com.microjainslee.ra.jss7.event.Ss7MapEvent;
-import com.microjainslee.ra.jss7.transport.Ss7Stack;
+import org.restcomm.protocols.ss7.config.Ss7Stack;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -56,18 +56,18 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     // ── helpers ──────────────────────────────────────────────
     private void service(MAPMessage m) {
         if (publisher == null || m == null) return;
-        String did = did(m.getMAPDialog());
+        Long did = did(m.getMAPDialog());
         publisher.publish(did, new Ss7MapEvent.Service(did, m.getMessageType(), m));
     }
 
     private void dialog(MAPDialog d, Ss7MapEvent.Kind kind, String detail) {
         if (publisher == null) return;
-        String did = did(d);
+        Long did = did(d);
         publisher.publish(did, new Ss7MapEvent.Dialog(did, kind, detail));
     }
 
-    private static String did(MAPDialog d) {
-        return d == null || d.getLocalDialogId() == null ? "?" : String.valueOf(d.getLocalDialogId());
+    private static Long did(MAPDialog d) {
+        return d == null ? null : d.getLocalDialogId();
     }
 
     // ── generated MAP listener coverage ──────────────────

@@ -90,3 +90,22 @@ OutboundCommand   (marker sealed interface)
 - [ ] `RaBootstrapPort.fireEvent()` routes to EventRouter
 - [ ] `@InjectRa` injection works in SBB
 - [ ] No framework imports in `jainslee-api` or `jainslee-core`
+
+## EXTERNAL PROJECTS (build from these local sources — do NOT re-implement)
+
+### SCTP transport
+- **Source:** `/home/meodien/Desktop/ethiopia-working-dir/sctp` (`org.mobicents.protocols.sctp`, branch `java25-upgrade`, version **2.0.14**, Java 25).
+- **Use this** for all SCTP — do NOT build a separate/custom SCTP Management. It already
+  supports everything needed: `Management.addAssociation(...extraHostAddresses)` /
+  `addServer(...)` for multi-homing, XML persistence (`setPersistDir`, Jackson `XmlMapper`).
+  Netty impl: `org.mobicents.protocols.sctp.netty.NettySctpManagementImpl`.
+- **Gotcha (2026-07-10):** the project compiles under Java 25, but the jar previously in
+  `~/.m2` was the stock **Java 8** build. Always `mvn install` this project after changes so
+  `.m2` holds the Java-25 build. `ra-jss7` pins sctp `2.0.14` directly (overrides the
+  transitive `2.0.16` from `ss7-config`, Maven nearest-wins).
+
+### jSS7 stack (Java 25 line "j25")
+- **Source:** `/home/meodien/orca/workspaces/jSS7/j25` (`org.restcomm.protocols.ss7`, branch `j25`, **9.2.8-j25**).
+- New module **`ss7-config`** here holds the neutral single-file JSON stack config + the
+  `Ss7StackBuilder` compiler (SCTP→M3UA→SCCP→TCAP→MAP/CAP). `ra-jss7` depends on it and stays
+  vendor-neutral (no per-layer jSS7 wiring).

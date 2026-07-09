@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<connectdelay value="10000"/>
+<servers/>
+<associations>
+	<name value="STPT1A_AS1"/>
+	<association name="STPT1A_AS1" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2905" peerAddress="10.204.92.149" peerPort="2905" serverName="Antispam1" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT1A_AS2"/>
+	<association name="STPT1A_AS2" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2906" peerAddress="10.204.92.150" peerPort="2905" serverName="Antispam2" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT1B_AS1"/>
+	<association name="STPT1B_AS1" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2907" peerAddress="10.204.93.142" peerPort="2905" serverName="Antispam3" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT1B_AS2"/>
+	<association name="STPT1B_AS2" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2908" peerAddress="10.204.93.149" peerPort="2905" serverName="Antispam4" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT2A_AS1"/>	
+	<association name="STPT2A_AS1" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2909" peerAddress="10.204.191.146" peerPort="2905" serverName="Antispam5" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT2A_AS2"/>
+	<association name="STPT2A_AS2" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2910" peerAddress="10.204.191.147" peerPort="2905" serverName="Antispam6" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT2B_AS1"/>
+	<association name="STPT2B_AS1" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2911" peerAddress="10.204.192.146" peerPort="2905" serverName="Antispam7" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT2B_AS2"/>
+	<association name="STPT2B_AS2" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2912" peerAddress="10.204.191.147" peerPort="2905" serverName="Antispam8" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT3A_AS1"/>
+	<association name="STPT3A_AS1" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2913" peerAddress="10.204.208.133" peerPort="2905" serverName="Antispam9" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT3A_AS2"/>
+	<association name="STPT3A_AS2" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2914" peerAddress="10.204.208.200" peerPort="2905" serverName="Antispam10" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT3B_AS1"/>
+	<association name="STPT3B_AS1" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2915" peerAddress="10.204.209.133" peerPort="2905" serverName="Antispam11" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+	<name value="STPT3B_AS2"/>
+	<association name="STPT3B_AS2" assoctype="CLIENT" hostAddress="10.155.183.170" hostPort="2916" peerAddress="10.204.209.200" peerPort="2905" serverName="Antispam12" ipChannelType="0" extraHostAddresseSize="0">
+	<extraHostAddress value="10.155.183.171"/>
+</associations>

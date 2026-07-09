@@ -9,7 +9,7 @@ package com.microjainslee.ra.jss7.collab;
 import com.microjainslee.ra.jss7.Ss7Address;
 import com.microjainslee.ra.jss7.component.Ss7TcapComponent;
 import com.microjainslee.ra.jss7.event.Ss7Event;
-import com.microjainslee.ra.jss7.transport.Ss7Stack;
+import org.restcomm.protocols.ss7.config.Ss7Stack;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -128,8 +128,8 @@ public final class Ss7TcapListener implements Ss7ProtocolAdapter, TCListener {
         publisher.publish(dialogId(d), e);
     }
 
-    private static String dialogId(Dialog d) {
-        return d == null || d.getLocalDialogId() == null ? "?" : String.valueOf(d.getLocalDialogId());
+    private static Long dialogId(Dialog d) {
+        return d == null ? null : d.getLocalDialogId();
     }
 
     private static int networkId(Dialog d) {

@@ -7,7 +7,7 @@
 package com.microjainslee.ra.jss7.collab;
 
 import com.microjainslee.api.OutboundCommand;
-import com.microjainslee.ra.jss7.transport.Ss7Stack;
+import org.restcomm.protocols.ss7.config.Ss7Stack;
 
 /**
  * A protocol-family adapter (MAP, CAP, TCAP …). It registers listeners against
@@ -25,7 +25,7 @@ public interface Ss7ProtocolAdapter {
 
     /**
      * Register listeners against the (already started) stack. Called from
-     * {@code raActive()} after {@link Ss7Stack#start()}.
+     * {@code raActive()} after the stack is built.
      */
     void attach(Ss7Stack stack, Ss7EventPublisher publisher);
 

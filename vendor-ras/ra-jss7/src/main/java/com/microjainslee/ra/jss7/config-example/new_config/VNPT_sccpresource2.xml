@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<remoteSsns>
+	<id value="1"/>
+	<value remoteSpc="4797" remoteSsn="6" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="2"/>
+	<value remoteSpc="4797" remoteSsn="8" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="3"/>
+	<value remoteSpc="4796" remoteSsn="6" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="4"/>
+	<value remoteSpc="4796" remoteSsn="8" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="5"/>
+	<value remoteSpc="5670" remoteSsn="6" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="6"/>
+	<value remoteSpc="5670" remoteSsn="8" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="7"/>
+	<value remoteSpc="5671" remoteSsn="6" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="8"/>
+	<value remoteSpc="5671" remoteSsn="8" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="9"/>
+	<value remoteSpc="8752" remoteSsn="6" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="10"/>
+	<value remoteSpc="8752" remoteSsn="8" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="11"/>
+	<value remoteSpc="8753" remoteSsn="6" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+	<id value="12"/>
+	<value remoteSpc="8753" remoteSsn="8" remoteSsnFlag="0" markProhibitedWhenSpcResuming="false"/>
+</remoteSsns>
+<remoteSpcs>
+	<id value="1"/>
+	<value remoteSpc="4797" remoteSpcFlag="0" mask="0"/>
+	<id value="2"/>
+	<value remoteSpc="4796" remoteSpcFlag="0" mask="0"/>
+	<id value="3"/>
+	<value remoteSpc="5670" remoteSpcFlag="0" mask="0"/>
+	<id value="4"/>
+	<value remoteSpc="5671" remoteSpcFlag="0" mask="0"/>
+	<id value="5"/>
+	<value remoteSpc="8752" remoteSpcFlag="0" mask="0"/>
+	<id value="6"/>
+	<value remoteSpc="8753" remoteSpcFlag="0" mask="0"/>
+</remoteSpcs>
+<concernedSpcs/>

@@ -143,6 +143,153 @@
 
 ---
 
+## MODE 3: `/skill jainslee ra-jss7` — jSS7 Resource Adaptor Patterns
+
+### DialogId — ALWAYS Long, NEVER String
+
+- jSS7 `Dialog.getLocalDialogId()` returns **`Long`** — this is the native type
+- dialogId is assigned internally by TCAP layer via `AtomicLong` counter
+- Controlled by `dialogIdRangeStart` / `dialogIdRangeEnd` in TCAP config
+- Session map key: `ConcurrentHashMap<Long, MutableSession>`
+- Event fields: `Ss7Event.dialogId()`, `Ss7Command.dialogId()` → **`Long`**
+- Only convert to `String` for `bootstrap.createActivityHandle(String.valueOf(id))` (API requirement)
+- `TcapBegin` command: `dialogId=null` (RA assigns real id and echoes back via event)
+- Reference: `vendor-ras/ra-jss7/` for complete working implementation
+
+### jSS7 j25 Outbound API — Correct Patterns
+
+**Dialog primitives via `DialogPrimitiveFactory`:**
+```java
+// ✅ CORRECT — use DialogPrimitiveFactory
+DialogPrimitiveFactory dpf = tp.getDialogPrimitiveFactory();
+TCBeginRequest req = dpf.createBegin(dlg);       // createBegin
+TCContinueRequest req = dpf.createContinue(dlg); // createContinue
+TCEndRequest req = dpf.createEnd(dlg);           // createEnd
+TCUserAbortRequest req = dpf.createUAbort(dlg);  // createUAbort
+TCUniRequest req = dpf.createUni(dlg);           // createUni (for unstructured dialogs)
+
+// ❌ WRONG — tp.createTCBeginRequest() does NOT exist
+```
+
+**Components via `ComponentPrimitiveFactory` — add BEFORE send:**
+```java
+// ✅ CORRECT — dlc.sendComponent(c) BEFORE dlg.send(req)
+ComponentPrimitiveFactory cpf = tp.getComponentPrimitiveFactory();
+Invoke inv = cpf.createTCInvokeRequest();
+ReturnResult rr = cpf.createTCResultRequest();
+ReturnResultLast rrl = cpf.createTCResultLastRequest();  // separate type!
+ReturnError re = cpf.createTCReturnErrorRequest();
+Reject rj = cpf.createTCRejectRequest();
+
+dlg.sendComponent(inv);   // add component first
+dlg.send(req);            // then send dialog primitive
+
+// ❌ WRONG — req.addComponent() does NOT exist
+// ❌ WRONG — new OperationCodeImpl(), new ErrorCodeImpl()
+// ❌ WRONG — TcapFactory.createComponent*()
+```
+
+**Operation codes, errors, parameters:**
+```java
+// ✅ CORRECT
+OperationCode op = cpf.createOperationCode();
+op.setLocalOperationCode(longValue);     // Long, NOT int
+
+ErrorCode ec = cpf.createErrorCode();
+ec.setLocalErrorCode(longValue);         // Long, NOT int
+
+Parameter p = cpf.createParameter();
+p.setData(byte[]);                       // raw bytes
+
+Problem pb = cpf.createProblem(ProblemType.Invoke);  // Problem is interface, don't new it
+
+ApplicationContextName acn = dpf.createApplicationContextName(new long[]{oid});
+
+// ❌ WRONG — inv.setParameter(byte[]) — use Parameter object
+// ❌ WRONG — ec.setLocalErrorCode(int) — must be Long
+```
+
+**Dialog.send() throws TCAPSendException (extends TCAPException):**
+```java
+try {
+    dlg.send(req);
+} catch (TCAPException | TCAPSendException ex) {
+    LOG.error("jSS7 outbound failed: {}", ex.toString());
+}
+```
+
+**ReturnResult vs ReturnResultLast:**
+- Both extend `Return` (which has `setOperationCode()` + `setParameter()`)
+- Use `Return` as method parameter type for shared helper methods
+- Use `ReturnResultLast` for last component in a multi-component response
+
+### ra-jss7 File Structure Template
+
+```
+vendor-ras/{raName}/
+├── pom.xml
+└── src/main/java/com/microjainslee/ra/{raname}/
+    ├── {RaName}RaEndpoint.java       ← WRAPPER: RaEndpointPort + RaCommandPort
+    ├── {RaName}ResourceAdaptor.java  ← DELEGATE: lifecycle + sessions + IdleSweeper
+    ├── {RaName}OutboundHandler.java  ← all outbound TCAP logic (optional, if >300 lines)
+    ├── {RaName}ComponentCodec.java   ← address + component encode/decode
+    ├── {RaName}Address.java          ← immutable address record
+    ├── {RaName}RaConfig.java         ← config POJO with fluent setters
+    ├── collab/
+    │   ├── Ss7ProtocolAdapter.java   ← interface for protocol adapters
+    │   ├── Ss7EventPublisher.java    ← @FunctionalInterface publish(Long, SleeEvent)
+    │   ├── Ss7TcapListener.java      ← raw TCAP events (for INAP/custom)
+    │   ├── MapProtocolAdapter.java   ← fully-decoded MAP events
+    │   └── CapProtocolAdapter.java   ← fully-decoded CAP events
+    ├── command/{RaName}Command.java  ← sealed interface extends OutboundCommand
+    ├── component/{RaName}Component.java ← sealed interface for TCAP components
+    ├── event/
+    │   ├── {RaName}Event.java        ← generic TCAP events (Begin/Continue/End/Abort/Uni/Notice)
+    │   ├── {RaName}MapEvent.java     ← decoded MAP events (Service + Dialog)
+    │   └── {RaName}CapEvent.java     ← decoded CAP events (Service + Dialog)
+    ├── transport/
+    │   ├── Ss7Stack.java             ← full jSS7 stack bootstrap (SCTP→M3UA→SCCP→TCAP→MAP/CAP)
+    │   └── SctpManagementFactory.java ← SCTP impl isolation point
+    └── config/
+        ├── Ss7Config.java            ← immutable JSON config records
+        ├── Ss7ConfigLoader.java      ← validate + normalize + load
+        └── Ss7ConfigException.java   ← runtime exception
+```
+
+### Outbound Flow Pattern (SS7 RA)
+
+```
+SBB: ra.sendCommand(new TcapBegin(null, target, local, acn, components, netId))
+  → Ss7RaEndpoint.sendCommand(OutboundCommand)
+    → if (Ss7Command sc) delegate.sendOutbound(sc)
+      → Ss7ResourceAdaptor.sendOutbound():
+        1. Check active flag
+        2. Try protocol adapters: a.sendOutbound(cmd) // MAP/CAP first refusal
+        3. outbound.send(cmd) → Ss7OutboundHandler
+          → switch: TcapBegin/Continue/End/Abort/Uni
+          → doTcapBegin():
+            - tp.getNewDialog(local, remote) → jSS7 assigns real dialogId (Long)
+            - sessions.computeIfAbsent(realId, ...); s.jss7Dialog = dlg
+            - dpf.createBegin(dlg)
+            - For each component: dlg.sendComponent(Ss7ComponentCodec.toJss7Component(c, cpf))
+            - dlg.send(req)
+            - bridge.publish(realId, new TcapBegin(realId, ...)) // echo back
+```
+
+### Key rules for jSS7 RA:
+1. dialogId is **Long** everywhere — only String.valueOf() for ActivityHandle
+2. NEVER `new Disruptor<>()` — always `bootstrap.fireEvent()`
+3. NEVER reflection for jSS7 API — use `DialogPrimitiveFactory` + `ComponentPrimitiveFactory`
+4. `ComponentPrimitiveFactory.createProblem(ProblemType)` — Problem is interface
+5. `ReturnResultLast` ≠ `ReturnResult` — separate types, both extend `Return`
+6. `ErrorCode.setLocalErrorCode(Long)` — NOT int
+7. `Parameter.setData(byte[])` — raw bytes, zero-copy compatible
+8. `dlg.sendComponent()` BEFORE `dlg.send()` — not `req.addComponent()`
+9. `dlg.send()` throws `TCAPSendException` (extends `TCAPException`)
+10. Reference: `vendor-ras/ra-jss7/` for complete working implementation
+
+---
+
 ## Common rules for both modes:
 - Java 25, Virtual Threads compatible
 - Log4j2 for logging (not java.util.logging, not SLF4J)

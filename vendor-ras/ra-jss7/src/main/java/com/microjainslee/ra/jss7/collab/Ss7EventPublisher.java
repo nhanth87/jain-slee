@@ -17,8 +17,8 @@ import com.microjainslee.api.SleeEvent;
 public interface Ss7EventPublisher {
 
     /**
-     * @param dialogId opaque per-dialog key (jSS7 local dialog id as string)
+     * @param dialogId jSS7 local dialog id (Long)
      * @param event    the SLEE event to fire on that dialog's activity
      */
-    void publish(String dialogId, SleeEvent event);
+    void publish(Long dialogId, SleeEvent event);
 }

@@ -25,15 +25,15 @@ import org.restcomm.protocols.ss7.map.api.MAPMessageType;
  */
 public sealed interface Ss7MapEvent extends SleeEvent {
 
-    /** jSS7 local dialog id as string (activity handle key). */
-    String dialogId();
+    /** jSS7 local dialog id (Long). */
+    Long dialogId();
 
     /** A MAP service operation — request, response or error. */
-    record Service(String dialogId, MAPMessageType type, MAPMessage message)
+    record Service(Long dialogId, MAPMessageType type, MAPMessage message)
             implements Ss7MapEvent {}
 
     /** A MAP dialog lifecycle notification. */
-    record Dialog(String dialogId, Kind kind, String detail)
+    record Dialog(Long dialogId, Kind kind, String detail)
             implements Ss7MapEvent {}
 
     /** MAP dialog lifecycle kinds (see {@code MAPDialogListener}). */

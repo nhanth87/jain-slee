@@ -27,12 +27,12 @@ import java.util.List;
  */
 public sealed interface Ss7Event extends SleeEvent {
 
-    String dialogId();
+    Long dialogId();
     Ss7Address remoteAddress();
 
     /** A new TCAP dialogue has been opened. */
     record TcapBegin(
-            String dialogId,
+            Long dialogId,
             Ss7Address remoteAddress,
             Ss7Address localAddress,
             int applicationContext,
@@ -43,7 +43,7 @@ public sealed interface Ss7Event extends SleeEvent {
 
     /** Continuation of an existing TCAP dialogue. */
     record TcapContinue(
-            String dialogId,
+            Long dialogId,
             Ss7Address remoteAddress,
             List<Ss7TcapComponent> components,
             int networkId
@@ -51,7 +51,7 @@ public sealed interface Ss7Event extends SleeEvent {
 
     /** Normal end of a TCAP dialogue (may carry final components). */
     record TcapEnd(
-            String dialogId,
+            Long dialogId,
             Ss7Address remoteAddress,
             List<Ss7TcapComponent> components,
             int networkId
@@ -59,7 +59,7 @@ public sealed interface Ss7Event extends SleeEvent {
 
     /** Abnormal termination (P-ABORT / U-ABORT). */
     record TcapAbort(
-            String dialogId,
+            Long dialogId,
             Ss7Address remoteAddress,
             int abortReason,
             int networkId
@@ -67,7 +67,7 @@ public sealed interface Ss7Event extends SleeEvent {
 
     /** TCAP notice (provider-level — e.g., reject/network-problem). */
     record TcapNotice(
-            String dialogId,
+            Long dialogId,
             Ss7Address remoteAddress,
             int noticeReason,
             int networkId
@@ -75,7 +75,7 @@ public sealed interface Ss7Event extends SleeEvent {
 
     /** Unidirectional TCAP message (no dialog established). */
     record TcapUni(
-            String dialogId,
+            Long dialogId,
             Ss7Address remoteAddress,
             Ss7Address localAddress,
             List<Ss7TcapComponent> components,

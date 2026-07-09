@@ -14,31 +14,59 @@ package com.microjainslee.ra.jss7;
  * can populate it before {@code raActive()}. Defaults describe a single
  * IPSP-client association suitable for a local loopback test; override for
  * real deployments.</p>
+ *
+ * <h3>System property overrides</h3>
+ * <p>Every field can be overridden via {@code -D} system properties at startup.
+ * Properties are read once at construction time via {@link #fromSystemProperties()}.
+ * This enables production tuning without code changes:</p>
+ * <pre>{@code
+ *   -Dra.jss7.delivery-threads=16   // M3UA message delivery threads (default: CPUs)
+ *   -Dra.jss7.sctp-worker-threads=16 // SCTP I/O worker threads (default: CPUs)
+ *   -Dra.jss7.max-dialogs=20000      // TCAP max concurrent dialogs
+ *   -Dra.jss7.dialog-idle-timeout=60000 // TCAP idle timeout (ms)
+ * }</pre>
+ *
+ * <h3>Thread model</h3>
+ * <p>The SS7 stack uses two thread pools:</p>
+ * <ul>
+ *   <li><b>SCTP worker threads</b> ({@code sctpWorkerThreads}) — I/O thread pool
+ *       for SCTP/TCP transport layer. Default: {@code Runtime.availableProcessors()}.</li>
+ *   <li><b>M3UA delivery threads</b> ({@code deliveryMessageThreadCount}) — message
+ *       processing pool for M3UA → SCCP → TCAP pipeline. Default: same as SCTP workers.
+ *       <b>This is the primary bottleneck.</b> Must be &ge; SCTP workers to avoid
+ *       serialization through a single thread.</li>
+ * </ul>
  */
 public final class Ss7RaConfig {
 
+    /** System property prefix for all config overrides. */
+    public static final String PROP_PREFIX = "ra.jss7.";
+
+    private static final int CPU_COUNT = Runtime.getRuntime().availableProcessors();
+	
     // ── identity ──────────────────────────────────────────────
-    private String stackName = "ra-jss7";
-
+    private String stackName = prop("stack-name", "ra-jss7");
+	
     // ── SCTP ──────────────────────────────────────────────────
-    private String hostIp = "127.0.0.1";
-    private int hostPort = 2905;
-    private String peerIp = "127.0.0.1";
-    private int peerPort = 2906;
-    private String associationName = "ra-jss7-assoc";
+    private String hostIp = prop("host-ip", "127.0.0.1");
+    private int hostPort = propInt("host-port", 2905);
+    private String peerIp = prop("peer-ip", "127.0.0.1");
+    private int peerPort = propInt("peer-port", 2906);
+    private String associationName = prop("association-name", "ra-jss7-assoc");
     /** "SCTP" or "TCP" (falls back to TCP when native SCTP is unavailable). */
-    private String ipChannelType = "SCTP";
-    private int sctpWorkerThreads = 16;
-
+    private String ipChannelType = prop("channel-type", "SCTP");
+    private int sctpWorkerThreads = propInt("sctp-worker-threads", CPU_COUNT);
+	
     // ── M3UA ──────────────────────────────────────────────────
-    private long routingContext = 100;
-    private long networkAppearance = 102;
-    private int originatingPointCode = 1;
-    private int destinationPointCode = 2;
-    private int serviceIndicator = 3;   // SCCP
+    private long routingContext = propLong("routing-context", 100);
+    private long networkAppearance = propLong("network-appearance", 102);
+    private int originatingPointCode = propInt("opc", 1);
+    private int destinationPointCode = propInt("dpc", 2);
+    private int serviceIndicator = propInt("service-indicator", 3);   // SCCP
     /** true → IPSP CLIENT exchange, false → AS/ASP (SGW) mode. */
-    private boolean ipspClient = true;
-    private int deliveryMessageThreadCount = 1;
+    private boolean ipspClient = propBool("ipsp-client", true);
+    /** M3UA delivery threads — MUST be &ge; sctpWorkerThreads to avoid bottleneck. */
+    private int deliveryMessageThreadCount = propInt("delivery-threads", CPU_COUNT);
 
     // ── SCCP ──────────────────────────────────────────────────
     private int networkIndicator = 2;   // national
@@ -56,6 +84,39 @@ public final class Ss7RaConfig {
 
     public Ss7RaConfig() { }
 
+    /**
+     * Factory: read all config from system properties, falling back to defaults.
+     * <pre>{@code
+     *   Ss7RaConfig cfg = Ss7RaConfig.fromSystemProperties();
+     * }</pre>
+     */
+    public static Ss7RaConfig fromSystemProperties() {
+        return new Ss7RaConfig();
+    }
+
+    // ── system property helpers ──────────────────────────────
+    private static String prop(String key, String dflt) {
+        String v = System.getProperty(PROP_PREFIX + key);
+        return (v == null || v.isBlank()) ? dflt : v;
+    }
+    private static int propInt(String key, int dflt) {
+        String v = System.getProperty(PROP_PREFIX + key);
+        if (v == null || v.isBlank()) return dflt;
+        try { return Integer.parseInt(v.trim()); }
+        catch (NumberFormatException e) { return dflt; }
+    }
+    private static long propLong(String key, long dflt) {
+        String v = System.getProperty(PROP_PREFIX + key);
+        if (v == null || v.isBlank()) return dflt;
+        try { return Long.parseLong(v.trim()); }
+        catch (NumberFormatException e) { return dflt; }
+    }
+    private static boolean propBool(String key, boolean dflt) {
+        String v = System.getProperty(PROP_PREFIX + key);
+        if (v == null || v.isBlank()) return dflt;
+        return Boolean.parseBoolean(v.trim());
+    }
+	
     // ── getters ───────────────────────────────────────────────
     public String stackName()            { return stackName; }
     public String hostIp()               { return hostIp; }
@@ -108,9 +169,23 @@ public final class Ss7RaConfig {
 
     @Override
     public String toString() {
-        return "Ss7RaConfig{" + stackName + " " + hostIp + ":" + hostPort
-                + " -> " + peerIp + ":" + peerPort + " opc=" + originatingPointCode
-                + " dpc=" + destinationPointCode + " ssn=" + localSsn
-                + " map=" + mapEnabled + " cap=" + capEnabled + "}";
+        return "Ss7RaConfig{"
+                + stackName + " " + hostIp + ":" + hostPort
+                + " -> " + peerIp + ":" + peerPort
+                + " opc=" + originatingPointCode
+                + " dpc=" + destinationPointCode
+                + " ssn=" + localSsn
+                + " sctpWorkers=" + sctpWorkerThreads
+                + " m3uaDelivery=" + deliveryMessageThreadCount
+                + " map=" + mapEnabled + " cap=" + capEnabled
+                + " maxDialogs=" + maxDialogs
+                + "}";
+    }
+
+    /** Returns a one-line summary suitable for logging. */
+    public String toSummary() {
+        return String.format("[%s] sctp:%d m3ua:%d dialogs:%d map:%s cap:%s",
+                stackName, sctpWorkerThreads, deliveryMessageThreadCount,
+                maxDialogs, mapEnabled, capEnabled);
     }
 }

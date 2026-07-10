@@ -45,6 +45,6 @@
         <module>ra-sip-servlet</module>
         <module>ra-diameter</module>
         <module>ra-camel</module>
-        <!-- Phase 3+: <module>ra-map-jss7</module> -->
+        <module>ra-jss7</module>
     </modules>
 </project>

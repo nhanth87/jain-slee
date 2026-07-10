@@ -26,6 +26,7 @@ import java.util.List;
  *   -Dra.jss7.sctp-worker-threads=16 // SCTP I/O worker threads (default: CPUs)
  *   -Dra.jss7.max-dialogs=20000      // TCAP max concurrent dialogs
  *   -Dra.jss7.dialog-idle-timeout=60000 // TCAP idle timeout (ms)
+ *   -Dra.jss7.asn-telemetry=true     // Enable BerCursor observatory counters (+~3ns/op)
  * }</pre>
  *
  * <h3>Thread model</h3>
@@ -80,11 +81,22 @@ public final class Ss7RaConfig {
     private long invokeTimeoutMs = 120_000;
     private int maxDialogs = 5000;
 
+    // ── ASN.1 telemetry ──────────────────────────────────────
+    /** Enable BerCursor observatory counters (activeCount/totalDecodedCount).
+     *  When enabled, adds ~3ns/op overhead on the decode hot path.
+     *  Set via: -Dra.jss7.asn-telemetry=true */
+    private boolean asnTelemetryEnabled = propBool("asn-telemetry", false);
+
     // ── protocol toggles ──────────────────────────────────────
     private boolean mapEnabled = true;
     private boolean capEnabled = true;
 
-    public Ss7RaConfig() { }
+    public Ss7RaConfig() {
+        // Propagate ASN telemetry flag to BerCursor BEFORE any ASN.1 code loads
+        if (asnTelemetryEnabled) {
+            System.setProperty("asn.telemetry.enabled", "true");
+        }
+    }
 
     /**
      * Validate configuration and emit warnings for suboptimal settings.
@@ -156,11 +168,13 @@ public final class Ss7RaConfig {
             "  Zero-copy decode only:    ~%,d TPS%n" +
             "  Encode only:              ~%,d TPS%n" +
             "  1M TPS requires: %d threads (4× overhead) or %d threads (2× overhead)%n" +
-            "  Config: -D%ssctp-worker-threads=%d -D%sdelivery-threads=%d",
+            "  Config: -D%ssctp-worker-threads=%d -D%sdelivery-threads=%d%n" +
+            "  ASN.1 telemetry: %s (-D%sasn-telemetry=true to enable, +3ns/op overhead)",
             threads, stackOverhead,
             rtTps, zcTps, encodeTps,
             threadsFor1M_4x, threadsFor1M_2x,
-            PROP_PREFIX, sctpWorkerThreads, PROP_PREFIX, deliveryMessageThreadCount);
+            PROP_PREFIX, sctpWorkerThreads, PROP_PREFIX, deliveryMessageThreadCount,
+            asnTelemetryEnabled ? "ON" : "OFF", PROP_PREFIX);
     }
 
     /**
@@ -198,6 +212,7 @@ public final class Ss7RaConfig {
 	
     // ── getters ───────────────────────────────────────────────
     public String stackName()            { return stackName; }
+    public boolean asnTelemetryEnabled() { return asnTelemetryEnabled; }
     public String hostIp()               { return hostIp; }
     public int hostPort()                { return hostPort; }
     public String peerIp()               { return peerIp; }
@@ -222,6 +237,7 @@ public final class Ss7RaConfig {
     public boolean capEnabled()          { return capEnabled; }
 
     // ── fluent setters ────────────────────────────────────────
+    public Ss7RaConfig asnTelemetryEnabled(boolean v) { this.asnTelemetryEnabled = v; if (v) System.setProperty("asn.telemetry.enabled", "true"); return this; }
     public Ss7RaConfig stackName(String v)            { this.stackName = v; return this; }
     public Ss7RaConfig hostIp(String v)               { this.hostIp = v; return this; }
     public Ss7RaConfig hostPort(int v)                { this.hostPort = v; return this; }
@@ -258,13 +274,14 @@ public final class Ss7RaConfig {
                 + " m3uaDelivery=" + deliveryMessageThreadCount
                 + " map=" + mapEnabled + " cap=" + capEnabled
                 + " maxDialogs=" + maxDialogs
+                + " asnTelemetry=" + asnTelemetryEnabled
                 + "}";
     }
 
     /** Returns a one-line summary suitable for logging. */
     public String toSummary() {
-        return String.format("[%s] sctp:%d m3ua:%d dialogs:%d map:%s cap:%s",
+        return String.format("[%s] sctp:%d m3ua:%d dialogs:%d map:%s cap:%s telemetry:%s",
                 stackName, sctpWorkerThreads, deliveryMessageThreadCount,
-                maxDialogs, mapEnabled, capEnabled);
+                maxDialogs, mapEnabled, capEnabled, asnTelemetryEnabled);
     }
 }

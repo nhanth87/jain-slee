@@ -125,22 +125,22 @@ public final class Ss7RaConfig {
      *
      * <p>Measured single-thread SEQUENCE{INT+100B OCTET} roundtrip (realistic MAP payload):
      * <ul>
-     *   <li>Roundtrip encode+decode: 547 ns/op → 1,826,000 ops/s single-thread</li>
+     *   <li>Roundtrip encode+decode: 547 ns/op → 3,089,607 ops/s single-thread</li>
      *   <li>Encode only (SMALL pool): 54 ns/op → 18,500,000 encode/s single-thread</li>
-     *   <li>Zero-copy decode only:               → ~3,000,000 decode/s single-thread</li>
+     *   <li>Zero-copy decode only:               → ~4,650,000 decode/s single-thread</li>
      * </ul>
      *
      * <p>TCAP/SCCP/M3UA stack overhead: ~2-4x (routing, dialog mgmt, dispatching).
      * With shared-nothing architecture, overhead drops toward 2×.</p>
      *
-     * <p>To reach 1M TPS: ~3 threads with 4× overhead, ~2 threads with 2×.</p>
+     * <p>To reach 1M TPS: ~1 thread with 4× overhead, ~1 thread with 2×.</p>
      *
      * @return a multi-line summary string
      */
     public String estimateThroughput() {
         int threads = Math.min(deliveryMessageThreadCount, sctpWorkerThreads);
-        double rtPerThread = 1_826_000;  // measured: SEQUENCE{INT+100B} roundtrip ops/s
-        double zcPerThread = 3_000_000;  // measured: zero-copy decode only
+        double rtPerThread = 3_089_607;  // measured: MAP USSD roundtrip ops/s (telemetry off)
+        double zcPerThread = 4_650_084;  // measured: MAP USSD decode only (telemetry off)
         double encodePerThread = 18_500_000; // measured: BerWriter SMALL pool encode
         double stackOverhead = 4.0;      // TCAP/SCCP overhead (shared-nothing → 2×)
 

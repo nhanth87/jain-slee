@@ -26,9 +26,18 @@
 
     <dependencies>
         <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-telemetry</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>io.vertx</groupId>
             <artifactId>vertx-web</artifactId>
             <version>${vertx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
         </dependency>
     </dependencies>
 

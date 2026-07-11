@@ -22,7 +22,6 @@ import com.microjainslee.api.ProfileFacility;
 import com.microjainslee.api.ProfileLocalObject;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
-import com.microjainslee.core.ies.InitialEventSelectorDispatcher;
 import com.microjainslee.ra.grpc.GrpcActivityContextLookup;
 import com.microjainslee.ra.grpc.GrpcMenuEventFactory;
 import com.microjainslee.ra.grpc.GrpcMenuRaEndpoint;
@@ -46,7 +45,6 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -135,17 +133,8 @@ class SpringUssdSmokeTest {
     private void wireHttpServerRa() {
         HttpServerResourceAdaptor ra = new HttpServerResourceAdaptor();
         ra.setPort(httpPort);
-        ra.setBeginEventFactory((sid, msisdn, ussd, cbUrl) ->
-                new HttpUssdBeginEvent(sid, msisdn, ussd, cbUrl));
-        ra.setActivityContextFactory((sid, ctx) -> container.createActivityContext(sid));
-        ra.setSessionPreparer((sid, cbUrl, aci) -> {
-            demoContext.storeCallbackUrl(sid, cbUrl);
-            var httpLo = container.acquireEntity(demoContext.httpEntityId(sid), HttpServerSbb.class);
-            httpLo.setPriority(15);
-            HttpServerSbb httpSbb = (HttpServerSbb) httpLo.getSbb();
-            httpSbb.bindSelf(httpLo);
-            container.attach(sid, httpLo);
-        });
+        // Session preparation is handled by the SBB's onHttpWebRequest handler
+        // which parses the raw HttpWebRequestEvent body and resolves entities.
         httpEndpoint = new HttpServerRaEndpoint(ra);
         container.registerRa(httpEndpoint, httpEndpoint);
     }

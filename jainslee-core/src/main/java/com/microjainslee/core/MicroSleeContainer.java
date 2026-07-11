@@ -780,7 +780,6 @@ public final class MicroSleeContainer {
             return sbbs.get(id);
         }
         if (sbb != null && sbbTypeRegistry.isRegistered(sbb.getClass())) {
-            @SuppressWarnings("unchecked")
             Class<? extends Sbb> type = (Class<? extends Sbb>) sbb.getClass();
             return acquireEntity(id, type, mask, serviceID);
         }

@@ -22,15 +22,12 @@ import com.example.ussddemo.spring.sbbs.GrpcClientSbb;
 import com.example.ussddemo.spring.sbbs.HttpServerSbb;
 import com.example.ussddemo.spring.sbbs.Ss7UssdIngressSbb;
 import com.microjainslee.api.ActivityContextInterface;
-import com.microjainslee.api.Profile;
 import com.microjainslee.api.ProfileFacility;
 import com.microjainslee.api.ProfileLocalObject;
 import com.microjainslee.api.SleeEvent;
 import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.core.SbbLifecycleManager;
 import com.microjainslee.core.SimpleSbbLocalObject;
-import com.microjainslee.core.ies.InitialEventSelectorDispatcher;
-import com.microjainslee.ra.grpc.GrpcActivityContextLookup;
 import com.microjainslee.ra.grpc.GrpcMenuEventFactory;
 import com.microjainslee.ra.grpc.GrpcMenuRaEndpoint;
 import com.microjainslee.ra.grpc.GrpcMenuResourceAdaptor;
@@ -49,12 +46,10 @@ import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 
 import io.grpc.ManagedChannel;
-import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -200,7 +195,7 @@ public class UssdDemoBootstrap {
 
     // ---- private helpers ----
 
-    private void prepareHttpSession(String sid, String cbUrl, ActivityContextInterface aci) {
+    public void prepareHttpSession(String sid, String cbUrl, ActivityContextInterface aci) {
         storeCallbackUrl(sid, cbUrl);
         SimpleSbbLocalObject httpLo = container.acquireEntity(httpEntityId(sid), HttpServerSbb.class);
         httpLo.setPriority(15);

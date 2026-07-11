@@ -8,8 +8,8 @@ import com.example.sipgateway.sbbs.IceNegotiationSbb;
 import com.example.sipgateway.sbbs.ProxySbb;
 import com.example.sipgateway.sbbs.RegistrationSbb;
 import com.microjainslee.core.MicroSleeContainer;
-import com.microjainslee.core.VirtualThreadSbbEntityPool;
-import com.microjainslee.core.ies.InitialEventSelectorDispatcher;
+
+
 import com.microjainslee.ra.sipservlet.SipRaConfig;
 import com.microjainslee.ra.sipservlet.SipServletRaEndpoint;
 import com.microjainslee.ra.sipservlet.SipServletResourceAdaptor;
@@ -35,7 +35,7 @@ import jakarta.inject.Inject;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.concurrent.atomic.AtomicLong;
+
 
 /**
  * Quarkus CDI bootstrap — wires the SIP RA and SIP SBBs
@@ -118,8 +118,8 @@ public final class SipGatewayBootstrap {
         var prometheusRa = new PrometheusResourceAdaptor();
         prometheusRa.setPort(9090);
         var prometheusEndpoint = new PrometheusRaEndpoint(prometheusRa);
-        container.registerRa(prometheusEndpoint);
-        LOG.info("Prometheus exporter RA registered on port {}", prometheusRa.port());
+        container.registerRa(prometheusEndpoint, prometheusEndpoint);
+                LOG.info("Prometheus exporter RA registered on port {}", prometheusRa.port());
     }
 
     private void registerSbbTypes() {

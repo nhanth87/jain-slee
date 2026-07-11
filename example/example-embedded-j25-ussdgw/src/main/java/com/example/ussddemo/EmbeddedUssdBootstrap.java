@@ -21,7 +21,7 @@ import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.core.SbbLifecycleManager;
 import com.microjainslee.core.SimpleSbbLocalObject;
 import com.microjainslee.ra.grpc.GrpcActivityContextLookup;
-import com.microjainslee.ra.grpc.GrpcMenuCommand;
+
 import com.microjainslee.ra.grpc.GrpcMenuEventFactory;
 import com.microjainslee.ra.grpc.GrpcMenuRaEndpoint;
 import com.microjainslee.ra.grpc.GrpcMenuResourceAdaptor;
@@ -211,8 +211,8 @@ public final class EmbeddedUssdBootstrap {
         var prometheusRa = new PrometheusResourceAdaptor();
         prometheusRa.setPort(9090);
         var prometheusEndpoint = new PrometheusRaEndpoint(prometheusRa);
-        container.registerRa(prometheusEndpoint);
-        LOG.info("Prometheus exporter RA registered on port {}", prometheusRa.port());
+        container.registerRa(prometheusEndpoint, prometheusEndpoint);
+                LOG.info("Prometheus exporter RA registered on port {}", prometheusRa.port());
     }
 
     private void bindEventMappings() {

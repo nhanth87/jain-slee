@@ -22,6 +22,7 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -241,7 +242,7 @@ public class RaPortManager {
      * @return unmodifiable list of RA entity names registered so far
      */
     public List<String> getRegisteredRaNames() {
-        return List.copyOf(registeredRaNames);
+        return Collections.unmodifiableList(new ArrayList<>(registeredRaNames));
     }
 
     /**

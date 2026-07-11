@@ -103,8 +103,8 @@ public class HelloWorldBootstrap {
                 var promRa = new PrometheusResourceAdaptor();
                 promRa.setPort(9090);
                 prometheusEndpoint = new PrometheusRaEndpoint(promRa);
-                container.registerRa(prometheusEndpoint);
-                LOG.info("Prometheus exporter RA registered on port {}", promRa.port());
+                container.registerRa(prometheusEndpoint, prometheusEndpoint);
+                                LOG.info("Prometheus exporter RA registered on port {}", promRa.port());
 
                 registerSbbTypes();
                 bindEventMappings();

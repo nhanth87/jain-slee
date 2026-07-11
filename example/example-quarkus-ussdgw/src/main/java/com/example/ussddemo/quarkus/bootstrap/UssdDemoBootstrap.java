@@ -6,7 +6,7 @@ package com.example.ussddemo.quarkus.bootstrap;
 
 import com.example.ussddemo.quarkus.events.GrpcMenuRequestEvent;
 import com.example.ussddemo.quarkus.events.GrpcMenuResponseEvent;
-import com.example.ussddemo.quarkus.events.HttpUssdBeginEvent;
+
 import com.example.ussddemo.quarkus.sbbs.GrpcClientSbb;
 import com.example.ussddemo.quarkus.sbbs.HttpServerSbb;
 import com.example.ussddemo.quarkus.sbbs.Ss7UssdIngressSbb;
@@ -19,7 +19,7 @@ import com.microjainslee.autonomous.AutonomousGuardian;
 import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.core.SbbLifecycleManager;
 import com.microjainslee.core.SimpleSbbLocalObject;
-import com.microjainslee.core.ies.InitialEventSelectorDispatcher;
+
 import com.microjainslee.ra.grpc.GrpcActivityContextLookup;
 import com.microjainslee.ra.grpc.GrpcMenuEventFactory;
 import com.microjainslee.ra.grpc.GrpcMenuRaEndpoint;
@@ -40,7 +40,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
+
 
 /**
  * Quarkus CDI bootstrap — wires vendor-ras Resource Adaptors into the
@@ -197,8 +197,8 @@ public final class UssdDemoBootstrap implements UssdDemoContext {
         var prometheusRa = new PrometheusResourceAdaptor();
         prometheusRa.setPort(9090);
         var prometheusEndpoint = new PrometheusRaEndpoint(prometheusRa);
-        container.registerRa(prometheusEndpoint);
-        LOG.info("Prometheus exporter RA registered on port {}", prometheusRa.port());
+        container.registerRa(prometheusEndpoint, prometheusEndpoint);
+                LOG.info("Prometheus exporter RA registered on port {}", prometheusRa.port());
     }
 
     private static class QuarkusGrpcEventFactory implements GrpcMenuEventFactory {

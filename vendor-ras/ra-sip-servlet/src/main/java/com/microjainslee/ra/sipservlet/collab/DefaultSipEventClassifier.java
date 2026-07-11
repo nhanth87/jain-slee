@@ -92,28 +92,24 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
 
     // --- Header extraction (all javax.sip.* API, no NIST internals) ---
 
-    @SuppressWarnings("unchecked")
     private String extractFrom(Message msg) {
         FromHeader h = (FromHeader) msg.getHeader(FromHeader.NAME);
         return h != null ? h.toString() : "";
     }
 
-    @SuppressWarnings("unchecked")
     private String extractTo(Message msg) {
         ToHeader h = (ToHeader) msg.getHeader(ToHeader.NAME);
         return h != null ? h.toString() : "";
     }
 
-    @SuppressWarnings("unchecked")
     private String extractContact(Message msg) {
         ContactHeader h = (ContactHeader) msg.getHeader(ContactHeader.NAME);
         return h != null ? h.toString() : "";
     }
 
-    @SuppressWarnings("unchecked")
     private List<String> extractViaHeaders(Message msg) {
         List<String> result = new ArrayList<>();
-        ListIterator it = msg.getHeaders(ViaHeader.NAME);
+        ListIterator<?> it = msg.getHeaders(ViaHeader.NAME);
         while (it != null && it.hasNext()) {
             ViaHeader via = (ViaHeader) it.next();
             result.add("SIP/2.0/" + via.getTransport().toUpperCase()
@@ -123,18 +119,16 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
         return result;
     }
 
-    @SuppressWarnings("unchecked")
     private List<String> extractRecordRoute(Message msg) {
         List<String> result = new ArrayList<>();
-        ListIterator it = msg.getHeaders(RecordRouteHeader.NAME);
+        ListIterator<?> it = msg.getHeaders(RecordRouteHeader.NAME);
         while (it != null && it.hasNext()) result.add(it.next().toString());
         return result;
     }
 
-    @SuppressWarnings("unchecked")
     private List<String> extractRoute(Message msg) {
         List<String> result = new ArrayList<>();
-        ListIterator it = msg.getHeaders(RouteHeader.NAME);
+        ListIterator<?> it = msg.getHeaders(RouteHeader.NAME);
         while (it != null && it.hasNext()) result.add(it.next().toString());
         return result;
     }
@@ -151,13 +145,11 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private String extractContentType(Message msg) {
         ContentTypeHeader h = (ContentTypeHeader) msg.getHeader(ContentTypeHeader.NAME);
         return h != null ? h.toString().trim() : "";
     }
 
-    @SuppressWarnings("unchecked")
     private int extractExpires(Message msg) {
         ExpiresHeader h = (ExpiresHeader) msg.getHeader(ExpiresHeader.NAME);
         if (h != null) {
@@ -167,7 +159,6 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
         return 3600;
     }
 
-    @SuppressWarnings("unchecked")
     private String extractEventType(Message msg) {
         EventHeader h = (EventHeader) msg.getHeader(EventHeader.NAME);
         return h != null ? h.getEventType() : "";
@@ -175,31 +166,27 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
 
     private List<String> extractAccept(Message msg) {
         List<String> result = new ArrayList<>();
-        ListIterator it = msg.getHeaders("Accept");
+        ListIterator<?> it = msg.getHeaders("Accept");
         while (it != null && it.hasNext()) result.add(it.next().toString());
         return result;
     }
 
-    @SuppressWarnings("unchecked")
     private String extractSubscriptionState(Message msg) {
         SubscriptionStateHeader h =
                 (SubscriptionStateHeader) msg.getHeader(SubscriptionStateHeader.NAME);
         return h != null ? h.toString() : "terminated";
     }
 
-    @SuppressWarnings("unchecked")
     private String extractReferTo(Message msg) {
         ReferToHeader h = (ReferToHeader) msg.getHeader(ReferToHeader.NAME);
         return h != null ? h.toString() : "";
     }
 
-    @SuppressWarnings("unchecked")
     private String extractRackNumber(Message msg) {
         RAckHeader h = (RAckHeader) msg.getHeader(RAckHeader.NAME);
         return h != null ? String.valueOf(h.getRSeqNumber()) : "0";
     }
 
-    @SuppressWarnings("unchecked")
     private String extractRackMethod(Message msg) {
         RAckHeader h = (RAckHeader) msg.getHeader(RAckHeader.NAME);
         return h != null ? h.getMethod() : "INVITE";

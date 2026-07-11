@@ -21,6 +21,7 @@ import sun.misc.Unsafe;
  * <p>Only memory-access methods are used (no thread control), which is
  * fully virtual-thread and native-image compatible.</p>
  */
+@SuppressWarnings("removal")
 public final class OffHeapMemory {
 
     private static final Unsafe UNSAFE;

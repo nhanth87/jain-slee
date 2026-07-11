@@ -19,12 +19,9 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryMXBean;
 import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -32,8 +29,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -56,22 +51,18 @@ public class SbbEntityPoolStressTest {
     private static final Logger LOG = LogManager.getLogger(SbbEntityPoolStressTest.class);
 
     /** Scale points chosen to exercise the per-VT map under realistic pressure. */
-    private static final int[] SCALES = new int[] { 10_000, 50_000, 100_000 };
+    private VirtualThreadSbbEntityPool pool;
+    private ThreadMXBean threadMx;
 
     /** Per-SBB workload: tasks enqueued during the "pending" phase. */
     private static final int TASKS_PER_SBB = 5;
 
     /** Hard upper bound on wait time, to avoid hanging CI on a regression. */
-    private static final long HARD_LIMIT_MS = 240_000; // 4 minutes
-
-    private VirtualThreadSbbEntityPool pool;
-    private ThreadMXBean threadMx;
-    private MemoryMXBean memMx;
+    private static final long HARD_LIMIT_MS = 240_000;
 
     @Before
     public void setUp() {
         threadMx = ManagementFactory.getThreadMXBean();
-        memMx = ManagementFactory.getMemoryMXBean();
     }
 
     @After

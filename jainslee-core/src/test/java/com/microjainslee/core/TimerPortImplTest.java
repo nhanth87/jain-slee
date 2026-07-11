@@ -11,8 +11,6 @@
 package com.microjainslee.core;
 
 import com.microjainslee.api.SbbLocalObject;
-import com.microjainslee.api.TimerFiredEvent;
-import com.microjainslee.api.TimerPort;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -22,11 +20,7 @@ import org.junit.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -92,20 +86,13 @@ public class TimerPortImplTest {
     public void timer_fires_after_delay_and_routes_TimerFiredEvent_through_EventRouter() throws Exception {
         // Capture TimerFiredEvent arrivals by registering a tracking SbbEntity
         CountDownLatch fired = new CountDownLatch(1);
-        AtomicReference<TimerFiredEvent> captured = new AtomicReference<TimerFiredEvent>();
         VirtualThreadSbbEntityPool pool = new VirtualThreadSbbEntityPool(0, 1, false);
         eventRouter.bindSbbEntityPool(pool);
         // The pool emits to a fake SbbLocalObject — but our setTimer takes
         // a SbbLocalObject, not an SbbEntity. The bridge looks up the
         // entity by SbbLocalObject identity and posts TimerFiredEvent to
         // the EventRouter. The Disruptor consumer dispatches it to the
-        // attached SBBs of the ACI. We need an ACI to verify end-to-end.
-        com.microjainslee.api.ActivityContextInterface aci =
-                new com.microjainslee.api.ActivityContextInterface() {
-                    @Override public String getActivityContextName() { return "timer-test"; }
-                    @Override public void attach(SbbLocalObject s) { }
-                    @Override public void detach(SbbLocalObject s) { }
-                };
+        // attached SBBs of the ACI.
         // We don't go through MicroSleeContainer.attach() here because we
         // want a minimal harness. Instead, inject a custom Disruptor
         // handler that captures the TimerFiredEvent. TimerPortImpl is

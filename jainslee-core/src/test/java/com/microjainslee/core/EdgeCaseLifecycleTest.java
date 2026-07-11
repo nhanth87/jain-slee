@@ -20,9 +20,6 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -150,6 +147,7 @@ public class EdgeCaseLifecycleTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void deprecatedRemoveStillWorks() {
         Sbb sbb = new Sbb() {
             @Override public void sbbRemove() {}
@@ -160,6 +158,7 @@ public class EdgeCaseLifecycleTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void deprecatedCreateStillWorks() throws Exception {
         final java.util.concurrent.atomic.AtomicBoolean created =
                 new java.util.concurrent.atomic.AtomicBoolean(false);

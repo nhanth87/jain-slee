@@ -10,16 +10,13 @@
 
 package com.microjainslee.core;
 
-import com.microjainslee.api.Sbb;
-import com.microjainslee.api.SbbID;
-import com.microjainslee.api.SbbLocalObject;
 import com.microjainslee.api.ServiceID;
+
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNotNull;
 
 public class ServiceIDTest {
 

@@ -10,11 +10,6 @@
 
 package com.microjainslee.jakartaee;
 
-import com.microjainslee.api.ActivityContextNamingFacility;
-import com.microjainslee.api.RaCommandPort;
-import com.microjainslee.api.RaEndpointPort;
-import com.microjainslee.api.TimerPort;
-import com.microjainslee.core.EventRouter;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
 

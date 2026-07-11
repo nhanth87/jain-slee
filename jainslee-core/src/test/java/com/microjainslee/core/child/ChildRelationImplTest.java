@@ -23,7 +23,6 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,7 +31,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -144,6 +142,7 @@ public class ChildRelationImplTest {
     }
 
     @Test
+    @SuppressWarnings("unlikely-arg-type")
     public void removeNonSbbReturnsFalse() throws Exception {
         ChildRelationImpl<SbbLocalObject> rel = newRelation("p");
         assertFalse(rel.remove("not-an-sbb"));
@@ -197,6 +196,7 @@ public class ChildRelationImplTest {
     }
 
     @Test
+    @SuppressWarnings("unlikely-arg-type")
     public void containsRejectsNonSbb() throws Exception {
         ChildRelationImpl<SbbLocalObject> rel = newRelation("p");
         rel.create();

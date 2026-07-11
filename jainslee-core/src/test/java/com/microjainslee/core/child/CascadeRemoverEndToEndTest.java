@@ -19,16 +19,12 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -100,12 +96,12 @@ public class CascadeRemoverEndToEndTest {
         //  └── child-B
         //      └── grandchild-B1
         CopyOnWriteArrayList<String> order = new CopyOnWriteArrayList<>();
-        SimpleSbbLocalObject parent = register("parent", new OrderedSbb("parent", order));
-        SimpleSbbLocalObject childA = register("child-A", new OrderedSbb("child-A", order));
-        SimpleSbbLocalObject childB = register("child-B", new OrderedSbb("child-B", order));
-        SimpleSbbLocalObject grandA1 = register("grand-A1", new OrderedSbb("grand-A1", order));
-        SimpleSbbLocalObject grandA2 = register("grand-A2", new OrderedSbb("grand-A2", order));
-        SimpleSbbLocalObject grandB1 = register("grand-B1", new OrderedSbb("grand-B1", order));
+        register("parent", new OrderedSbb("parent", order));
+        register("child-A", new OrderedSbb("child-A", order));
+        register("child-B", new OrderedSbb("child-B", order));
+        register("grand-A1", new OrderedSbb("grand-A1", order));
+        register("grand-A2", new OrderedSbb("grand-A2", order));
+        register("grand-B1", new OrderedSbb("grand-B1", order));
 
         cascadeRemover.registerChild("parent", "child-A");
         cascadeRemover.registerChild("parent", "child-B");
@@ -142,8 +138,8 @@ public class CascadeRemoverEndToEndTest {
     @Test
     public void cascadeRemoveReleasesPoolEntities() {
         CopyOnWriteArrayList<String> order = new CopyOnWriteArrayList<>();
-        SimpleSbbLocalObject parent = register("parent", new OrderedSbb("parent", order));
-        SimpleSbbLocalObject child = register("child", new OrderedSbb("child", order));
+        register("parent", new OrderedSbb("parent", order));
+        register("child", new OrderedSbb("child", order));
         cascadeRemover.registerChild("parent", "child");
 
         assertNotNull(pool.findEntity("parent"));
@@ -176,14 +172,14 @@ public class CascadeRemoverEndToEndTest {
     @Test
     public void sbbRemoveExceptionDoesNotAbortWalk() {
         CopyOnWriteArrayList<String> order = new CopyOnWriteArrayList<>();
-        SimpleSbbLocalObject parent = register("parent", new OrderedSbb("parent", order));
-        Sbb throwingChild = new Sbb() {
+        register("parent", new OrderedSbb("parent", order));
+        register("throwing-child", new Sbb() {
             @Override public void sbbRemove() {
                 order.add("throwing-child");
                 throw new RuntimeException("boom");
             }
-        };
-        SimpleSbbLocalObject sibling = register("sibling", new OrderedSbb("sibling", order));
+        });
+        register("sibling", new OrderedSbb("sibling", order));
         cascadeRemover.registerChild("parent", "throwing-child");
         cascadeRemover.registerChild("parent", "sibling");
 
@@ -211,7 +207,7 @@ public class CascadeRemoverEndToEndTest {
         register(childId, new OrderedSbb(childId, order));
         cascadeRemover.registerChild(parentId, childId);
 
-        ChildRelationImpl<SbbLocalObject> relation = new ChildRelationImpl<SbbLocalObject>(
+        new ChildRelationImpl<SbbLocalObject>(
                 parentId, SbbLocalObject.class, cascadeRemover,
                 (parent, r) -> {
                     // No-op: cascade remove walks the index, not the relation.

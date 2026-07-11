@@ -1,5 +1,14 @@
 # AGENTS.md — Micro-JAINSLEE Runtime
 
+## REPOSITORY INFO
+
+| Repo | Remote | Branch |
+|------|--------|--------|
+| micro-jainslee | nhanth87 | micro-jainslee-2 |
+| jSS7 (Java 25) | origin (nhanth87/jss7) | j25 |
+| jSS7 (Java 8) | origin (nhanth87/jss7) | master |
+| SCTP | local | java25-upgrade |
+
 ## MISSION
 Re-architect the micro-jainslee RUNTIME (not the app) to natively support
 local/internal RA and SBB development pattern defined in docs/junior-dev-guide.md.

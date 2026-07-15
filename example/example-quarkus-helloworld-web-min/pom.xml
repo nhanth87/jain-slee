@@ -5,13 +5,13 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.example.helloworld</groupId>
-    <artifactId>example-quarkus-helloworld-web</artifactId>
+    <artifactId>example-quarkus-helloworld-web-min</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>micro-jainslee example :: HelloWorld Web (Quarkus — SLEE-compliant)</name>
+    <name>micro-jainslee example :: HelloWorld Web MIN (Quarkus — SLEE-compliant, minimum)</name>
     <description>
-        Quarkus 3 app with JAIN SLEE HelloWorld SBB.
+        Quarkus 3 app with JAIN SLEE HelloWorld SBB. MINIMUM template — bootstrap + SBB only, no telemetry, no autonomous.
         ALL HTTP traffic goes through ra-http-server (port 8081) — no direct
         Vert.x, no separate REST endpoints. Strict SLEE 1.1 compliance.
     </description>

@@ -1,4 +1,4 @@
-package com.example.helloworld.quarkus.sbbs;
+package com.example.helloworld.min.quarkus.sbbs;
 
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.RaCommandPort;

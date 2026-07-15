@@ -2,13 +2,24 @@
 
 > Hướng dẫn chi tiết app HelloWorld Web — HTTP ingress qua ra-http-server + JAIN SLEE SBB pipeline trên Quarkus 3.
 > Tham khảo: `docs/vi/app-guide.md` (wiring pattern), `vendor-ras/ra-http-server/` (RA implementation).
-> Last updated: 2026-07-07
+> Last updated: 2026-07-15
 
 ---
 
 ## 1. Ví dụ này làm gì
 
-Đây là một web app "Hello World" tối giản chạy trên Quarkus 3 + micro-jainslee. Nó có 2 port: Quarkus HTTP port 8080 phục vụ static HTML UI (từ `META-INF/resources/`), và `ra-http-server` port 8081 là HTTP ingress cho JAIN SLEE event pipeline. Khi browser gửi request đến port 8081, RA tạo `HttpWebRequestEvent`, route đến `HelloWorldSbb`, SBB log "Hello World" và hoàn tất session qua context bridge.
+Đây là một web app "Hello World" chạy trên Quarkus 3 + micro-jainslee, **tuân thủ nghiêm ngặt SLEE 1.1**.
+
+**Kiến trúc SLEE-compliant:** TẤT CẢ HTTP traffic đều đi qua `ra-http-server` (port 8081). Không có REST endpoint riêng, không dùng trực tiếp Vert.x trong app code.
+
+**Flow:**
+```
+Browser → ra-http-server (port 8081) → HttpWebRequestEvent
+  → EventRouter (Disruptor) → HelloWorldSbb.onEvent()
+  → HttpResponseCommand → ra-http-server → HTTP response
+```
+
+Quarkus HTTP port 8080 chỉ phục vụ static HTML UI từ `META-INF/resources/`.
 
 ---
 
@@ -16,49 +27,36 @@
 
 ```
 example/example-quarkus-helloworld-web/
-├── pom.xml                                              ← Maven project, dependencies Quarkus + micro-jainslee + ra-http-server
+├── pom.xml
+├── GUIDE.md
 ├── src/main/resources/
-│   ├── application.properties                          ← Quarkus port 8080, ra-http-server port 8081, microjainslee tuning
+│   ├── application.properties
+│   ├── log4j2.xml
 │   └── META-INF/resources/
-│       └── index.html                                  ← Static HTML UI (served by Quarkus Undertow)
-├── src/main/java/com/example/helloworld/quarkus/
-│   ├── bootstrap/
-│   │   ├── HelloWorldBootstrap.java                    ← @ApplicationScoped CDI bean: wire RA + SBB, implement HelloWorldContext
-│   │   └── HelloWorldContext.java                      ← Interface bridge: container(), completeSession(), httpEntityId()
-│   ├── sbbs/
-│   │   └── HelloWorldSbb.java                          ← SBB: nhận HttpWebRequestEvent, log "Hello World", complete session
-│   ├── events/
-│   │   └── HttpWebRequestEvent.java                    ← App-defined event (@EventType "HttpWebRequest")
-│   ├── command/
-│   │   └── HelloWorldCommand.java                      ← Sealed outbound command hierarchy (HttpResponseCommand)
-│   └── rest/
-│       └── HealthResource.java                         ← Quarkus REST health endpoint: GET /health → {"status":"ok"}
+│       └── index.html
+└── src/main/java/com/example/helloworld/quarkus/
+    ├── bootstrap/
+    │   └── HelloWorldBootstrap.java    ← @ApplicationScoped CDI bean
+    └── sbbs/
+        └── HelloWorldSbb.java          ← SBB xử lý HttpWebRequestEvent
 ```
+
+**Chỉ 2 file Java** — bootstrap + SBB. Không có events, commands, REST, telemetry, autonomous riêng vì:
+- **Events**: Dùng `HttpWebRequestEvent` từ `ra-http-server` (không định nghĩa lại)
+- **Commands**: Dùng `HttpResponseCommand` từ `ra-http-server` (không định nghĩa lại)
+- **REST**: Không có — tất cả HTTP qua ra-http-server
+- **Telemetry/Autonomous/AI**: Đã bỏ để tuân thủ SLEE
 
 ---
 
 ## 3. pom.xml
 
-> 📄 File: example/example-quarkus-helloworld-web/pom.xml
-
 ```xml
 <dependencies>
-    <!-- Quarkus REST + CDI + Undertow (serves static resources from META-INF/resources/) -->
-    <dependency>
-        <groupId>io.quarkus</groupId>
-        <artifactId>quarkus-rest</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>io.quarkus</groupId>
-        <artifactId>quarkus-rest-jackson</artifactId>
-    </dependency>
+    <!-- Quarkus CDI only (no REST, no Undertow) -->
     <dependency>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-arc</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>io.quarkus</groupId>
-        <artifactId>quarkus-undertow</artifactId>
     </dependency>
 
     <!-- micro-jainslee core + API + APT -->
@@ -100,11 +98,7 @@ example/example-quarkus-helloworld-web/
 </dependencies>
 ```
 
-> Lưu ý: example này KHÔNG dùng `adapter-quarkus`. Container (`MicroSleeContainer`) được inject trực tiếp — có thể do Quarkus CDI producer từ một dependency khác hoặc do example dùng phiên bản cũ hơn.
-
-`application.properties`:
-
-> 📄 File: example/example-quarkus-helloworld-web/src/main/resources/application.properties
+### application.properties
 
 ```properties
 # Quarkus HTTP — serves static web UI
@@ -120,279 +114,180 @@ microjainslee.sbb-pool-min=16
 microjainslee.sbb-pool-max=10000
 ```
 
-
 ---
 
-## 4. Cách RA kết nối vào jainslee
+## 4. HelloWorldBootstrap.java
 
-Bootstrap trong `HelloWorldBootstrap` implement `HelloWorldContext` và thực hiện đúng thứ tự:
-
-> 📄 File: example/example-quarkus-helloworld-web/src/main/java/com/example/helloworld/quarkus/bootstrap/HelloWorldBootstrap.java
-
-### Bước 1: Start container
+`@ApplicationScoped` CDI bean với `@PostConstruct` / `@PreDestroy` lifecycle.
+Wires ra-http-server + HelloWorldSbb vào MicroSleeContainer.
 
 ```java
-@Inject
-MicroSleeContainer container;
+@ApplicationScoped
+public final class HelloWorldBootstrap {
 
-@PostConstruct
-void init() {
-    if (container.getState() != MicroSleeContainer.State.STARTED) {
-        container.start();
+    @Inject MicroSleeContainer container;
+
+    @ConfigProperty(name = "http.ra.port", defaultValue = "8081")
+    int httpRaPort;
+
+    private volatile HttpServerRaEndpoint httpEndpoint;
+
+    @PostConstruct
+    void init() {
+        // 1. Start container (if not already started)
+        if (container.getState() != MicroSleeContainer.State.STARTED) {
+            container.start();
+        }
+
+        // 2. Register SBB type
+        container.registerSbbType(HelloWorldSbb.class,
+                () -> new HelloWorldSbb(container));
+        container.createIesDispatcher();
+
+        // 3. Map event → SBB
+        container.mapEventToSbb(HttpWebRequestEvent.class, "HelloWorldSbb");
+
+        // 4. Wire ra-http-server
+        wireHttpRa();
     }
-```
 
-### Bước 2: Đăng ký SBB type — có collaborator qua constructor
-
-```java
-    container.registerSbbType(HelloWorldSbb.class,
-            () -> new HelloWorldSbb(container, this));
-```
-
-`this` là `HelloWorldBootstrap` — nó implement `HelloWorldContext`. SBB nhận context qua constructor, tuân thủ quy tắc: collaborator qua **interface** (không static, không concrete class).
-
-### Bước 3: Tạo IES dispatcher
-
-```java
-    container.createIesDispatcher();
-```
-
-### Bước 4: Map event → SBB
-
-```java
-    container.mapEventToSbb(HttpWebRequestEvent.class, "HelloWorldSbb");
-```
-
-Chỉ có 1 event type duy nhất được map — mọi HTTP request (trừ `/health`) từ `ra-http-server` đều fire `HttpWebRequestEvent`.
-
-### Bước 5: Wire HTTP RA
-
-Khi `registerRa()` được gọi:
-- `HttpServerRaEndpoint.activate(bootstrap)` → tạo `ResourceAdaptorContext` bridge từ `RaBootstrapPort` → gọi `delegate.raConfigure()` → `delegate.raActive()`
-- `raActive()` khởi động Vert.x HTTP server, bind vào `host:port`, đăng ký `requestHandler` → gọi `this::route` cho mỗi request.
-
-**Cleanup**:
-
-```java
-@PreDestroy
-void shutdown() {
-    if (httpEndpoint != null) {
-        httpEndpoint.deactivate();   // → delegate.raInactive() → đóng Vert.x server
-    }
-    if (container.getState() == MicroSleeContainer.State.STARTED) {
-        container.stop();
-    }
-}
-```
-
-### Collaborator pattern: HelloWorldContext
-
-> 📄 File: example/example-quarkus-helloworld-web/src/main/java/com/example/helloworld/quarkus/bootstrap/HelloWorldContext.java
-
-```java
-public interface HelloWorldContext {
-    MicroSleeContainer container();
-    void completeSession(String sessionId, String responseText);
-    void failSession(String sessionId, String message);
-    String httpEntityId(String sessionId);
-
----
-
-## 5. SBB — business logic từng file
-
-### 5.1 HelloWorldSbb
-
-> 📄 File: example/example-quarkus-helloworld-web/src/main/java/com/example/helloworld/quarkus/sbbs/HelloWorldSbb.java
-
-**Mục đích**: SBB tối giản xử lý HTTP web requests từ `ra-http-server`. Log "Hello World" với User-Agent và hoàn tất session.
-
-**Constructor**: nhận `MicroSleeContainer` và `HelloWorldContext` qua constructor (collaborator pattern).
-
-```java
-public HelloWorldSbb(MicroSleeContainer container, HelloWorldContext context) {
-    this.container = container;
-    this.context = context;
-}
-```
-
-**Event handling**: Chỉ xử lý `HttpWebRequestEvent`:
-
-```java
-@Override
-public void onEvent(SleeEvent event, ActivityContextInterface aci) {
-    if (event instanceof HttpWebRequestEvent req) {
-        onWebRequest(req, aci);
-    }
-}
-
-private void onWebRequest(HttpWebRequestEvent event, ActivityContextInterface aci) {
-    String userAgent = event.getUserAgent() != null
-            ? event.getUserAgent() : "unknown";
-    LOG.info("[HelloWorld] Hello World {}", userAgent);
-    context.completeSession(event.getSessionId(),
-            "Hello World " + userAgent);
-}
-```
-
-**@InjectRa**: Có field `@InjectRa(name = "http-server-ra")` — sẵn sàng gửi `HttpResponseCommand` nhưng hiện tại SBB chỉ complete session qua context bridge.
-
-### 5.2 App-defined events & commands
-
-**HttpWebRequestEvent** (app-specific):
-
-> 📄 File: example/example-quarkus-helloworld-web/src/main/java/com/example/helloworld/quarkus/events/HttpWebRequestEvent.java
-
-```java
-@EventType(name = "HttpWebRequest", vendor = "com.example.helloworld", version = "1.0")
-public final class HttpWebRequestEvent implements SleeEvent {
-    private final String sessionId, method, path, userAgent;
-}
-```
-
-> Lưu ý: Đây là app-defined event, KHÔNG phải `com.microjainslee.ra.httpserver.events.HttpWebRequestEvent` từ RA. App tự định nghĩa event riêng.
-
-**HelloWorldCommand**:
-
-> 📄 File: example/example-quarkus-helloworld-web/src/main/java/com/example/helloworld/quarkus/command/HelloWorldCommand.java
-
-```java
-public sealed interface HelloWorldCommand extends OutboundCommand
-        permits HelloWorldCommand.HttpResponseCommand {
-    record HttpResponseCommand(String sessionId, int statusCode,
-                               String contentType, String body)
-            implements HelloWorldCommand { }
-
----
-
-## 6. Events & Commands
-
-| Event | Nguồn | SBB xử lý | Command gửi về RA |
-|---|---|---|---|
-| `HttpWebRequestEvent` (app-defined) | HTTP request → RA pipeline → EventRouter | `HelloWorldSbb` | (không gửi command, chỉ complete session qua `HelloWorldContext`) |
-
----
-
-## 7. Call flow trace
-
-```
-┌─────────────┐     POST /api/ussd/begin  ┌──────────────────────────┐
-│  Browser /   │ ────────────────────────▶ │  Vert.x HTTP Server      │
-│  curl        │   port 8081               │  (HttpServerResource     │
-└─────────────┘                           │   Adaptor.raActive)      │
-                                           └────────────┬─────────────┘
-                                                        │ HttpServerRequest
-                                                        ▼
-                                           ┌──────────────────────────┐
-                                           │ HttpServerResourceAdaptor │
-                                           │  .route(req)             │
-                                           │  ├─ skip /health         │
-                                           │  ├─ read body async      │
-                                           │  └─ fireHttpRequest()    │
-                                           │     ├─ UUID sessionId    │
-                                           │     ├─ store response    │
-                                           │     │  in pendingResponses│
-                                           │     ├─ new HttpWebRequest│
-                                           │     │  Event(sessionId,  │
-                                           │     │  method,path,      │
-                                           │     │  headers,body)     │
-                                           │     └─ vertx.execute     │
-                                           │        Blocking(() ->    │
-                                           │        endpoint()        │
-                                           │        .fireEvent(...))  │
-                                           └────────────┬─────────────┘
-                                                        │ HttpWebRequestEvent
-                                                        ▼
-                                           ┌──────────────────────────┐
-                                           │  HttpServerRaEndpoint    │
-                                           │  (bridgeContext)         │
-                                           │  └─ bp.fireEvent(event,  │
-                                           │      handle, null)       │
-                                           └────────────┬─────────────┘
-                                                        │
-                                                        ▼
-                                           ┌──────────────────────────┐
-                                           │     EventRouter          │
-                                           │  (Disruptor ring buffer) │
-                                           │  └─ IES dispatcher       │
-                                           │     "HttpWebRequestEvent"│
-                                           │     → "HelloWorldSbb"    │
-                                           └────────────┬─────────────┘
-                                                        │ HttpWebRequestEvent
-                                                        ▼
-                                           ┌──────────────────────────┐
-                                           │    HelloWorldSbb         │
-                                           │  .onEvent(event, aci)    │
-                                           │  ├─ log method + path    │
-                                           │  ├─ log "Hello World"    │
-                                           │  │  + userAgent          │
-                                           │  └─ context              │
-                                           │     .completeSession(    │
-                                           │       sessionId, text)   │
-                                           └──────────────────────────┘
-```
-
-}
-```
-
-}
-```
-
-Bootstrap implement interface này, cung cấp session storage (`ConcurrentHashMap`) và entity ID generation. SBB chỉ phụ thuộc vào interface — testable, mockable.
-
-
-```java
     private void wireHttpRa() {
-
----
-
-## 8. Cách chạy
-
-```bash
-cd example/example-quarkus-helloworld-web
-mvn quarkus:dev
-```
-
-Sau khi start:
-- **UI**: mở browser `http://localhost:8080/` — hiển thị static HTML
-- **Health**: `curl http://localhost:8080/health` → `{"status":"ok"}`
-- **JAIN SLEE pipeline**: POST đến port 8081:
-
-```bash
-curl -X POST http://localhost:8081/api/ussd/begin \
-     -H 'Content-Type: application/json' \
-     -d '{"msisdn":"84901234567","ussdString":"*101#"}'
-```
-
-Log sẽ hiển thị:
-
-```
-[HelloWorld] web request session=<uuid> POST /api/ussd/begin
-[HelloWorld] Hello World curl/8.x.x
-```
-
----
-
-## 9. Test
-
-Example này chưa có unit test riêng. Cấu trúc test có thể theo pattern từ `UssdDemoSmokeTest`:
-
-- Tạo `MicroSleeContainer` với buffer nhỏ, không virtual thread.
-- Set `httpRaPort = 0` để bind ephemeral port.
-- Gọi `bootstrap.init()` rồi dùng `bootstrap.httpEndpoint.port()` để lấy port thật.
-- Gửi HTTP request và poll session đến khi COMPLETED.
-
-```bash
-mvn test
-```
-
         HttpServerResourceAdaptor ra = new HttpServerResourceAdaptor();
-        ra.setPort(httpRaPort);   // default 8081, từ @ConfigProperty
-
+        ra.setPort(httpRaPort);
         httpEndpoint = new HttpServerRaEndpoint(ra);
         httpEndpoint.setPort(httpRaPort);
-
         container.registerRa(httpEndpoint, httpEndpoint);
     }
+
+    @PreDestroy
+    void shutdown() {
+        if (httpEndpoint != null) {
+            httpEndpoint.deactivate();
+        }
+        if (container.getState() == MicroSleeContainer.State.STARTED) {
+            container.stop();
+        }
+    }
+}
 ```
 
-`HttpServerRaEndpoint` implements cả `RaEndpointPort` và `RaCommandPort`. `getRaName()` trả về `"http-server-ra"` — khớp với `@InjectRa(name = "http-server-ra")` trong `HelloWorldSbb`.
+**Thứ tự wiring:**
+1. `container.start()` — khởi động Disruptor event bus
+2. `container.registerSbbType()` — đăng ký SBB class + factory
+3. `container.createIesDispatcher()` — tạo Initial Event Selector dispatcher
+4. `container.mapEventToSbb()` — map event type → SBB name
+5. `container.registerRa()` — đăng ký RA endpoint (vừa là RaEndpointPort vừa là RaCommandPort)
+
+---
+
+## 5. HelloWorldSbb.java
+
+SBB nhận `HttpWebRequestEvent` từ ra-http-server, tạo JSON response, gửi lại qua `HttpResponseCommand`.
+
+```java
+public final class HelloWorldSbb implements Sbb, SleeEventHandler {
+
+    @InjectRa(name = "http-server-ra")
+    private volatile RaCommandPort httpCommandPort;
+
+    @Override
+    public void onEvent(SleeEvent event, ActivityContextInterface aci) {
+        if (event instanceof HttpWebRequestEvent req) {
+            onWebRequest(req);
+        }
+    }
+
+    private void onWebRequest(HttpWebRequestEvent event) {
+        String userAgent = event.getUserAgent() != null
+                ? event.getUserAgent() : "unknown";
+
+        String body = "{\"message\":\"Hello World\",\"userAgent\":\""
+                + userAgent + "\"}";
+
+        httpCommandPort.sendCommand(new HttpServerCommand.HttpResponseCommand(
+                event.getSessionId(), 200, "application/json", body));
+    }
+}
+```
+
+**Key patterns:**
+- `@InjectRa(name = "http-server-ra")` — inject RA command port, phải match với `HttpServerRaEndpoint.getRaName()`
+- `event instanceof HttpWebRequestEvent req` — pattern matching (Java 25)
+- `httpCommandPort.sendCommand(HttpResponseCommand)` — gửi response qua RA, KHÔNG dùng trực tiếp Vert.x
+
+---
+
+## 6. Build & Run
+
+### Cài đặt dependencies
+
+```bash
+cd /path/to/jain-slee
+JAVA_HOME=/path/to/zulu-25 mvn install -pl jainslee-api,jainslee-core,jainslee-ra-spi,vendor-ras/ra-http-server -DskipTests -q
+```
+
+### Compile
+
+```bash
+JAVA_HOME=/path/to/zulu-25 mvn compile -f example/example-quarkus-helloworld-web/pom.xml
+```
+
+### Run
+
+```bash
+JAVA_HOME=/path/to/zulu-25 mvn quarkus:dev -f example/example-quarkus-helloworld-web/pom.xml
+```
+
+### Test
+
+```bash
+# Static UI (Quarkus port 8080)
+curl http://localhost:8080/
+
+# SLEE event pipeline (ra-http-server port 8081)
+curl http://localhost:8081/hello
+# → {"message":"Hello World","userAgent":"curl/8.x.x"}
+
+curl -H "User-Agent: MyBrowser/1.0" http://localhost:8081/api/test
+# → {"message":"Hello World","userAgent":"MyBrowser/1.0"}
+```
+
+---
+
+## 7. Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Quarkus Application                                        │
+│                                                             │
+│  port 8080 ─── Static HTML UI (META-INF/resources/)        │
+│                                                             │
+│  port 8081 ─── ra-http-server (Vert.x HTTP server)          │
+│                   │                                         │
+│                   ▼ HttpWebRequestEvent                     │
+│              EventRouter (Disruptor)                        │
+│                   │                                         │
+│                   ▼                                         │
+│              HelloWorldSbb.onEvent()                        │
+│                   │                                         │
+│                   ▼ HttpResponseCommand                     │
+│              ra-http-server ─── HTTP response               │
+│                                                             │
+│  No REST endpoints. No direct Vert.x in app code.           │
+│  Strict JAIN SLEE 1.1 compliance.                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 8. So sánh với phiên bản cũ (vi phạm SLEE)
+
+| Khía cạnh | Phiên bản cũ (WRONG) | Phiên bản mới (CORRECT) |
+|---|---|---|
+| HTTP ingress | `@Path("/health")` REST endpoint | ra-http-server (port 8081) |
+| Event flow | SBB gọi trực tiếp Vert.x Router | Event → Disruptor → SBB → Command |
+| Telemetry | HTTP server riêng port 8090 | Đã bỏ (SLEE-compliant) |
+| Autonomous | Mount routes trên Vert.x Router | Đã bỏ (SLEE-compliant) |
+| Events | App tự định nghĩa HttpWebRequestEvent | Dùng event từ ra-http-server |
+| Commands | App tự định nghĩa HelloWorldCommand | Dùng command từ ra-http-server |
+| File count | 10+ file Java | Chỉ 2 file (bootstrap + SBB) |

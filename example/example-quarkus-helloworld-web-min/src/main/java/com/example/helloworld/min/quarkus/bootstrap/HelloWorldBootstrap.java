@@ -1,6 +1,6 @@
-package com.example.helloworld.quarkus.bootstrap;
+package com.example.helloworld.min.quarkus.bootstrap;
 
-import com.example.helloworld.quarkus.sbbs.HelloWorldSbb;
+import com.example.helloworld.min.quarkus.sbbs.HelloWorldSbb;
 import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.ra.httpserver.HttpServerRaEndpoint;
 import com.microjainslee.ra.httpserver.HttpServerResourceAdaptor;

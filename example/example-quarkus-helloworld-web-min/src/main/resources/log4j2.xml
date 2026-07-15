@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  micro-jainslee HelloWorld — logging.
-  The telemetry module has been removed (SLEE-compliant minimal template).
+  micro-jainslee HelloWorld MIN — logging.
+  Minimal template: bootstrap + SBB only, no telemetry, no autonomous.
 -->
 <Configuration status="WARN">
     <Appenders>

@@ -73,6 +73,87 @@ OutboundCommand   (marker sealed interface)
 - Move existing vendor RA stubs to implement new `RaEndpointPort` + `RaCommandPort`
 - Keep backward compat — do NOT delete existing classes
 
+## SLEE PATTERNS — How SLEE applications work (agents: read this, don't read code)
+
+### Pattern 1: HTTP endpoint routing in SLEE
+
+**No framework annotations.** SLEE apps do NOT use `@Path`, `@GET`, `@POST`,
+`quarkus-rest`, or any REST framework. ALL HTTP traffic flows through
+`ra-http-server` → `HttpWebRequestEvent` → SBB. The SBB routes requests using
+plain Java `switch` on `event.getMethod() + " " + event.getPath()`.
+
+```
+HTTP request → ra-http-server (port 8081, Vert.x)
+  → route() — only /health is handled directly by RA
+  → fireHttpRequest() → HttpWebRequestEvent(path, method, body, headers)
+  → Disruptor → SBB.onEvent(HttpWebRequestEvent)
+  → SBB.route(method, path, body)
+  → HttpResponseCommand → ra-http-server.sendHttpResponse() → HTTP response
+```
+
+**Key facts:**
+- `ra-http-server` handles `GET /health` internally (returns `{"status":"ok"}`)
+- ALL other paths → `HttpWebRequestEvent` → SBB — no path filtering in RA
+- SBB uses `HttpWebRequestEvent.getMethod()`, `.getPath()`, `.getBody()`, `.getHeaders()`
+- SBB replies via `httpCommandPort.sendCommand(new HttpResponseCommand(sessionId, status, contentType, body))`
+- Route logic is pure Java `switch` — no annotation magic, fully debuggable
+- Adding an endpoint = adding a `case` in the `route()` switch
+
+**Example SBB routing (from example-quarkus-helloworld-web-min):**
+```java
+private RouteResult route(String method, String path, String body, String ua) {
+    return switch (method + " " + path) {
+        case "GET /"           -> ok(json(kv("message", "Welcome!")));
+        case "GET /hello"      -> ok(json(kv("message", "Hello World")));
+        case "GET /bye/book"   -> ok(json(kv("message", "Goodbye from book!")));
+        case "GET /api/status" -> ok(json(kv("status", "running")));
+        case "GET /api/time"   -> ok(json(kv("time", Instant.now().toString())));
+        case "POST /echo"      -> ok(json(kv("echo", body)));
+        default                -> notFound(json(kv("error", "Not found")));
+    };
+}
+```
+
+**DO NOT:**
+- ❌ Use `@Path` / `@GET` / `@POST` / `quarkus-rest` in SBB
+- ❌ Create separate REST endpoint classes outside SLEE pipeline
+- ❌ Use Vert.x Router directly in SBB
+- ❌ Create custom HTTP events (use `HttpWebRequestEvent` from ra-http-server)
+- ❌ Create custom HTTP commands (use `HttpResponseCommand` from ra-http-server)
+
+**DO:**
+- ✅ Route in SBB using `switch` on `method + " " + path`
+- ✅ Reply via `httpCommandPort.sendCommand(new HttpResponseCommand(...))`
+- ✅ Get request data from `HttpWebRequestEvent.getBody()`, `.getHeaders()`, `.getMethod()`, `.getPath()`
+- ✅ All HTTP goes through `ra-http-server` → SLEE pipeline — no direct Vert.x
+
+### Pattern 2: Injecting RA into SBB
+
+```java
+@InjectRa(name = "http-server-ra")  // must match RaEndpointPort.getRaName()
+private volatile RaCommandPort httpCommandPort;
+```
+
+- The `name` must match the string returned by the RA's `getRaName()` method
+- `HttpServerRaEndpoint.getRaName()` returns `"http-server-ra"`
+- Container injects the `RaCommandPort` at SBB creation time
+- Field must be `volatile` (injected from a different thread)
+
+### Pattern 3: Bootstrap wiring order
+
+```java
+@PostConstruct void init() {
+    container.start();                                          // 1. start Disruptor
+    container.registerSbbType(MySbb.class, () -> new MySbb());  // 2. register SBB
+    container.createIesDispatcher();                            // 3. create dispatcher
+    container.mapEventToSbb(Event.class, "MySbb");              // 4. map event → SBB
+    HttpServerRaEndpoint ep = new HttpServerRaEndpoint(ra);     // 5. create RA endpoint
+    container.registerRa(ep, ep);                               // 6. register RA
+}
+```
+Order matters: container must be started before registering anything.
+Events must be mapped before the RA fires them.
+
 ## STRICT RULES
 - NEVER modify application code — only runtime modules above
 - NEVER break existing 62+ tests (run: `mvn test` before and after)

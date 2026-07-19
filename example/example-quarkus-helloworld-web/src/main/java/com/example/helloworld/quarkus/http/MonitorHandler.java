@@ -3,6 +3,7 @@
  */
 package com.example.helloworld.quarkus.http;
 
+import com.example.helloworld.quarkus.telemetry.EndpointHitStore;
 import com.microjainslee.ra.httpserver.events.HttpWebRequestEvent;
 import com.microjainslee.telemetry.TelemetryPort;
 
@@ -13,6 +14,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.InputStream;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -25,10 +28,12 @@ public final class MonitorHandler {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String GUI_ROOT = "META-INF/resources";
 
-    private final TelemetryPort telemetry;
+    private final TelemetryPort telemetry;           // nullable when telemetry disabled
+    private final EndpointHitStore endpointHits;     // required — app HTTP counters
 
-    public MonitorHandler(TelemetryPort telemetry) {
+    public MonitorHandler(TelemetryPort telemetry, EndpointHitStore endpointHits) {
         this.telemetry = telemetry;
+        this.endpointHits = endpointHits;
     }
 
     /** Handle a monitor path, or empty if it is not ours. */
@@ -62,6 +67,16 @@ public final class MonitorHandler {
 
     private HttpReply telemetryApi(HttpWebRequestEvent e, String path) {
         try {
+            // Endpoint hit map — available even when Micrometer stack is off.
+            if (path.equals("/api/telemetry/endpoints")) {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("total", endpointHits.totalHits());
+                body.put("endpoints", endpointHits.snapshot());
+                return HttpReply.json(JSON.writeValueAsString(body));
+            }
+            if (telemetry == null) {
+                return HttpReply.html(503, "telemetry disabled");
+            }
             if (path.equals("/api/telemetry/snapshot")) {
                 return HttpReply.json(JSON.writeValueAsString(telemetry.snapshot()));
             }

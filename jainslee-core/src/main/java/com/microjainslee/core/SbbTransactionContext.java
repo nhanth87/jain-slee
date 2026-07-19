@@ -11,6 +11,7 @@
 package com.microjainslee.core;
 
 import com.microjainslee.api.ActivityContextInterface;
+import com.microjainslee.api.ProfileID;
 import com.microjainslee.api.SbbLocalObject;
 
 import java.lang.reflect.InvocationTargetException;
@@ -201,6 +202,46 @@ public final class SbbTransactionContext {
             @Override
             public void run() {
                 timerBridge.unbindActivityContext(target);
+            }
+        });
+    }
+
+    /**
+     * C3 (PROFILE-IMPLEMENTATION-PLAN §6.3) — records a profile field write with its
+     * old value for transactional undo.
+     *
+     * <p>Called by {@link com.microjainslee.api.ProfileAccessorInvoker#setValue} when an
+     * active delivery transaction is present ({@link ActivityContextTransactionRegistry#current()}).
+     * On {@link #rollback()} each write is reversed in LIFO order (newest write first).
+     *
+     * <p>Writes outside an active transaction (bootstrap, RA thread, management) are
+     * auto-committed and not tracked here — callers must not call this method unless
+     * {@link #isActive()} returns {@code true}.
+     *
+     * @param id        profile identity (table + key)
+     * @param fieldName CMP field that was just written
+     * @param oldValue  the value that was in the field <em>before</em> the write
+     *                  ({@code null} means the field was absent)
+     */
+    public void recordProfileWrite(ProfileID id, String fieldName, Object oldValue) {
+        if (!active) {
+            return;
+        }
+        final ProfileID capturedId = id;
+        final String capturedField = fieldName;
+        final Object capturedOld = oldValue;
+        undoActions.push(new Runnable() {
+            @Override
+            public void run() {
+                ProfileFieldAccess access = ProfileFieldStoreLocator.get();
+                if (access == null) {
+                    return;
+                }
+                try {
+                    access.writeField(capturedId, capturedField, capturedOld);
+                } catch (IllegalArgumentException | IllegalStateException ignored) {
+                    // Row/table gone before rollback ran — nothing to restore.
+                }
             }
         });
     }

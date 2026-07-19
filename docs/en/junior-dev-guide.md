@@ -9,6 +9,8 @@
 > 2. [sbb-guide.md](sbb-guide.md) — writing SBBs (service logic).
 > 3. [ra-guide.md](ra-guide.md) — writing Resource Adaptors (3-port contract).
 > 4. [app-guide.md](app-guide.md) — wiring SBB + RA into a complete Quarkus app.
+>
+> **Advanced (Profile / §10 hot store):** [profile-programming-model.md](profile-programming-model.md)
 
 ---
 

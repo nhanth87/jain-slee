@@ -65,11 +65,23 @@ public class MicroJainsleeRecorder {
                 .offHeapEnabled(offHeapEnabled)
                 .offHeapStorageDir(offHeapStorageDir != null ? offHeapStorageDir : "")
                 .build();
+        // quarkus:dev live-reload re-runs static-init: stop the previous container
+        // so its Disruptor workers do not keep spinning after replacement.
+        MicroSleeContainer previous = container;
+        if (previous != null) {
+            try {
+                LOG.infof("Replacing MicroSleeContainer — stopping previous instance first");
+                previous.stop();
+            } catch (Throwable t) {
+                LOG.warnf(t, "Failed to stop previous MicroSleeContainer on replace: %s", t.getMessage());
+            }
+        }
         MicroSleeContainer c = new MicroSleeContainer(config);
         container = c;
         eventRouter = c.getEventRouter();
         timerPort = c.getTimerPort();
         acnf = c.getActivityContextNamingFacility();
+        MicroJainsleeHolder.set(new RuntimeValue<MicroSleeContainer>(c));
         LOG.infof("MicroSleeContainer constructed: bufferSize=%s, preferVT=%s, sbbPool=%s-%s, perVT=%s",
                 config.getEventRouterBufferSize(), config.isPreferVirtualThreads(),
                 config.getSbbPoolMin(), config.getSbbPoolMax(), config.isSbbPerVirtualThread());

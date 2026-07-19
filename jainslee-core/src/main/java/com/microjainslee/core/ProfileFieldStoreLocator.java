@@ -18,45 +18,51 @@ package com.microjainslee.core;
  * containers on separate threads), then the JVM-global binding. The global
  * fallback is essential — SBB event handlers run on event-router /
  * virtual-thread executors, never on the thread that constructed the
- * container, so a pure ThreadLocal would make every profile read from an
- * event handler fail with "No ProfileFieldStore registered".
+ * container, so a pure {@link ThreadLocal} would make every profile read from
+ * an event handler fail.
+ *
+ * <h3>Phase 2 detachment</h3>
+ * <p>The type held by this locator was changed from the concrete
+ * {@link InMemoryProfileFacility} to the {@link ProfileFieldAccess} interface.
+ * This allows alternative hot-store implementations to be registered without
+ * coupling the accessor bridge to a specific class.
  */
 public final class ProfileFieldStoreLocator {
 
-    private static final ThreadLocal<InMemoryProfileFacility> CURRENT =
-            new ThreadLocal<InMemoryProfileFacility>();
-    private static volatile InMemoryProfileFacility global;
+    private static final ThreadLocal<ProfileFieldAccess> CURRENT = new ThreadLocal<>();
+    private static volatile ProfileFieldAccess global;
 
     private ProfileFieldStoreLocator() {
         // utility
     }
 
-    /** Bind the facility for the current thread AND as the JVM-global default. */
-    public static void set(InMemoryProfileFacility facility) {
-        if (facility == null) {
-            InMemoryProfileFacility previous = CURRENT.get();
+    /**
+     * Bind the field-access store for the current thread AND as the JVM-global
+     * default. Passing {@code null} clears the thread-local; the global is only
+     * cleared when it points at the same instance being unbound.
+     */
+    public static void set(ProfileFieldAccess store) {
+        if (store == null) {
+            ProfileFieldAccess previous = CURRENT.get();
             CURRENT.remove();
-            // Only clear the global slot when it points at the facility
-            // being unbound on this thread — a second container's shutdown
-            // must not yank the store from a still-running first container.
             if (previous != null && previous == global) {
                 global = null;
             }
         } else {
-            CURRENT.set(facility);
-            global = facility;
+            CURRENT.set(store);
+            global = store;
         }
     }
 
     /** Thread-local binding first, JVM-global fallback second. */
-    public static InMemoryProfileFacility get() {
-        InMemoryProfileFacility local = CURRENT.get();
+    public static ProfileFieldAccess get() {
+        ProfileFieldAccess local = CURRENT.get();
         return local != null ? local : global;
     }
 
     /** Explicitly clear the JVM-global binding (container shutdown). */
-    static void clearGlobal(InMemoryProfileFacility facility) {
-        if (facility == null || facility == global) {
+    static void clearGlobal(ProfileFieldAccess store) {
+        if (store == null || store == global) {
             global = null;
         }
     }

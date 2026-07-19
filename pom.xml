@@ -62,6 +62,7 @@
         <module>jainslee-tx</module>
         <module>jainslee-codegen</module>
         <module>jainslee-cluster</module>
+        <module>jainslee-profile-infinispan</module>
         <module>jainslee-apt</module>
         <module>jainslee-tck-harness</module>
         <module>jainslee-adapter</module>

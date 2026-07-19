@@ -8,14 +8,16 @@
 
 ## 1. What this example does
 
-A minimal "Hello World" web app on Quarkus 3 + micro-jainslee. It uses two HTTP ports:
+A minimal "Hello World" web app on Quarkus 3 + micro-jainslee. Quarkus is **CDI-only**
+(no Quarkus HTTP listener). One port owns all traffic:
 
 | Port | Owner | Role |
 |---|---|---|
-| **8080** | Quarkus Undertow | Static UI (`META-INF/resources/`) + Quarkus REST (`GET /health`) |
-| **8081** | `ra-http-server` | JAIN SLEE event ingress — app responses, telemetry dashboard, `/api/telemetry/*` |
+| **8080** | `ra-http-server` | JAIN SLEE ingress — `/`, `/health`, telemetry dashboard, `/api/telemetry/*` |
 
-A request on port 8081 becomes an `HttpWebRequestEvent`, is routed to `HelloWorldSbb`, which either serves the telemetry/monitor surface or returns a Hello World HTML page. Responses go back through the injected `ra-http-server` command port — no app-level Vert.x.
+A request becomes an `HttpWebRequestEvent`, is routed to `HelloWorldSbb`, which either
+serves health/monitor surfaces or returns a Hello World HTML page. Responses go back
+through the injected `ra-http-server` command port.
 
 Optional telemetry (`microjainslee.telemetry.enabled`) adds the dashboard at `/telemetry`, Prometheus scrape RA, and a batched log sink.
 
@@ -32,22 +34,22 @@ example/example-quarkus-helloworld-web/
 │   └── package-dist.sh              ← classic dist/<app>-jainslee/ layout
 ├── src/main/resources/
 │   ├── application.properties
-│   ├── log4j2.xml
-│   └── META-INF/resources/
-│       └── index.html               ← static UI (Quarkus :8080)
+│   └── log4j2.xml
 └── src/main/java/com/example/helloworld/quarkus/
     ├── bootstrap/
     │   └── HelloWorldBootstrap.java ← CDI: start container, telemetry, RA, SBB
+    ├── profile/
+    │   ├── SessionProfile.java        ← checkpoint / recovery row (example-local CMP)
+    │   ├── AppUserProfile.java        ← thin app-user slice
+    │   └── HelloWorldProfileManager.java ← ProfileFacility façade
     ├── telemetry/
     │   ├── AppTelemetry.java        ← Micrometer port + Prometheus RA + log sink
     │   └── TelemetryLogSink.java
     ├── http/
     │   ├── MonitorHandler.java      ← /telemetry GUI + /api/telemetry/*
     │   └── HttpReply.java
-    ├── sbbs/
-    │   └── HelloWorldSbb.java       ← gateway SBB (monitor → Hello World)
-    └── rest/
-        └── HealthResource.java      ← Quarkus GET /health → {"status":"ok"}
+    └── sbbs/
+        └── HelloWorldSbb.java       ← gateway SBB (/health → monitor → Hello World)
 ```
 
 ---
@@ -58,7 +60,7 @@ example/example-quarkus-helloworld-web/
 
 Key dependencies:
 
-- **Quarkus**: `quarkus-rest`, `quarkus-rest-jackson`, `quarkus-arc`, `quarkus-undertow`
+- **Quarkus**: `quarkus-arc` only (CDI host — no REST / Undertow)
 - **micro-jainslee**: `jainslee-core`, `jainslee-api`, `jainslee-apt`, **`adapter-quarkus`** (CDI producer for `MicroSleeContainer`)
 - **RAs**: `ra-http-server`, `ra-prometheus-exporter`
 - **Observability**: `jainslee-telemetry`, `jainslee-monitor`, Micrometer Prometheus registry
@@ -68,11 +70,8 @@ Key dependencies:
 `application.properties`:
 
 ```properties
-# Quarkus HTTP — serves static web UI
-quarkus.http.port=8080
-
-# ra-http-server port — JAIN SLEE event ingress
-http.ra.port=8081
+# Quarkus hosts CDI only. All HTTP is ra-http-server.
+http.ra.port=8080
 
 # micro-jainslee core config (adapter-quarkus build-time mapping)
 microjainslee.container.buffer-size=4096
@@ -242,9 +241,9 @@ Telemetry surface (when enabled):
 ## 7. Call flow
 
 ```
-┌─────────────┐     GET /  (or /telemetry)   ┌──────────────────────────┐
+┌─────────────┐     GET /|/health|/telemetry ┌──────────────────────────┐
 │  Browser /   │ ───────────────────────────▶ │  Vert.x HTTP Server      │
-│  curl        │   port 8081                  │  (HttpServerResource     │
+│  curl        │   port 8080                  │  (HttpServerResource     │
 └─────────────┘                               │   Adaptor.raActive)      │
                                                └────────────┬─────────────┘
                                                             │
@@ -266,6 +265,7 @@ Telemetry surface (when enabled):
                                                             ▼
                                                ┌──────────────────────────┐
                                                │    HelloWorldSbb         │
+                                               │  ├─ /health JSON         │
                                                │  ├─ MonitorHandler?      │
                                                │  │   /telemetry,         │
                                                │  │   /api/telemetry/*    │
@@ -274,18 +274,33 @@ Telemetry surface (when enabled):
                                                └──────────────────────────┘
 ```
 
-Quarkus port 8080 is separate: static `index.html` + `GET /health`.
+Quarkus does not open an HTTP port — CDI + live-reload only.
 
 ---
 
 ## 8. How to run
 
-### Dev mode
+### Dev mode (hot reload)
+
+Use this when editing SBBs / Java sources. Quarkus watches `src/` and reloads.
 
 ```bash
 cd example/example-quarkus-helloworld-web
-mvn -Dquarkus.build.skip=false quarkus:dev
+mvn quarkus:dev
+# or: ant -f build/build.xml dev
 ```
+
+`quarkus.build.skip=true` only skips **package** goals (`build` / `generate-code`),
+not `quarkus:dev`.
+
+**Live-reload:** `adapter-quarkus` registers `MicroJainsleeHotReplacementSetup`
+on the runtime jar (`META-INF/services/...HotReplacementSetup`). In
+`quarkus:dev` it polls `HotReplacementContext.doScan` every second so SBB edits
+rebuild without a Quarkus HTTP listener. Look for
+`[microjainslee] Dev live-reload scanner armed` at startup; after a save,
+Quarkus restarts and `HelloWorldBootstrap` rewires the RA/SBB pool.
+
+`./build/run.sh` / `ant run` start the **packaged** `quarkus-run.jar` — no live reload.
 
 ### Ant wrapper (recommended for packaging)
 
@@ -297,13 +312,15 @@ ant -f build/build.xml run            # ./build/run.sh
 ant -f build/build.xml dist           # classic dist/<app>-jainslee/
 ```
 
-After start:
+After start (all on `ra-http-server` `:8080`):
 
-- **Quarkus UI**: `http://localhost:8080/`
+- **HelloWorld**: `curl http://localhost:8080/`
 - **Health**: `curl http://localhost:8080/health` → `{"status":"ok"}`
-- **HelloWorld (SLEE)**: `curl http://localhost:8081/`
-- **Telemetry dashboard**: `http://localhost:8081/telemetry`
-- **Telemetry snapshot**: `curl http://localhost:8081/api/telemetry/snapshot`
+- **Telemetry dashboard**: `http://localhost:8080/telemetry`
+- **Telemetry snapshot**: `curl http://localhost:8080/api/telemetry/snapshot`
+- **Endpoint hit counts**: `curl http://localhost:8080/api/telemetry/endpoints`
+  → `{"total":N,"endpoints":{"GET /":…,"GET /api/telemetry/endpoints":…}}`
+  (also mirrored as Micrometer `http_endpoint_hits_total{method,path}` on `/api/telemetry/metrics`)
 
 ---
 
@@ -321,3 +338,61 @@ Suggested smoke pattern for the full pipeline (not required in-tree):
 - Set `http.ra.port=0` for an ephemeral bind
 - Drive `HelloWorldBootstrap` / register RA + SBB as in production
 - `curl` the bound port and assert Hello World / telemetry JSON
+
+---
+
+## 10. Profile (example-local domain models)
+
+Domain CMP classes live **in this example app**, not in `jainslee-api`. They extend
+`ProfileAbstractCmp` and use `ProfileAccessorInvoker` — same pattern as
+`UssdSubscriberProfile` in `example-quarkus-ussdgw`.
+
+| Class | Table | Purpose |
+|---|---|---|
+| `SessionProfile` | `SubscriberSession` | `checkpointJson`, `lastActivityId`, `profileKey` — crash recovery |
+| `AppUserProfile` | `AppUser` | Thin user slice (`userId`, `displayName`, optional `msisdn`) |
+
+`HelloWorldBootstrap` provisions tables then injects `HelloWorldProfileManager`
+into `HelloWorldSbb`. On each `/` request the SBB keys a `SessionProfile` by HTTP
+session id, bumps `checkpointJson.hits`, and on `sbbPassivate` refreshes
+`lastActivityId`.
+
+### Profile CMP vs SBB death (critical)
+
+```
+┌──────────────┐   write CMP    ┌─────────────────────────────────┐
+│ SBB entity A │ ─────────────▶ │ ProfileFacility hot store       │
+│ (heap)       │                │  SubscriberSession[sessionId]   │
+└──────┬───────┘                │    checkpointJson.hits = 1      │
+       │ sbbPassivate / kill    └─────────────────────────────────┘
+       ▼                                        │
+   A discarded                                  │ row still there
+                                                ▼
+┌──────────────┐   getOrCreate  ┌─────────────────────────────────┐
+│ SBB entity B │ ◀───────────── │ same SessionProfile CMP row     │
+│ (new heap)   │   sessionId    │    hits → 2                     │
+└──────────────┘                └─────────────────────────────────┘
+```
+
+- **SBB CMP / heap** = ephemeral. When the entity dies, it is gone.
+- **Profile CMP** = shared provisioned row. New SBB does **not** invent a fresh
+  blank profile for an existing key — it **reloads** the CMP row from the
+  facility (`getOrCreateSession` → `getProfile` hit).
+- **Infinispan** (Phase 4) only makes that facility durable across JVM restart
+  via write-behind; the recovery *contract* above already holds on the hot store.
+
+Automated proof: `HelloWorldProfileRecoveryTest` — entity A hits → passivate →
+entity B same session → `hits=2`.
+
+**Where do tables live?**
+
+| Layer | What | Lifetime |
+|---|---|---|
+| `createProfileTable(...)` | Logical table in `ProfileFacility` hot store (in-memory map today) | Process / until flush+clear |
+| Profile CMP field maps | Rows (`SubscriberSession[sessionId]`, …) | Survive SBB passivate |
+| **Infinispan** (`DurableProfileStore`, Phase 4) | Write-behind persistence of those field maps | Survive JVM restart |
+
+App code never opens Infinispan caches directly — it only talks to
+`ProfileFacility`. When Phase 4 wires `installDurableStore(InfinispanProfileStore)`,
+the same `createProfileTable` / `getOrCreateSession` calls keep working; durability
+is behind the facility.

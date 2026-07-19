@@ -1,9 +1,12 @@
 package com.example.helloworld.quarkus.bootstrap;
 
 import com.example.helloworld.quarkus.http.MonitorHandler;
+import com.example.helloworld.quarkus.profile.HelloWorldProfileManager;
 import com.example.helloworld.quarkus.sbbs.HelloWorldSbb;
 import com.example.helloworld.quarkus.telemetry.AppTelemetry;
+import com.example.helloworld.quarkus.telemetry.EndpointHitStore;
 import com.microjainslee.core.MicroSleeContainer;
+import com.microjainslee.core.ProfileAttachment;
 import com.microjainslee.ra.httpserver.HttpServerRaEndpoint;
 import com.microjainslee.ra.httpserver.HttpServerResourceAdaptor;
 import com.microjainslee.ra.httpserver.events.HttpWebRequestEvent;
@@ -24,9 +27,9 @@ import org.apache.logging.log4j.Logger;
  * sits on top of the core container; the dashboard and telemetry APIs ride the
  * same {@code ra-http-server} as the app response through {@link HelloWorldSbb}.
  *
- * <p>Must observe {@link StartupEvent}: an {@code @ApplicationScoped} bean with
- * only {@code @PostConstruct} is lazy, and nothing else injects this class after
- * autonomous/AI were removed — so the HTTP RA would never register.</p>
+ * <p>Observes {@link StartupEvent} for eager init. On every Quarkus live-reload
+ * restart this re-wires the HTTP RA and SBB factory so {@code HelloWorldSbb}
+ * changes are not stuck in a previous classloader's pool.</p>
  */
 @ApplicationScoped
 public final class HelloWorldBootstrap {
@@ -37,7 +40,7 @@ public final class HelloWorldBootstrap {
     MicroSleeContainer container;
 
     @org.eclipse.microprofile.config.inject.ConfigProperty(
-            name = "http.ra.port", defaultValue = "8081")
+            name = "http.ra.port", defaultValue = "8080")
     int httpRaPort;
 
     @org.eclipse.microprofile.config.inject.ConfigProperty(
@@ -45,16 +48,27 @@ public final class HelloWorldBootstrap {
     boolean telemetryEnabled;
 
     private volatile HttpServerRaEndpoint httpEndpoint;
-    private volatile boolean started;
-
-    private final AppTelemetry appTelemetry = new AppTelemetry();
+    private volatile AppTelemetry appTelemetry;
 
     void onStart(@Observes StartupEvent ev) {
-        if (started) {
-            return;
+        LOG.info("HelloWorld bootstrap triggered by StartupEvent (rewire for live-reload)");
+        rewire();
+    }
+
+    /**
+     * Tear down app-owned RA/telemetry, drop stale SBB pools, then register again.
+     * Safe to call on each {@code quarkus:dev} restart.
+     */
+    private void rewire() {
+        teardownAppWiring();
+
+        // Previous ClassLoader's HelloWorldSbb pool would otherwise keep serving
+        // old bytecode after live-reload (registry keys by Class identity).
+        int dropped = container.getSbbTypeRegistry()
+                .unregisterByName(HelloWorldSbb.class.getSimpleName());
+        if (dropped > 0) {
+            LOG.info("Dropped {} stale SBB pool(s) for HelloWorldSbb (live-reload)", dropped);
         }
-        started = true;
-        LOG.info("HelloWorld bootstrap triggered by StartupEvent");
 
         if (container.getState() != MicroSleeContainer.State.STARTED) {
             container.start();
@@ -62,30 +76,61 @@ public final class HelloWorldBootstrap {
 
         TelemetryPort telemetry = null;
         if (telemetryEnabled) {
+            appTelemetry = new AppTelemetry();
             telemetry = appTelemetry.install(container);
         } else {
             LOG.info("telemetry module disabled (microjainslee.telemetry.enabled=false)");
         }
 
-        MonitorHandler monitor = telemetry == null ? null : new MonitorHandler(telemetry);
+        // Always count HTTP endpoints; bind Micrometer when telemetry is on.
+        EndpointHitStore endpointHits = new EndpointHitStore();
+        endpointHits.bindTelemetry(telemetry);
+        MonitorHandler monitor = new MonitorHandler(telemetry, endpointHits);
 
-        container.registerSbbType(HelloWorldSbb.class, () -> new HelloWorldSbb(monitor));
+        HelloWorldProfileManager profiles = new HelloWorldProfileManager(container.getProfileFacility());
+        profiles.provisionTables();
+        LOG.info("HelloWorld profile tables provisioned (SubscriberSession, AppUser) "
+                + "— hot store = ProfileFacility; durable = Infinispan when installDurableStore is wired");
+
+        // Phase 3 — ProfileAttachment: encapsulates checkpoint / restore with C9 alarm contract.
+        ProfileAttachment attachment = new ProfileAttachment(
+                container.getProfileFacility(), container.getAlarmFacility());
+
+        container.registerSbbType(HelloWorldSbb.class,
+                () -> new HelloWorldSbb(monitor, profiles, endpointHits, attachment));
         container.createIesDispatcher();
         container.mapEventToSbb(HttpWebRequestEvent.class, "HelloWorldSbb");
         wireHttpRa();
 
         LOG.info("HelloWorld bootstrap complete. App + dashboard on http://localhost:{} "
-                + "(app: /, dashboard: /telemetry)", httpRaPort);
+                + "(app: /, endpoints: /api/telemetry/endpoints, dashboard: /telemetry)", httpRaPort);
     }
 
     @PreDestroy
     void shutdown() {
-        appTelemetry.close();
-        if (httpEndpoint != null) {
-            httpEndpoint.deactivate();
+        // Tear down app RA/telemetry only — MicroSleeContainer is owned by
+        // adapter-quarkus (shutdown hook). Stopping it here would break live-reload.
+        teardownAppWiring();
+    }
+
+    private void teardownAppWiring() {
+        HttpServerRaEndpoint ep = httpEndpoint;
+        httpEndpoint = null;
+        if (ep != null) {
+            try {
+                ep.deactivate();
+            } catch (RuntimeException re) {
+                LOG.warn("HTTP RA deactivate during rewire: {}", re.getMessage());
+            }
         }
-        if (container.getState() == MicroSleeContainer.State.STARTED) {
-            container.stop();
+        AppTelemetry tel = appTelemetry;
+        appTelemetry = null;
+        if (tel != null) {
+            try {
+                tel.close();
+            } catch (RuntimeException re) {
+                LOG.warn("telemetry close during rewire: {}", re.getMessage());
+            }
         }
     }
 

@@ -152,16 +152,17 @@
                 <artifactId>quarkus-maven-plugin</artifactId>
                 <version>${quarkus.platform.version}</version>
                 <extensions>true</extensions>
-                <configuration>
-                    <skip>${quarkus.build.skip}</skip>
-                </configuration>
                 <executions>
+                    <!-- skip only package-time goals — NOT quarkus:dev -->
                     <execution>
                         <goals>
                             <goal>build</goal>
                             <goal>generate-code</goal>
                             <goal>generate-code-tests</goal>
                         </goals>
+                        <configuration>
+                            <skip>${quarkus.build.skip}</skip>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>

@@ -86,5 +86,9 @@ echo "  UI     http://localhost:8080/"
 echo "  health http://localhost:8080/health"
 echo "  RA     http://localhost:8081/  (http.ra.port)"
 echo
+echo "note: this is a packaged jar — no hot reload."
+echo "      edit SBBs? use: ant -f build/build.xml dev"
+echo "      or: mvn -Dquarkus.build.skip=false quarkus:dev"
+echo
 
 exec "${JAVA_HOME}/bin/java" -jar "${JAR}" "$@"

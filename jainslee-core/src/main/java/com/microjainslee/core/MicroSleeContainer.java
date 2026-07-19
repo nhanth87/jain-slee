@@ -15,7 +15,9 @@ import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.ActivityContextNamingFacility;
 import com.microjainslee.api.ActivityHandle;
 import com.microjainslee.api.Address;
+import com.microjainslee.api.AlarmLevel;
 import com.microjainslee.api.CreateException;
+import com.microjainslee.api.DurableProfileStore;
 import com.microjainslee.api.InitialEventSelector;
 import com.microjainslee.api.OutboundCommand;
 import com.microjainslee.api.PoolableSbb;
@@ -88,7 +90,7 @@ public final class MicroSleeContainer {
             new ConcurrentHashMap<String, Class<? extends Sbb>>();
     private final ServiceRegistry serviceRegistry = new ServiceRegistry();
     private final InMemoryCmpFieldStore cmpFieldStore = new InMemoryCmpFieldStore();
-    private final InMemoryProfileFacility profileFacility = new InMemoryProfileFacility();
+    private volatile InMemoryProfileFacility profileFacility = new InMemoryProfileFacility();
     private final SimpleAlarmPort alarmPort = new SimpleAlarmPort();
     private final SimpleAlarmFacility alarmFacility = new SimpleAlarmFacility(alarmPort);
     private final SbbLifecycleManager sbbLifecycleManager = new SbbLifecycleManager();
@@ -624,6 +626,12 @@ public final class MicroSleeContainer {
                     com.microjainslee.core.ordering.DedupWindow.DEFAULT_MAX_ENTRIES);
         }
         CmpFieldStoreLocator.set(cmpFieldStore);
+        // Phase 2 — re-register profile locator on start() for stop/start cycles.
+        ProfileFieldStoreLocator.set(profileFacility);
+        // Phase 2 C2 — eager rehydration from durable store if available.
+        if (profileFacility.isDurableMode()) {
+            profileFacility.rehydrateFromDurableStore();
+        }
         sbbEntityPool.prewarm(sbbEntityPool.getMin());
         state = State.STARTED;
         // Sprint S6 — register the structured lifecycle logger on the
@@ -702,11 +710,26 @@ public final class MicroSleeContainer {
         sbbEntityPool.shutdown();
         timerPort.getBridge().shutdown();
         eventRouter.shutdown();
+        // C1 — flush profile dirty set before clearing tables.
+        // Quiesce is complete (writers stopped above); now drain to durable store.
+        boolean profileFlushed = profileFacility.flushSyncBoolean(5_000);
+        if (!profileFlushed && profileFacility.isDurableMode()) {
+            LOG.error("Profile write-behind flush FAILED during stop() — "
+                    + "tables preserved in memory to prevent data loss (C1)");
+            alarmFacility.raise("profile.flush.failed", "container",
+                    AlarmLevel.CRITICAL,
+                    "Profile dirty set could not be flushed to durable store on shutdown. "
+                    + "Profile tables are preserved in memory. "
+                    + "Restart and check durable store availability before next stop.");
+            profileFacility.stopFlusher();
+            ProfileFieldStoreLocator.set(null);
+        } else {
+            profileFacility.shutdown();
+        }
         activityContextNamingFacility.clear();
         sbbs.clear();
         entityTypesById.clear();
         CmpFieldStoreLocator.set(null);
-        profileFacility.shutdown();
         // Sprint S6 — unsubscribe the structured lifecycle logger so a
         // subsequent start() registers a fresh subscriber (no double-fire).
         if (this.sessionLifecycleLogger != null) {
@@ -2061,12 +2084,52 @@ public final class MicroSleeContainer {
 
     /**
      * Phase 2 — access the profile facility. Returns the in-memory backend
-     * by default; embedders may wire in a JPA / Redis-backed
-     * implementation through {@link #installProfileFacility(ProfileFacility)}
-     * before {@link #start()} runs.
+     * by default; embedders may wire in a durable store via
+     * {@link #installDurableStore(com.microjainslee.api.DurableProfileStore)}.
      */
     public ProfileFacility getProfileFacility() {
         return profileFacility;
+    }
+
+    /**
+     * Phase 2 — install a {@link com.microjainslee.api.DurableProfileStore} as the
+     * write-behind backend for the in-memory profile hot store.
+     *
+     * <p>This wires the durable store into the current {@link InMemoryProfileFacility}
+     * and starts the 100 ms write-behind flusher virtual thread (Contract C6.3).
+     * Call this before {@link #start()} so that {@link #start()} can perform eager
+     * rehydration (Contract C2).
+     *
+     * <p>Passing {@code null} removes the durable store (reverts to memory-only mode).
+     *
+     * @param store the durable backend; {@code null} to revert to memory-only
+     */
+    public synchronized void installDurableStore(DurableProfileStore store) {
+        profileFacility.setDurableStore(store);
+        LOG.info("installDurableStore: {}",
+                store != null ? store.getClass().getSimpleName() : "null (memory-only)");
+    }
+
+    /**
+     * Phase 2 — replace the in-memory profile facility with a different instance.
+     * Stops the old facility's flusher (if running) and registers the new instance
+     * with the {@link ProfileFieldStoreLocator}.
+     *
+     * <p>Must be called before {@link #start()}.
+     *
+     * @param facility the new profile facility; must not be {@code null}
+     */
+    public synchronized void installProfileFacility(InMemoryProfileFacility facility) {
+        if (facility == null) {
+            throw new IllegalArgumentException("facility must not be null");
+        }
+        InMemoryProfileFacility old = this.profileFacility;
+        if (old != facility) {
+            old.stopFlusher();
+        }
+        this.profileFacility = facility;
+        ProfileFieldStoreLocator.set(facility);
+        LOG.info("installProfileFacility: {} installed", facility.getClass().getSimpleName());
     }
 
     /**

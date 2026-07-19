@@ -10,10 +10,12 @@
 
 package com.microjainslee.api;
 
+import com.microjainslee.core.ActivityContextTransactionRegistry;
 import com.microjainslee.core.CmpAccessorInvoker;
 import com.microjainslee.core.InMemoryProfileFacility;
-import com.microjainslee.core.InMemoryProfileTable;
+import com.microjainslee.core.ProfileFieldAccess;
 import com.microjainslee.core.ProfileFieldStoreLocator;
+import com.microjainslee.core.SbbTransactionContext;
 
 import java.lang.reflect.Method;
 
@@ -25,37 +27,19 @@ import java.lang.reflect.Method;
  * {@link UnsupportedOperationException}; this class, compiled into the
  * {@code jainslee-core} JAR, lives in the same
  * {@code com.microjainslee.api} package and therefore overrides the stub
- * on the runtime classpath whenever {@code jainslee-core} is present
- * (i.e. in every real deployment).
+ * on the runtime classpath whenever {@code jainslee-core} is present.
  *
- * <p>Reads resolve the bound {@link ProfileFieldStoreLocator} to obtain
- * the active {@link InMemoryProfileFacility}, walk to the
- * {@link InMemoryProfileTable} for the profile's table name, then return
- * the field value (or the Java default for unset primitives — matching
- * {@link CmpAccessorInvoker#defaultForType(Class)}).
- *
- * <p>Writes follow the symmetric path: load the row, mutate the
- * requested field, store it back. A {@code null} value removes the field.
- *
- * <p>Analog of {@link com.microjainslee.core.CmpAccessorInvoker} for SBBs.
+ * <p>Reads/writes use the {@link ProfileFieldAccess} hot-path interface
+ * resolved from {@link ProfileFieldStoreLocator}.
  *
  * @author Tran Nhan (nhanth87)
  */
 public final class ProfileAccessorInvoker {
 
-    private ProfileAccessorInvoker() {
-        // utility
-    }
+    private ProfileAccessorInvoker() {}
 
     /**
      * Read a CMP field value via its getter accessor.
-     *
-     * @param profile the profile instance to read from
-     * @param getter  abstract {@code getXxx} (or {@code isXxx}) method
-     *                declared on the profile class
-     * @return the stored value, or the Java default for unset primitives
-     * @throws IllegalArgumentException when required arguments are missing
-     * @throws IllegalStateException    when no facility is bound
      */
     public static Object getValue(Profile profile, Method getter) {
         if (profile == null) {
@@ -67,33 +51,24 @@ public final class ProfileAccessorInvoker {
         String fieldName = fieldNameFor(getter);
         ProfileID id = profile.getProfileID();
         if (id == null) {
-            // Profile was never bound via bindProfile(); no row to read.
             return CmpAccessorInvoker.defaultForType(getter.getReturnType());
         }
-        InMemoryProfileFacility facility = ProfileFieldStoreLocator.get();
-        if (facility == null) {
+        ProfileFieldAccess store = ProfileFieldStoreLocator.get();
+        if (store == null) {
             throw new IllegalStateException(
                     "No ProfileFieldStore registered; is MicroSleeContainer running?");
         }
-        InMemoryProfileTable table = facility.findTableInternal(id.getProfileTableName());
-        if (table == null) {
-            return CmpAccessorInvoker.defaultForType(getter.getReturnType());
-        }
-        Object value = table.readField(id.getProfileName(), fieldName);
-        if (value != null) {
-            return value;
-        }
-        return CmpAccessorInvoker.defaultForType(getter.getReturnType());
+        Object value = store.readField(id, fieldName);
+        return value != null ? value : CmpAccessorInvoker.defaultForType(getter.getReturnType());
     }
 
     /**
      * Write a CMP field value via its setter accessor.
      *
-     * @param profile the profile instance to write into
-     * @param setter  abstract {@code setXxx} method declared on the profile class
-     * @param value   the value to persist (may be {@code null} to clear the field)
-     * @throws IllegalArgumentException when required arguments are missing
-     * @throws IllegalStateException    when no facility is bound or the profile is not bound
+     * <p>Contract C7: value validated against JDK-only whitelist before storing.
+     * <p>Contract C3: old value recorded in {@link SbbTransactionContext} for
+     * rollback when inside an active event delivery.
+     * <p>Contract C5: update event queued non-blocking via facility.
      */
     public static void setValue(Profile profile, Method setter, Object value) {
         if (profile == null) {
@@ -103,34 +78,30 @@ public final class ProfileAccessorInvoker {
             throw new IllegalArgumentException("setter method is required");
         }
         String fieldName = fieldNameFor(setter);
+        // C7 — validate type before touching the store.
+        ProfileFieldTypes.assertAllowed(fieldName, value);
         ProfileID id = profile.getProfileID();
         if (id == null) {
             throw new IllegalStateException(
-                    "Profile is not bound to an identity; bindProfile() must run before setCmpField()");
+                    "Profile is not bound; call bindProfile() before setCmpField()");
         }
-        InMemoryProfileFacility facility = ProfileFieldStoreLocator.get();
-        if (facility == null) {
+        ProfileFieldAccess store = ProfileFieldStoreLocator.get();
+        if (store == null) {
             throw new IllegalStateException(
                     "No ProfileFieldStore registered; is MicroSleeContainer running?");
         }
-        InMemoryProfileTable table = facility.findTableInternal(id.getProfileTableName());
-        if (table == null) {
-            throw new IllegalStateException(
-                    "Unrecognized profile table: " + id.getProfileTableName());
+        // C3 — capture old value for transactional undo when inside an event delivery.
+        SbbTransactionContext tx = ActivityContextTransactionRegistry.current();
+        if (tx != null && tx.isActive()) {
+            Object oldValue = store.readField(id, fieldName);
+            tx.recordProfileWrite(id, fieldName, oldValue);
         }
-        table.writeField(id.getProfileName(), fieldName, value);
+        // writeField: C7 re-validation + index maintenance + dirty mark + C5 notification
+        store.writeField(id, fieldName, value);
     }
 
     /**
-     * Extract the CMP field name from a {@code getXxx}/{@code setXxx} method.
-     * Mirrors {@link CmpAccessorInvoker#fieldNameFor}: strips the
-     * {@code get}/{@code set}/{@code is} prefix and lower-cases the next
-     * character. {@code isXxx} is accepted only for {@code boolean} return
-     * types.
-     *
-     * @param accessor a {@code getXxx}, {@code setXxx}, or {@code isXxx} method
-     * @return the underlying CMP field name
-     * @throws IllegalArgumentException if {@code accessor} is {@code null} or not a JavaBeans accessor
+     * Extract the CMP field name from a {@code getXxx}/{@code setXxx}/{@code isXxx} method.
      */
     public static String fieldNameFor(Method accessor) {
         if (accessor == null) {
@@ -144,10 +115,10 @@ public final class ProfileAccessorInvoker {
             return Character.toLowerCase(name.charAt(3)) + name.substring(4);
         }
         if (name.startsWith("is") && name.length() > 2
-                && (accessor.getReturnType() == boolean.class || accessor.getReturnType() == Boolean.class)) {
+                && (accessor.getReturnType() == boolean.class
+                        || accessor.getReturnType() == Boolean.class)) {
             return Character.toLowerCase(name.charAt(2)) + name.substring(3);
         }
-        throw new IllegalArgumentException(
-                "Not a JavaBeans accessor: " + accessor);
+        throw new IllegalArgumentException("Not a JavaBeans accessor: " + accessor);
     }
 }

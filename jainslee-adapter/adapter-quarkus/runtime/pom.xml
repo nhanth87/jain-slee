@@ -27,6 +27,12 @@
             <artifactId>quarkus-arc</artifactId>
             <version>${quarkus.version}</version>
         </dependency>
+        <!-- HotReplacementSetup SPI (dev mode only; same pattern as quarkus-vertx-http) -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-development-mode-spi</artifactId>
+            <version>${quarkus.version}</version>
+        </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-micrometer</artifactId>

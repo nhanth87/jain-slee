@@ -9,10 +9,9 @@
     <version>1.0.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>micro-jainslee example :: HelloWorld Web (Quarkus + WAR hosting test)</name>
-    <description>Quarkus 3 REST app with JAIN SLEE HelloWorld SBB.
-        Serves static content via quarkus-undertow (META-INF/resources).
-        ra-http-server listens on port 8081 for JAIN SLEE event pipeline.</description>
+    <name>micro-jainslee example :: HelloWorld Web (Quarkus CDI + HTTP RA)</name>
+    <description>Quarkus 3 CDI host with JAIN SLEE HelloWorld SBB.
+        All HTTP is served by ra-http-server (Quarkus HTTP disabled).</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -38,22 +37,15 @@
     </dependencyManagement>
 
     <dependencies>
-        <!-- Quarkus REST + CDI + Undertow (serves static resources from META-INF/resources/) -->
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-rest</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-rest-jackson</artifactId>
-        </dependency>
+        <!-- Quarkus CDI host only — HTTP is ra-http-server -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>
         </dependency>
+        <!-- JSON for telemetry/monitor handlers (was transitive via quarkus-rest-jackson) -->
         <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-undertow</artifactId>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
         </dependency>
 
         <!-- micro-jainslee -->
@@ -117,11 +109,6 @@
             <artifactId>quarkus-junit</artifactId>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>io.rest-assured</groupId>
-            <artifactId>rest-assured</artifactId>
-            <scope>test</scope>
-        </dependency>
     </dependencies>
 
     <build>
@@ -132,17 +119,19 @@
                 <version>${quarkus.platform.version}</version>
                 <extensions>true</extensions>
                 <executions>
+                    <!-- skip only package-time goals — NOT quarkus:dev (plugin-level
+                         skip=true would disable live reload entirely). -->
                     <execution>
                         <goals>
                             <goal>build</goal>
                             <goal>generate-code</goal>
                             <goal>generate-code-tests</goal>
                         </goals>
+                        <configuration>
+                            <skip>${quarkus.build.skip}</skip>
+                        </configuration>
                     </execution>
                 </executions>
-                <configuration>
-                    <skip>${quarkus.build.skip}</skip>
-                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

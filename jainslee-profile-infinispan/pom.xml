@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>micro-jainslee</artifactId>
+        <version>1.2.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>jainslee-profile-infinispan</artifactId>
+    <packaging>jar</packaging>
+
+    <name>micro-jainslee :: profile-infinispan (durable profile store)</name>
+    <description>
+        Phase 4 — durable DurableProfileStore backed by an embedded Infinispan
+        LOCAL cache persisted through a Soft-Index File Store (SIFS). Profiles
+        stay a hot, in-memory store in jainslee-core; this module is the
+        durability layer behind the write-behind flusher so profile rows survive
+        JVM restarts and Quarkus live-reloads (Contract C2). Values are JDK-only
+        (Contract C7) so marshalling never touches the application classloader.
+        Reuses the Infinispan 15.0.0.Final baseline pinned in jainslee-pom, the
+        same one used by jainslee-cluster.
+    </description>
+
+    <properties>
+        <!-- AGENTS.md: Java 25 only — same baseline as jainslee-cluster. -->
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <maven.compiler.release>25</maven.compiler.release>
+        <!-- infinispan.version = 15.0.0.Final is inherited from jainslee-pom -->
+        <junit.jupiter.version>5.11.4</junit.jupiter.version>
+        <assertj.version>3.26.3</assertj.version>
+    </properties>
+
+    <dependencies>
+        <!-- Public SPI: ProfileStore / DurableProfileStore / ProfileMutation /
+             ProfileID all live in jainslee-api. -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Embedded Infinispan cache manager + SIFS persistence. Version
+             pinned by the jainslee-pom BOM (15.0.0.Final). SIFS lives in
+             infinispan-core, so no extra persistence artifact is needed. -->
+        <dependency>
+            <groupId>org.infinispan</groupId>
+            <artifactId>infinispan-core</artifactId>
+        </dependency>
+
+        <!-- Logging facade only; the embedder supplies the backend. -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>2.23.1</version>
+        </dependency>
+
+        <!-- Tests -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.23.1</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <!-- Infinispan 15 / JGroups hold synchronized blocks; run
+                         tests on a platform thread with a roomy stack, matching
+                         jainslee-cluster. -->
+                    <argLine>-Xss1m</argLine>
+                    <forkedProcessTimeoutInSeconds>120</forkedProcessTimeoutInSeconds>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

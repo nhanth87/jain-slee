@@ -56,4 +56,21 @@ public interface ProfileLocalObject {
      * @return {@code true} when this profile is read-only
      */
     boolean isReadOnly();
+
+    /**
+     * Phase 1 Contract C8 — stale local object detection.
+     * <p>
+     * Returns {@code true} when the underlying profile row has been removed
+     * from its table (via {@link ProfileFacility#removeProfile(ProfileID)})
+     * while this local object was still held by the caller.
+     *
+     * <p>Once this method returns {@code true}, any subsequent call to
+     * {@link #getProfile()}, {@link #getProfileID()}, or
+     * {@link #getProfileTableName()} on this object will throw
+     * {@link ProfileNotFoundException} rather than silently returning a
+     * stale reference or {@code null}.
+     *
+     * @return {@code true} when the underlying row no longer exists
+     */
+    boolean isInvalidated();
 }

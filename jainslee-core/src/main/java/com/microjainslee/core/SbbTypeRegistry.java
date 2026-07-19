@@ -64,6 +64,30 @@ public final class SbbTypeRegistry {
     }
 
     /**
+     * Drop pools whose type matches the given FQCN or simple name.
+     * Used by Quarkus {@code quarkus:dev} live-reload: each reload loads a new
+     * {@link Class} identity for the same SBB name; without this, routing can
+     * keep borrowing instances from the previous classloader's pool.
+     *
+     * @return number of pools removed
+     */
+    public int unregisterByName(String name) {
+        if (name == null || name.isEmpty()) {
+            return 0;
+        }
+        int[] removed = {0};
+        pools.entrySet().removeIf(e -> {
+            Class<? extends Sbb> type = e.getKey();
+            if (name.equals(type.getName()) || name.equals(type.getSimpleName())) {
+                removed[0]++;
+                return true;
+            }
+            return false;
+        });
+        return removed[0];
+    }
+
+    /**
      * GOAL 2 — resolve a registered SBB type by name. Accepts either the
      * fully-qualified class name or the simple class name (the form used
      * by {@code MicroSleeContainer.mapEventToSbb}). Returns {@code null}

@@ -171,17 +171,18 @@
                 <version>${quarkus.platform.version}</version>
                 <extensions>true</extensions>
                 <executions>
+                    <!-- skip only package-time goals — NOT quarkus:dev -->
                     <execution>
                         <goals>
                             <goal>build</goal>
                             <goal>generate-code</goal>
                             <goal>generate-code-tests</goal>
                         </goals>
+                        <configuration>
+                            <skip>${quarkus.build.skip}</skip>
+                        </configuration>
                     </execution>
                 </executions>
-                <configuration>
-                    <skip>${quarkus.build.skip}</skip>
-                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

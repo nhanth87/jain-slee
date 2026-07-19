@@ -136,6 +136,39 @@ public final class InMemoryProfileTablePort implements ProfileTablePort {
         return Collections.unmodifiableSet(tables.keySet());
     }
 
+    // Phase 1 stubs — unsupported in legacy store; use InMemoryProfileFacility.
+    @Override public void setDefaultProfile(String t, com.microjainslee.api.Profile p) {
+        throw new UnsupportedOperationException("setDefaultProfile: use InMemoryProfileFacility");
+    }
+    @Override public ProfileLocalObject createFromDefault(String t, String n) {
+        throw new UnsupportedOperationException("createFromDefault: use InMemoryProfileFacility");
+    }
+    @Override public void registerIndex(String t, String a) {
+        throw new UnsupportedOperationException("registerIndex: use InMemoryProfileFacility");
+    }
+    @Override public Collection<ProfileLocalObject> findProfilesByAttribute(String t, String a, Object v) {
+        throw new UnsupportedOperationException("findProfilesByAttribute: use InMemoryProfileFacility");
+    }
+    @Override public boolean profileExists(ProfileID id) {
+        if (id == null) return false;
+        ConcurrentHashMap<String, Map<String, Object>> table = tables.get(id.getProfileTableName());
+        return table != null && table.containsKey(id.getProfileName());
+    }
+    @Override public long addToLong(ProfileID id, String f, long d) {
+        throw new UnsupportedOperationException("addToLong: use InMemoryProfileFacility");
+    }
+    @Override public Object updateField(ProfileID id, String f, java.util.function.UnaryOperator<Object> fn) {
+        throw new UnsupportedOperationException("updateField: use InMemoryProfileFacility");
+    }
+    @Override public boolean compareAndSetField(ProfileID id, String f, Object e, Object u) {
+        throw new UnsupportedOperationException("compareAndSetField: use InMemoryProfileFacility");
+    }
+    @Override public void enableEvents(String t, com.microjainslee.api.ProfileEventSink s) {
+        throw new UnsupportedOperationException("enableEvents: use InMemoryProfileFacility");
+    }
+    @Override public void disableEvents(String t) { /* no-op in legacy store */ }
+    @Override public void flushSync(long timeout, java.util.concurrent.TimeUnit unit) { /* no-op */ }
+
     /**
      * Read-only {@link ProfileLocalObject} backed by the legacy map row.
      * The {@link #getProfile()} method materialises a {@link MapBackedProfile}
@@ -169,6 +202,12 @@ public final class InMemoryProfileTablePort implements ProfileTablePort {
         @Override
         public boolean isReadOnly() {
             return true;
+        }
+
+        @Override
+        public boolean isInvalidated() {
+            // Legacy map-backed object: no liveness tracking; never invalidated.
+            return false;
         }
     }
 

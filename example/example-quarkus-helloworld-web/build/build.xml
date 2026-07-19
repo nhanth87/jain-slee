@@ -62,17 +62,16 @@ example-quarkus-helloworld-web — Ant → Maven 3 (JDK 25)
   ant -f build/build.xml install-deps   Install reactor deps to ~/.m2
   ant -f build/build.xml compile        Compile example only
   ant -f build/build.xml package        Package Quarkus app
-  ant -f build/build.xml dev            quarkus:dev (UI :8080, RA :8081)
+  ant -f build/build.xml dev            quarkus:dev (HTTP RA :8080)
   ant -f build/build.xml run            Run packaged app
   ant -f build/build.xml test           Run tests
   ant -f build/build.xml clean          Clean example
   ant -f build/build.xml all            install-deps + package
 
 Smoke after start:
+  curl http://localhost:8080/
   curl http://localhost:8080/health
-  curl -X POST http://localhost:8081/api/ussd/begin \
-       -H 'Content-Type: application/json' \
-       -d '{"msisdn":"84901234567","ussdString":"*101#"}'
+  curl http://localhost:8080/api/telemetry/snapshot
 ]]></echo>
     </target>
 

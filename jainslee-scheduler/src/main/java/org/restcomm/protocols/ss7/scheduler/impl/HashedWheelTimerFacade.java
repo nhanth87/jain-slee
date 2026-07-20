@@ -29,8 +29,14 @@ public class HashedWheelTimerFacade {
 
     private final HashedWheelTimer timer;
 
+    /**
+     * Default 10 ms tick — matches the documented micro-jainslee timer
+     * resolution (README, junior-dev-guide) and the jSS7 LocalTimerAdapter
+     * configuration. The previous 100 ms default silently made every timer
+     * up to 10x coarser than documented.
+     */
     public HashedWheelTimerFacade() {
-        this(100L, TimeUnit.MILLISECONDS);
+        this(10L, TimeUnit.MILLISECONDS);
     }
 
     public HashedWheelTimerFacade(long tickDuration, TimeUnit unit) {

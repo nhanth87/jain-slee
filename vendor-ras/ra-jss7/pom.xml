@@ -43,6 +43,13 @@
         </dependency>
 
         <!-- ── RestComm jSS7 stack ───────────────────────────────── -->
+        <!-- Ss7StackBuilder: JSON-config-driven bootstrap (SCTP→M3UA→SCCP→TCAP→MAP/CAP),
+             proven by the jSS7 map/load test harness (USSD + MO/MT-SMS load tests). -->
+        <dependency>
+            <groupId>org.restcomm.protocols.ss7.config</groupId>
+            <artifactId>ss7-config</artifactId>
+            <version>${ss7.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.restcomm.protocols.ss7.sccp</groupId>
             <artifactId>sccp-api</artifactId>

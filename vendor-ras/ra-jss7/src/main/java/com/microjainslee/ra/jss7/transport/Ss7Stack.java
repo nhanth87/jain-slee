@@ -44,13 +44,21 @@ public final class Ss7Stack {
 
     private static final Logger LOG = LogManager.getLogger(Ss7Stack.class);
 
-    private final Ss7RaConfig cfg;
+    private final Ss7RaConfig flatCfg;     // nullable when built from full Ss7Config
+    private final Ss7Config fullCfg;       // nullable when built from flat Ss7RaConfig
 
     private org.restcomm.protocols.ss7.config.Ss7Stack delegate;
     private volatile boolean started;
 
     public Ss7Stack(Ss7RaConfig cfg) {
-        this.cfg = cfg;
+        this.flatCfg = cfg;
+        this.fullCfg = null;
+    }
+
+    /** Multi-link / multi-AS topology — preferred production path. */
+    public Ss7Stack(Ss7Config cfg) {
+        this.flatCfg = null;
+        this.fullCfg = cfg;
     }
 
     // ── provider accessors (used by listener adapters / outbound sender) ──
@@ -59,14 +67,19 @@ public final class Ss7Stack {
     public MAPProvider mapProvider()   { return delegate.mapProvider(); }
     public CAPProvider capProvider()   { return delegate.capProvider(); }
     public boolean isStarted()         { return started; }
+    public Ss7Config resolvedConfig()  { return fullCfg != null ? fullCfg : toSs7Config(flatCfg); }
 
     // ── lifecycle ─────────────────────────────────────────────
     public synchronized void start() throws Exception {
         if (started) return;
-        LOG.info("[ra-jss7] bootstrapping jSS7 stack: {}", cfg);
-        delegate = Ss7StackBuilder.build(toSs7Config(cfg));
+        Ss7Config built = fullCfg != null ? fullCfg : toSs7Config(flatCfg);
+        LOG.info("[ra-jss7] bootstrapping jSS7 stack: {}",
+                fullCfg != null ? "Ss7Config stackName=" + built.stackName() : flatCfg);
+        delegate = Ss7StackBuilder.build(built);
         started = true;
-        LOG.info("[ra-jss7] jSS7 stack STARTED (map={} cap={})", cfg.mapEnabled(), cfg.capEnabled());
+        boolean map = built.protocols() != null && Boolean.TRUE.equals(built.protocols().map());
+        boolean cap = built.protocols() != null && Boolean.TRUE.equals(built.protocols().cap());
+        LOG.info("[ra-jss7] jSS7 stack STARTED (map={} cap={})", map, cap);
     }
 
     public synchronized void stop() {

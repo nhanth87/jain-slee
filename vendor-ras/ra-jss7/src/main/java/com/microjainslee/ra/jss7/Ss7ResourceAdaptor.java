@@ -20,6 +20,7 @@ import com.microjainslee.ra.jss7.transport.Ss7Stack;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.restcomm.protocols.ss7.config.Ss7Config;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,6 +45,8 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
 
     private volatile RaBootstrapPort bootstrap;
     private volatile Ss7RaConfig config = new Ss7RaConfig();
+    /** When set, preferred over flat {@link Ss7RaConfig} (multi-link JSON path). */
+    private volatile Ss7Config ss7Config;
     private volatile Ss7Stack stack;
 
     private final List<Ss7ProtocolAdapter> adapters = new ArrayList<>();
@@ -55,8 +58,11 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     // ── configuration ────────────────────────────────────────
     public void setBootstrapPort(RaBootstrapPort bp) { this.bootstrap = bp; }
     public RaBootstrapPort bootstrap() { return bootstrap; }
-    public void setConfig(Ss7RaConfig cfg) { this.config = cfg; }
+    public void setConfig(Ss7RaConfig cfg) { this.config = cfg; this.ss7Config = null; }
     public Ss7RaConfig config() { return config; }
+    /** Full jSS7-25 JSON model — multi SCTP links / multi AS. Clears flat override. */
+    public void setSs7Config(Ss7Config cfg) { this.ss7Config = cfg; }
+    public Ss7Config ss7Config() { return ss7Config; }
     public void setIdleTimeoutSeconds(int s) { this.idleTimeoutSeconds = s; }
     public Ss7Stack stack() { return stack; }
 
@@ -64,19 +70,27 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     public void raActive() {
         if (!active.compareAndSet(false, true)) return;
         try {
-            this.stack = new Ss7Stack(config);
+            this.stack = ss7Config != null ? new Ss7Stack(ss7Config) : new Ss7Stack(config);
             this.stack.start();
+
+            boolean mapOn = ss7Config != null
+                    ? (ss7Config.protocols() != null && Boolean.TRUE.equals(ss7Config.protocols().map()))
+                    : config.mapEnabled();
+            boolean capOn = ss7Config != null
+                    ? (ss7Config.protocols() != null && Boolean.TRUE.equals(ss7Config.protocols().cap()))
+                    : config.capEnabled();
 
             adapters.clear();
             adapters.add(new Ss7TcapListener());
-            if (config.mapEnabled()) adapters.add(new MapProtocolAdapter());
-            if (config.capEnabled()) adapters.add(new CapProtocolAdapter());
+            if (mapOn) adapters.add(new MapProtocolAdapter());
+            if (capOn) adapters.add(new CapProtocolAdapter());
             for (Ss7ProtocolAdapter a : adapters) {
                 a.attach(stack, this);
             }
 
             sweeper.start(idleTimeoutSeconds);
-            LOG.info("jSS7 RA activated (adapters={}, idleTimeout={}s)", adapters.size(), idleTimeoutSeconds);
+            LOG.info("jSS7 RA activated (adapters={}, idleTimeout={}s, fullConfig={})",
+                    adapters.size(), idleTimeoutSeconds, ss7Config != null);
         } catch (Exception e) {
             active.set(false);
             LOG.error("jSS7 RA activation failed", e);
@@ -143,6 +157,10 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
             case Ss7Command.TcapEnd e      -> { logCmd("END", e); forceEndSession(e.dialogId(), sessions.get(e.dialogId())); }
             case Ss7Command.TcapAbort a    -> { logCmd("ABORT", a); forceEndSession(a.dialogId(), sessions.get(a.dialogId())); }
             case Ss7Command.TcapUni u      -> logCmd("UNI", u);
+            case Ss7Command.MapSendRoutingInfoForSm sri ->
+                    LOG.warn("MAP SRI not handled by any adapter: {}", sri.dialogId());
+            case Ss7Command.MapMtForwardSm mt ->
+                    LOG.warn("MAP MT not handled by any adapter: {}", mt.dialogId());
         }
         touch(cmd.dialogId());
     }

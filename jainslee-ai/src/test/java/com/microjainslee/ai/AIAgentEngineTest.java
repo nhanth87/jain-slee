@@ -112,7 +112,9 @@ public class AIAgentEngineTest {
                 "microjainslee.ai.interval-seconds", "1")::get);
         try (AIAgentEngine engine = new AIAgentEngine(cfg, advisor, port, null)) {
             engine.start();
-            long deadline = System.currentTimeMillis() + 1_000;
+            // Loop: runCycle → sleep(interval). Two cycles need ≥1 sleep of 1s,
+            // so wait past one interval with headroom for scheduler jitter.
+            long deadline = System.currentTimeMillis() + 2_500;
             while (engine.status().cycles() < 2 && System.currentTimeMillis() < deadline) {
                 Thread.sleep(10);
             }

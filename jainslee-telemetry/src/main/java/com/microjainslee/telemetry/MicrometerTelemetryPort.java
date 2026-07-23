@@ -254,8 +254,9 @@ public final class MicrometerTelemetryPort implements TelemetryPort {
 
     @Override
     public TelemetryPort.Counter customCounter(String name, String... tagPairs) {
-        return customCounters.computeIfAbsent(name, k -> {
-            var c = io.micrometer.core.instrument.Counter.builder(k)
+        String key = metricKey(name, tagPairs);
+        return customCounters.computeIfAbsent(key, k -> {
+            var c = io.micrometer.core.instrument.Counter.builder(name)
                     .tags(toTags(tagPairs))
                     .register(registry);
             return new MicrometerCounterAdapter(c);
@@ -264,8 +265,9 @@ public final class MicrometerTelemetryPort implements TelemetryPort {
 
     @Override
     public TelemetryPort.Gauge customGauge(String name, Supplier<Number> supplier, String... tagPairs) {
-        return customGauges.computeIfAbsent(name, k -> {
-            io.micrometer.core.instrument.Gauge.builder(k, supplier, s -> s.get().doubleValue())
+        String key = metricKey(name, tagPairs);
+        return customGauges.computeIfAbsent(key, k -> {
+            io.micrometer.core.instrument.Gauge.builder(name, supplier, s -> s.get().doubleValue())
                     .tags(toTags(tagPairs))
                     .register(registry);
             return () -> supplier.get();
@@ -275,13 +277,52 @@ public final class MicrometerTelemetryPort implements TelemetryPort {
     /** Snapshot all custom metrics for the dashboard. */
     private List<TelemetryPort.CustomMetric> customMetricsSnapshot() {
         List<TelemetryPort.CustomMetric> list = new ArrayList<>();
-        customCounters.forEach((name, c) -> {
-            list.add(new TelemetryPort.CustomMetric(name, Map.of(), c.count(), null, false));
+        customCounters.forEach((key, c) -> {
+            String[] parts = splitMetricKey(key);
+            list.add(new TelemetryPort.CustomMetric(parts[0], parseTagMap(parts[1]), c.count(), null, false));
         });
-        customGauges.forEach((name, g) -> {
-            list.add(new TelemetryPort.CustomMetric(name, Map.of(), 0L, g.value(), true));
+        customGauges.forEach((key, g) -> {
+            String[] parts = splitMetricKey(key);
+            list.add(new TelemetryPort.CustomMetric(parts[0], parseTagMap(parts[1]), 0L, g.value(), true));
         });
         return Collections.unmodifiableList(list);
+    }
+
+    /** Composite map key so same metric name with different tags are distinct. */
+    static String metricKey(String name, String... tagPairs) {
+        if (tagPairs == null || tagPairs.length == 0) {
+            return name;
+        }
+        StringBuilder sb = new StringBuilder(name).append('|');
+        for (int i = 0; i + 1 < tagPairs.length; i += 2) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(tagPairs[i]).append('=').append(tagPairs[i + 1]);
+        }
+        return sb.toString();
+    }
+
+    private static String[] splitMetricKey(String key) {
+        int bar = key.indexOf('|');
+        if (bar < 0) {
+            return new String[] { key, "" };
+        }
+        return new String[] { key.substring(0, bar), key.substring(bar + 1) };
+    }
+
+    private static Map<String, String> parseTagMap(String encoded) {
+        if (encoded == null || encoded.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> m = new ConcurrentHashMap<>();
+        for (String pair : encoded.split(",")) {
+            int eq = pair.indexOf('=');
+            if (eq > 0) {
+                m.put(pair.substring(0, eq), pair.substring(eq + 1));
+            }
+        }
+        return m;
     }
 
     static Tags toTags(String... tagPairs) {

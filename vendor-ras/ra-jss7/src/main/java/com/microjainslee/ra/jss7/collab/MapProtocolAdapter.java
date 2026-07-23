@@ -28,6 +28,7 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
 
     private MAPProvider provider;
     private Ss7EventPublisher publisher;
+    private MapSmsOutbound outbound;
 
     @Override public String protocol() { return "MAP"; }
 
@@ -39,6 +40,7 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
             LOG.warn("[ra-jss7] MAP disabled — no provider on stack");
             return;
         }
+        this.outbound = new MapSmsOutbound(provider, stack);
         provider.addMAPDialogListener(this);
         try { var s = provider.getMAPServiceMobility(); s.addMAPServiceListener(this); s.activate(); } catch (Exception e) { LOG.warn("[ra-jss7] MAP service getMAPServiceMobility activate failed: {}", e.toString()); }
         try { var s = provider.getMAPServiceSms(); s.addMAPServiceListener(this); s.activate(); } catch (Exception e) { LOG.warn("[ra-jss7] MAP service getMAPServiceSms activate failed: {}", e.toString()); }
@@ -51,7 +53,16 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     }
 
     @Override
-    public void detach() { LOG.info("[ra-jss7] MAP adapter detached"); }
+    public void detach() {
+        outbound = null;
+        LOG.info("[ra-jss7] MAP adapter detached");
+    }
+
+    @Override
+    public boolean sendOutbound(com.microjainslee.api.OutboundCommand command) {
+        MapSmsOutbound out = this.outbound;
+        return out != null && out.send(command);
+    }
 
     // ── helpers ──────────────────────────────────────────────
     private void service(MAPMessage m) {
@@ -64,10 +75,23 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
         if (publisher == null) return;
         String did = did(d);
         publisher.publish(did, new Ss7MapEvent.Dialog(did, kind, detail));
+        if (kind == Ss7MapEvent.Kind.RELEASE || kind == Ss7MapEvent.Kind.CLOSE
+                || kind == Ss7MapEvent.Kind.TIMEOUT || kind == Ss7MapEvent.Kind.USER_ABORT
+                || kind == Ss7MapEvent.Kind.PROVIDER_ABORT) {
+            MapSmsOutbound out = this.outbound;
+            if (out != null && d != null) {
+                out.forget(d.getLocalDialogId());
+            }
+        }
     }
 
-    private static String did(MAPDialog d) {
-        return d == null || d.getLocalDialogId() == null ? "?" : String.valueOf(d.getLocalDialogId());
+    private String did(MAPDialog d) {
+        if (d == null || d.getLocalDialogId() == null) {
+            return "?";
+        }
+        String fallback = String.valueOf(d.getLocalDialogId());
+        MapSmsOutbound out = this.outbound;
+        return out == null ? fallback : out.correlate(d.getLocalDialogId(), fallback);
     }
 
     // ── generated MAP listener coverage ──────────────────

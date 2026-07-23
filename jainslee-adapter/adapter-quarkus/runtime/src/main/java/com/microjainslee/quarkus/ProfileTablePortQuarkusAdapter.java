@@ -11,14 +11,18 @@
 package com.microjainslee.quarkus;
 
 import com.microjainslee.api.Profile;
+import com.microjainslee.api.ProfileEventSink;
 import com.microjainslee.api.ProfileID;
 import com.microjainslee.api.ProfileLocalObject;
 import com.microjainslee.api.ProfileTable;
 import com.microjainslee.api.ProfileTablePort;
 import com.microjainslee.core.InMemoryProfileTablePort;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.function.UnaryOperator;
 
 /**
  * Quarkus profile table adapter — delegates to {@link InMemoryProfileTablePort} by default.
@@ -74,5 +78,61 @@ public final class ProfileTablePortQuarkusAdapter implements ProfileTablePort {
     @Override
     public Set<String> getProfileTableNames() {
         return delegate.getProfileTableNames();
+    }
+
+    @Override
+    public void setDefaultProfile(String tableName, Profile defaultProfile) {
+        delegate.setDefaultProfile(tableName, defaultProfile);
+    }
+
+    @Override
+    public ProfileLocalObject createFromDefault(String tableName, String profileName) {
+        return delegate.createFromDefault(tableName, profileName);
+    }
+
+    @Override
+    public void registerIndex(String tableName, String attributeName) {
+        delegate.registerIndex(tableName, attributeName);
+    }
+
+    @Override
+    public Collection<ProfileLocalObject> findProfilesByAttribute(
+            String tableName, String attributeName, Object value) {
+        return delegate.findProfilesByAttribute(tableName, attributeName, value);
+    }
+
+    @Override
+    public boolean profileExists(ProfileID id) {
+        return delegate.profileExists(id);
+    }
+
+    @Override
+    public long addToLong(ProfileID id, String field, long delta) {
+        return delegate.addToLong(id, field, delta);
+    }
+
+    @Override
+    public Object updateField(ProfileID id, String field, UnaryOperator<Object> fn) {
+        return delegate.updateField(id, field, fn);
+    }
+
+    @Override
+    public boolean compareAndSetField(ProfileID id, String field, Object expect, Object update) {
+        return delegate.compareAndSetField(id, field, expect, update);
+    }
+
+    @Override
+    public void enableEvents(String tableName, ProfileEventSink sink) {
+        delegate.enableEvents(tableName, sink);
+    }
+
+    @Override
+    public void disableEvents(String tableName) {
+        delegate.disableEvents(tableName);
+    }
+
+    @Override
+    public void flushSync(long timeout, TimeUnit unit) {
+        delegate.flushSync(timeout, unit);
     }
 }

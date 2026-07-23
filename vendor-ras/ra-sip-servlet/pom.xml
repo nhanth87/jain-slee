@@ -72,11 +72,13 @@
             <version>${netty.version}</version>
         </dependency>
 
-        <!-- Logging -->
+        <!-- Logging — must match jainslee-core (vendor-ras ${log4j.version}=2.24.3).
+             Pinning 2.23.1 here with core 2.24.x causes NoSuchFieldError:
+             FlowMessageFactory.INSTANCE at test/runtime. -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
-            <version>2.23.1</version>
+            <version>${log4j.version}</version>
         </dependency>
 
         <!-- Test -->

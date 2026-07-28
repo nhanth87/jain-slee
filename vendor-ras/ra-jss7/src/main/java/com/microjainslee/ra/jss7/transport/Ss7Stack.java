@@ -69,6 +69,11 @@ public final class Ss7Stack {
     public boolean isStarted()         { return started; }
     public Ss7Config resolvedConfig()  { return fullCfg != null ? fullCfg : toSs7Config(flatCfg); }
 
+    /** Underlying ss7-config stack — for admin status (SCTP/M3UA). Null if not started. */
+    public org.restcomm.protocols.ss7.config.Ss7Stack underlying() {
+        return delegate;
+    }
+
     // ── lifecycle ─────────────────────────────────────────────
     public synchronized void start() throws Exception {
         if (started) return;

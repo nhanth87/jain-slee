@@ -147,8 +147,14 @@ final class MapSmsOutbound {
             MAPParameterFactory pf = provider.getMAPParameterFactory();
             MAPSmsTpduParameterFactory tpdu = provider.getMAPSmsTpduParameterFactory();
 
-            IMSI imsi = pf.createIMSI(digits(cmd.imsi()));
-            SM_RP_DA da = pf.createSM_RP_DA(imsi);
+            SM_RP_DA da;
+            byte[] lmsiBytes = cmd.lmsi();
+            if (lmsiBytes != null && lmsiBytes.length > 0) {
+                da = pf.createSM_RP_DA(pf.createLMSI(lmsiBytes));
+            } else {
+                IMSI imsi = pf.createIMSI(digits(cmd.imsi()));
+                da = pf.createSM_RP_DA(imsi);
+            }
             AddressString sc = pf.createAddressString(
                     AddressNature.international_number, NumberingPlan.ISDN,
                     digits(cmd.scAddress()));
@@ -158,8 +164,9 @@ final class MapSmsOutbound {
             dialog.addMtForwardShortMessageRequest(
                     da, oa, si, false, null, null, null, false, null, null, null, null);
             dialog.send();
-            LOG.info("[ra-jss7] MT-ForwardSM sent corr={} localDialog={} imsi={}",
-                    cmd.dialogId(), dialog.getLocalDialogId(), cmd.imsi());
+            LOG.info("[ra-jss7] MT-ForwardSM sent corr={} localDialog={} imsi={} lmsiLen={}",
+                    cmd.dialogId(), dialog.getLocalDialogId(), cmd.imsi(),
+                    lmsiBytes == null ? 0 : lmsiBytes.length);
         } catch (MAPException | RuntimeException e) {
             LOG.error("[ra-jss7] MT-ForwardSM failed corr={}: {}", cmd.dialogId(), e.toString());
             throw new IllegalStateException("MAP MT-ForwardSM failed: " + e.getMessage(), e);

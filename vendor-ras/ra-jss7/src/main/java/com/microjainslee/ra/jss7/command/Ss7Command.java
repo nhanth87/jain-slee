@@ -89,6 +89,7 @@ public sealed interface Ss7Command extends OutboundCommand {
      * @param protocolId    TP-PID (0x7F SIM Data Download)
      * @param udhi          TP-UDHI bit
      * @param networkId     jSS7 network id
+     * @param lmsi          optional LMSI octets from SRI ({@code null}/empty → SM_RP_DA by IMSI)
      */
     record MapMtForwardSm(
             String dialogId,
@@ -100,6 +101,23 @@ public sealed interface Ss7Command extends OutboundCommand {
             int dataCoding,
             int protocolId,
             boolean udhi,
-            int networkId
-    ) implements Ss7Command {}
+            int networkId,
+            byte[] lmsi
+    ) implements Ss7Command {
+        /** Backward-compatible: no LMSI. */
+        public MapMtForwardSm(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String imsi,
+                String scAddress,
+                byte[] tpUd,
+                int dataCoding,
+                int protocolId,
+                boolean udhi,
+                int networkId) {
+            this(dialogId, targetAddress, localAddress, imsi, scAddress, tpUd,
+                    dataCoding, protocolId, udhi, networkId, null);
+        }
+    }
 }

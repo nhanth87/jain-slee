@@ -71,6 +71,23 @@
                 <version>${javassist.version}</version>
             </dependency>
 
+            <!-- ============== Microservice layer ============== -->
+            <dependency>
+                <groupId>com.microjainslee</groupId>
+                <artifactId>ms-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.microjainslee</groupId>
+                <artifactId>ms-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.microjainslee</groupId>
+                <artifactId>ms-ispn</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
             <!-- ============== Testing ============== -->
             <!-- JUnit 5 (Jupiter) — new code uses this -->
             <dependency>

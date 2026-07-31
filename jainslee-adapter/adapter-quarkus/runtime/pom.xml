@@ -17,6 +17,25 @@
             <artifactId>jainslee-core</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- Optional microservice layer (Infinispan transport). -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>ms-core</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>ms-ispn</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-cluster</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-core</artifactId>

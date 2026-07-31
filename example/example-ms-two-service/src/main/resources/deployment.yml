@@ -1,0 +1,11 @@
+# Default demo topology — single JVM runs everything in-process (Direct client).
+# For cluster demos, set mode: cluster and JAINSLEE_NODE_ID=node-1|node-2.
+mode: single
+
+nodes:
+  node-1: { host: "127.0.0.1", base-port: 9000 }
+  node-2: { host: "127.0.0.1", base-port: 9000 }
+
+services:
+  signaling: { node: node-1, transport: INFINISPAN_QUEUE, port: 9001 }
+  app: { node: node-2, transport: INFINISPAN_QUEUE, port: 9002 }

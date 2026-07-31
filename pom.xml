@@ -63,6 +63,7 @@
         <module>jainslee-codegen</module>
         <module>jainslee-cluster</module>
         <module>jainslee-profile-infinispan</module>
+        <module>jainslee-ms</module>
         <module>jainslee-apt</module>
         <module>jainslee-tck-harness</module>
         <module>jainslee-adapter</module>
@@ -87,6 +88,7 @@
                 <module>example/example-spring-ussdgw</module>
                 <module>example/example-quarkus-helloworld-web</module>
                 <module>example/example-spring-helloworld-web</module>
+                <module>example/example-ms-two-service</module>
             </modules>
         </profile>
     </profiles>

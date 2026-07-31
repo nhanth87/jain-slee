@@ -114,21 +114,37 @@ public final class DeploymentConfig {
      * env {@code JAINSLEE_DEPLOYMENT_CONFIG} (file path).
      */
     public static DeploymentConfig load() throws IOException {
-        String override = System.getenv("JAINSLEE_DEPLOYMENT_CONFIG");
+        String override = firstNonBlank(
+                System.getenv("JAINSLEE_DEPLOYMENT_CONFIG"),
+                System.getProperty("jainslee.deployment.config"));
         String yaml;
-        if (override != null && !override.isBlank()) {
+        if (override != null) {
             yaml = Files.readString(Path.of(override), StandardCharsets.UTF_8);
         } else {
+            String resource = firstNonBlank(
+                    System.getProperty("jainslee.deployment.resource"),
+                    "deployment.yml");
             try (InputStream in = DeploymentConfig.class.getClassLoader()
-                    .getResourceAsStream("deployment.yml")) {
+                    .getResourceAsStream(resource)) {
                 if (in == null) {
                     return singleNode();
                 }
                 yaml = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             }
         }
-        String nodeId = System.getenv("JAINSLEE_NODE_ID");
+        String nodeId = firstNonBlank(
+                System.getenv("JAINSLEE_NODE_ID"),
+                System.getProperty("jainslee.node-id"));
         return loadYaml(yaml, nodeId);
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String v : values) {
+            if (v != null && !v.isBlank()) {
+                return v;
+            }
+        }
+        return null;
     }
 
     public static DeploymentConfig loadYaml(String yaml, String myNodeId) {

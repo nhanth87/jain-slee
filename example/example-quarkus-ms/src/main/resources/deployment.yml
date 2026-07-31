@@ -1,0 +1,10 @@
+# Single-JVM topology: both services local → SleeServiceClient uses Direct.
+mode: single
+
+nodes:
+  node-signaling: { host: "127.0.0.1", base-port: 9000 }
+  node-app: { host: "127.0.0.1", base-port: 9000 }
+
+services:
+  signaling: { node: node-signaling, transport: INFINISPAN_QUEUE, port: 9001 }
+  app: { node: node-app, transport: INFINISPAN_QUEUE, port: 9002 }

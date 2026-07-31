@@ -38,27 +38,49 @@ public final class MicrosleeMsSupport {
     private MicrosleeMsSupport() {
     }
 
+    /**
+     * Booted microservice runtime: bootstrap + ISPN transport + resolved config.
+     */
+    public record MsRuntime(
+            MicrosleeBootstrap bootstrap,
+            IspnTransportManager transport,
+            DeploymentConfig config) {
+    }
+
     public static MicrosleeBootstrap boot(
             MicroSleeContainer container,
             ClusterManager clusterManager,
             List<SleeServiceDescriptor> descriptors,
             Function<SleeServiceDescriptor, SleeServiceHandler> handlerFactory)
             throws Exception {
+        return start(container, clusterManager, DeploymentConfig.load(), descriptors, handlerFactory)
+                .bootstrap();
+    }
+
+    public static MsRuntime start(
+            MicroSleeContainer container,
+            ClusterManager clusterManager,
+            DeploymentConfig config,
+            List<SleeServiceDescriptor> descriptors,
+            Function<SleeServiceDescriptor, SleeServiceHandler> handlerFactory)
+            throws Exception {
         Objects.requireNonNull(container, "container");
         Objects.requireNonNull(clusterManager, "clusterManager");
-        DeploymentConfig config = DeploymentConfig.load();
+        Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(descriptors, "descriptors");
+        Objects.requireNonNull(handlerFactory, "handlerFactory");
+
         IspnTransportManager transport = new IspnTransportManager(clusterManager);
 
         ServiceLifecycleHooks raHooks = new ServiceLifecycleHooks() {
             @Override
             public SleeServiceHandler activate(SleeServiceDescriptor descriptor) {
-                // Application supplies handler; RA registerRa remains app-owned.
                 return handlerFactory.apply(descriptor);
             }
 
             @Override
             public void deactivate(SleeServiceDescriptor descriptor) {
-                // no-op default — apps may wrap this helper for RA deactivate
+                // no-op default — apps may wrap for RA deactivate
             }
         };
 
@@ -72,6 +94,6 @@ public final class MicrosleeMsSupport {
                 new IspnRemoteClientFactory(transport),
                 transport);
         bootstrap.start();
-        return bootstrap;
+        return new MsRuntime(bootstrap, transport, config);
     }
 }

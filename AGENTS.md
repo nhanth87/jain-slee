@@ -1,5 +1,7 @@
 # AGENTS.md — Micro-JAINSLEE Runtime
 
+**JDK: Java 25 only.** See Hard constraint below. Workspace policy: all host Java = 25 (mise). [`../../AGENTS.md`](../../AGENTS.md).
+
 ## GIT COMMIT AUTHORSHIP — NON-NEGOTIABLE
 
 **Commit messages and authorship are nhanth87 only.**

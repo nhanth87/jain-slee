@@ -234,7 +234,7 @@ App vẫn có thể `setOutboundSender(...)` để override (test/custom stack).
 | RA | Transport | Outbound | Ghi chú |
 |---|---|---|---|
 | `ra-sip-servlet` | Netty UDP/TCP/TLS/SCTP + NIST parser | ✅ `NettySipOutboundSender` mặc định | Reference implementation. Có DialogRegistry + idle sweep + endActivity |
-| `ra-diameter` | Netty TCP + jdiameter codec | ⚠️ chưa có default sender | Chưa có CER/CEA, DWR/DWA peer state machine — chưa interop peer thật |
+| `ra-diameter` | Netty TCP + jdiameter codec | ⚠️ chưa có default app sender | Base CER/CEA + DWR/DWA peer tracker: `isPeerReady()` / `isPeerConnected()` (LISTEN/`isActive()` ≠ peer UP) |
 | `ra-http-server` | JDK HttpServer | ✅ | Đủ cho demo/USSD |
 | `ra-http-client` | (app cắm) | — | Shell — callback delivery do app cung cấp |
 | `ra-grpc-client` / `ra-grpc-server` | (app cắm `GrpcMenuUpstream`) | — | Shell — không có io.grpc dependency; app tự đem stub |

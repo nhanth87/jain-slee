@@ -17,6 +17,11 @@ import org.restcomm.protocols.ss7.map.api.MAPProvider;
 import org.restcomm.protocols.ss7.sccp.SccpProvider;
 import org.restcomm.protocols.ss7.tcap.api.TCAPProvider;
 
+import org.mobicents.protocols.api.Association;
+import org.mobicents.protocols.api.Management;
+import org.restcomm.protocols.ss7.m3ua.As;
+import org.restcomm.protocols.ss7.m3ua.impl.M3UAManagementImpl;
+
 import java.util.List;
 
 /**
@@ -66,8 +71,47 @@ public final class Ss7Stack {
     public SccpProvider sccpProvider() { return delegate.sccpProvider(); }
     public MAPProvider mapProvider()   { return delegate.mapProvider(); }
     public CAPProvider capProvider()   { return delegate.capProvider(); }
+    /** Stack bootstrap completed — **not** peer route-ready (see {@link #isSignalingRouteReady()}). */
     public boolean isStarted()         { return started; }
     public Ss7Config resolvedConfig()  { return fullCfg != null ? fullCfg : toSs7Config(flatCfg); }
+
+    /**
+     * True when outbound MAP/CAP can route: at least one SCTP association is up
+     * and at least one M3UA AS is ACTIVE. Local LISTEN or {@link #isStarted()} alone
+     * is insufficient.
+     */
+    public boolean isSignalingRouteReady() {
+        if (!started || delegate == null) {
+            return false;
+        }
+        try {
+            Management sctp = delegate.sctpManagement();
+            boolean assocUp = false;
+            if (sctp != null) {
+                for (Association a : sctp.getAssociations().values()) {
+                    if (a.isConnected() || a.isUp()) {
+                        assocUp = true;
+                        break;
+                    }
+                }
+            }
+            if (!assocUp) {
+                return false;
+            }
+            M3UAManagementImpl m3ua = delegate.m3uaManagement();
+            if (m3ua == null) {
+                return false;
+            }
+            for (As as : m3ua.getAppServers()) {
+                if (as.getState() != null && "ACTIVE".equalsIgnoreCase(as.getState().getName())) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
 
     /** Underlying ss7-config stack — for admin status (SCTP/M3UA). Null if not started. */
     public org.restcomm.protocols.ss7.config.Ss7Stack underlying() {

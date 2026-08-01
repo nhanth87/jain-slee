@@ -96,4 +96,14 @@ public final class DiameterRaEndpoint implements RaEndpointPort, RaCommandPort {
     public DiameterResourceAdaptor delegate() {
         return delegate;
     }
+
+    /** See {@link DiameterResourceAdaptor#isPeerConnected()}. */
+    public boolean isPeerConnected() {
+        return delegate.isPeerConnected();
+    }
+
+    /** See {@link DiameterResourceAdaptor#isPeerReady()} — honest Diameter link UP. */
+    public boolean isPeerReady() {
+        return delegate.isPeerReady();
+    }
 }

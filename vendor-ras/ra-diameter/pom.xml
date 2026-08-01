@@ -38,6 +38,13 @@
             <groupId>org.mobicents.diameter</groupId>
             <artifactId>jdiameter-impl</artifactId>
             <version>1.7.0.178</version>
+            <exclusions>
+                <!-- Pulls TestNG onto compile CP → Surefire prefers TestNG over JUnit. -->
+                <exclusion>
+                    <groupId>org.testng</groupId>
+                    <artifactId>testng</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- Transport — Netty TCP -->
@@ -47,11 +54,17 @@
             <version>${netty.version}</version>
         </dependency>
 
-        <!-- Logging -->
+        <!-- Logging — must match jainslee-core (parent log4j.version) -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
-            <version>2.23.1</version>
+            <version>${log4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>${log4j.version}</version>
+            <scope>test</scope>
         </dependency>
 
         <!-- Test -->

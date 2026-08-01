@@ -16,6 +16,8 @@ public final class DiameterRaConfig {
     private long vendorId = 0;
     private boolean tcpEnabled = true;
     private boolean sctpEnabled = false;
+    /** Tw-style silence limit for peer-ready (0 = no expiry after CER/CEA). Default 30s. */
+    private long watchdogTimeoutMs = 30_000L;
 
     public DiameterRaConfig() {}
 
@@ -36,4 +38,6 @@ public final class DiameterRaConfig {
     public void setTcpEnabled(boolean v) { tcpEnabled = v; }
     public boolean sctpEnabled() { return sctpEnabled; }
     public void setSctpEnabled(boolean v) { sctpEnabled = v; }
+    public long watchdogTimeoutMs() { return watchdogTimeoutMs; }
+    public void setWatchdogTimeoutMs(long v) { watchdogTimeoutMs = v; }
 }

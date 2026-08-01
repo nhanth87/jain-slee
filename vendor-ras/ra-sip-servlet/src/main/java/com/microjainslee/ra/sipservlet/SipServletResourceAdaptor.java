@@ -99,6 +99,7 @@ public final class SipServletResourceAdaptor {
     // ---- accessors ----
 
     public SipRaConfig config() { return config; }
+    /** RA lifecycle / transports started — **not** SIP peer registered or dialog-ready. */
     public boolean isActive() { return active.get(); }
     public DialogRegistry dialogRegistry() { return dialogRegistry; }
 

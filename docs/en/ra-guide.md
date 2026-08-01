@@ -234,7 +234,7 @@ App can still `setOutboundSender(...)` to override (test/custom stack).
 | RA | Transport | Outbound | Notes |
 |---|---|---|---|
 | `ra-sip-servlet` | Netty UDP/TCP/TLS/SCTP + NIST parser | ✅ `NettySipOutboundSender` default | Reference implementation. Has DialogRegistry + idle sweep + endActivity |
-| `ra-diameter` | Netty TCP + jdiameter codec | ⚠️ no default sender | No CER/CEA, DWR/DWA peer state machine — no real peer interop yet |
+| `ra-diameter` | Netty TCP + jdiameter codec | ⚠️ no default app sender | Base CER/CEA + DWR/DWA peer tracker: `isPeerReady()` / `isPeerConnected()` (LISTEN/`isActive()` ≠ peer UP) |
 | `ra-http-server` | JDK HttpServer | ✅ | Sufficient for demo/USSD |
 | `ra-http-client` | (app-plugged) | — | Shell — callback delivery provided by app |
 | `ra-grpc-client` / `ra-grpc-server` | (app-plugged `GrpcMenuUpstream`) | — | Shell — no io.grpc dependency; app brings its own stub |

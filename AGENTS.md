@@ -159,3 +159,31 @@ App / example / template code MUST NOT create Vert.x, Netty channels, or any
 transport directly. Transport lives ONLY inside RAs. HTTP → `ra-http-server` /
 `ra-http-client` + a gateway SBB; gRPC channel → RA via `setTarget()`/`channel()`.
 Quarkus/GraalVM-native is the priority target; Spring/JakartaEE are low priority.
+
+## LINK STATUS TRUTH (non-negotiable)
+
+**Every RA, status API, MBean, log line, and example health endpoint that describes a link must reflect runtime plane state — never UI cosmetics, never config-applied fiction.**
+
+1. **Source of truth** — stack/transport callbacks: SCTP association state, M3UA ASP/AS state, SMPP bind/session, Diameter CER/CEA + watchdog (`ra-diameter`: `isPeerReady()` / `isPeerConnected()` — **not** `isActive()`), SIP dialog/registration peer, gRPC channel connectivity, Camel broker reachability. Apps compose status from these; RAs must expose honest primitives (see `ra-jss7`: `isM3uaRouteReady()` — **not** `isActive()` / `isStarted()` alone).
+2. **Local LISTEN / RA started ≠ peer UP** — binding a server socket, calling `raActive()`, or logging `[ra-*] ACTIVE` means **local lifecycle only**. Never map that to traffic-ready, bound, or route-ready without peer evidence.
+3. **Peer disconnect** — killing a jSS7 simulator, SCTP drop, ESME unbind, Diameter peer down, or SIP peer gone must flip status to not-ready **immediately** from stack callbacks. Reconnect must reflect UP without fake UI refresh.
+4. **No UI-only fixes** — status APIs and delivery/scheduler gates use the same truth; never maintain a parallel optimistic flag.
+5. **All link protocols** — SS7/M3UA, SMPP, Diameter, SIP, gRPC, Camel, HTTP callback targets: same law.
+
+**Never:** expose `isActive()` / `isStarted()` / `openChannelCount()` / LISTEN-bound `/health` as “link UP” in admin or delivery gates.
+
+**RA peer primitives (checklist):** `ra-jss7.isM3uaRouteReady()` · `ra-diameter.isPeerReady()` / `isPeerConnected()` — both **Pass**.
+
+**Consumer app (OTA SMSC-GW):** [`worktrees/ota-service/ota-sim-push/AGENTS.md`](../../worktrees/ota-service/ota-sim-push/AGENTS.md) — `OtaLinkStatusService`, `ss7.live` / `smpp.live`.
+
+## PERSIST / PEER CONFIG XML (cross-cutting — never break Start)
+
+When agents touch jSS7 simulator or RA persist files (`*sccp*.xml`, M3UA/SCTP XML under `simulator-ss7/data/` or OTA `dist/ota-ss7-sccp_*.xml`):
+
+1. **Never** leave corrupt persist XML on disk after a “fix”.
+2. After any programmatic write: **validate** Jackson/Woodstox parse before claiming success.
+3. Quarantine bad files to `.bak-*` **and** replace with known-good seed / regenerated valid XML (no `<1>` element names).
+4. **One fix must not introduce the next** — smoke Start (or equivalent load) after data XML / jar changes.
+5. Do not conflate XML parse ERROR with SCTP `ChannelUnregistered` (peer/OTA down).
+
+Detail: [`worktrees/jSS7/coral-valley/jSS7/AGENTS.md`](../../worktrees/jSS7/coral-valley/jSS7/AGENTS.md) §12.

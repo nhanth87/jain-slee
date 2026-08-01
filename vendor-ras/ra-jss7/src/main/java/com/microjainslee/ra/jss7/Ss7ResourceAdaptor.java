@@ -66,6 +66,18 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     public void setIdleTimeoutSeconds(int s) { this.idleTimeoutSeconds = s; }
     public Ss7Stack stack() { return stack; }
 
+    /** RA lifecycle active — **not** peer route-ready; use {@link #isM3uaRouteReady()}. */
+    public boolean isActive() { return active.get(); }
+
+    /**
+     * True when M3UA can route outbound MAP/CAP (SCTP association up and at least
+     * one AS ACTIVE). Same truth OTA uses for {@code ss7.live} / scheduler gates.
+     */
+    public boolean isM3uaRouteReady() {
+        Ss7Stack s = stack;
+        return active.get() && s != null && s.isSignalingRouteReady();
+    }
+
     // ── lifecycle ────────────────────────────────────────────
     public void raActive() {
         if (!active.compareAndSet(false, true)) return;
@@ -110,8 +122,6 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         sessions.clear();
         LOG.info("jSS7 RA deactivated");
     }
-
-    public boolean isActive() { return active.get(); }
 
     // ── inbound: jSS7 → SLEE (Ss7EventPublisher) ─────────────
     @Override

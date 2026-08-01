@@ -14,11 +14,10 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 
 import java.net.InetSocketAddress;
-import java.util.function.Consumer;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.jdiameter.api.Message;
 import org.jdiameter.client.impl.parser.MessageParser;
 
 /** Netty TCP server transport for Diameter (RFC 6733). */
@@ -27,14 +26,15 @@ public final class TcpDiameterTransport implements DiameterTransport {
     private static final int MAX_FRAME = 65536;
 
     private final DiameterRaConfig config;
-    private final Consumer<Message> messageSink;
+    private final DiameterTransportCallbacks callbacks;
+    private final AtomicLong peerSeq = new AtomicLong();
     private EventLoopGroup bossGroup, workerGroup;
     private Channel channel;
     private final MessageParser parser = new MessageParser();
 
-    public TcpDiameterTransport(DiameterRaConfig config, Consumer<Message> messageSink) {
+    public TcpDiameterTransport(DiameterRaConfig config, DiameterTransportCallbacks callbacks) {
         this.config = config;
-        this.messageSink = messageSink;
+        this.callbacks = callbacks;
     }
 
     @Override public String protocol() { return "TCP"; }
@@ -48,16 +48,19 @@ public final class TcpDiameterTransport implements DiameterTransport {
          .channel(NioServerSocketChannel.class)
          .childHandler(new ChannelInitializer<>() {
              @Override protected void initChannel(Channel ch) {
+                 String peerId = "tcp-" + peerSeq.incrementAndGet()
+                         + "@" + ch.remoteAddress();
                  ch.pipeline().addLast(
                      // Diameter: version(1) + length(3) at offset 1, 3 bytes
                      new LengthFieldBasedFrameDecoder(MAX_FRAME, 1, 3, 0, 0),
-                     new DiameterNettyCodec(parser, messageSink));
+                     new DiameterNettyCodec(parser, peerId, callbacks));
              }
          })
          .option(ChannelOption.SO_BACKLOG, 1024);
         try {
             channel = b.bind(new InetSocketAddress(config.host(), config.port())).sync().channel();
-            LOG.info("[Diameter-TCP] listening on {}:{}", config.host(), config.port());
+            LOG.info("[Diameter-TCP] listening on {}:{} (LISTEN ≠ peer UP)",
+                    config.host(), config.port());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Diameter TCP bind failed", e);
@@ -71,6 +74,6 @@ public final class TcpDiameterTransport implements DiameterTransport {
         LOG.info("[Diameter-TCP] stopped");
     }
 
-    /** Expose parser for outbound encoding. */
+    /** Expose parser for outbound encoding / CEA construction. */
     public MessageParser parser() { return parser; }
 }

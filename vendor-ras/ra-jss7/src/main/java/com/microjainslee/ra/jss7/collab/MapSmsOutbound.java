@@ -185,7 +185,10 @@ final class MapSmsOutbound {
         if (cmd.udhi() && tpUd.length > 0) {
             int udhl = tpUd[0] & 0xFF;
             if (udhl > 0 && tpUd.length >= udhl + 1) {
-                udh = tpdu.createUserDataHeader(Arrays.copyOfRange(tpUd, 1, udhl + 1));
+                // UserDataHeaderImpl expects UDHL-prefixed octets (TS 23.040).
+                // Passing IE body only (without UDHL) mis-parses concat IEI 0x00 as
+                // UDHL=0 → empty header → UDHI cleared on the wire → sim cannot merge.
+                udh = tpdu.createUserDataHeader(Arrays.copyOfRange(tpUd, 0, udhl + 1));
                 payload = Arrays.copyOfRange(tpUd, udhl + 1, tpUd.length);
             }
         }

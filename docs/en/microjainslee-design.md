@@ -202,3 +202,4 @@ microjainslee.telemetry.auto-reconfig.enabled=true
 | Single HTML dashboard over React/Node | Zero build, zero deps, 15KB | 2026-Q2 |
 | AtomicLong ring buffers over locks | No contention, bounded memory | 2026-Q2 |
 | Single daemon VT scheduler | Avoids ScheduledExecutorService overhead | 2026-Q2 |
+| SS7 RA n-n sticky outbound; CONTINUE failover deferred | See [ADR 0001](../adr/0001-ss7-ra-nn-tcap-failover.md) | 2026-08 |

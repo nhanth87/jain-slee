@@ -64,6 +64,7 @@ class ClusterSplitBootstrapTest {
         clusterManager = new ClusterManager(MicroSleeConfiguration.defaults(), "node-2");
         clusterManager.start();
         IspnTransportManager transport = new IspnTransportManager(clusterManager);
+        transport.ensureServiceCaches(java.util.List.of("signaling", "app"));
 
         // Pretend node-1 already hosts signaling
         signalingServer = new IspnQueueServer("signaling", transport, req ->

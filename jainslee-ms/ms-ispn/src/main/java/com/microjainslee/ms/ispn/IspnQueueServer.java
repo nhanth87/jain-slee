@@ -79,15 +79,26 @@ public final class IspnQueueServer {
     }
 
     private void processEntry(String entryKey, SleeQueueEntry entry) {
+        LOG.info("[IspnQueueServer:{}] received type={} op={} corr={} from={} faf={}",
+                serviceName,
+                entry.type(),
+                entry.operation(),
+                entry.correlationId(),
+                entry.callerNode(),
+                entry.fireAndForget());
         try {
             if (entry.fireAndForget()) {
                 handler.invoke(entry.toSleeRequest());
                 inbox.remove(entryKey);
+                LOG.info("[IspnQueueServer:{}] notify done op={} corr={}",
+                        serviceName, entry.operation(), entry.correlationId());
                 return;
             }
             SleeResponse response = handler.invoke(entry.toSleeRequest());
             reply.put(entry.correlationId(), SleeQueueEntry.ofResponse(entry.correlationId(), response));
             inbox.remove(entryKey);
+            LOG.info("[IspnQueueServer:{}] reply sent op={} corr={} success={}",
+                    serviceName, entry.operation(), entry.correlationId(), response.success());
         } catch (Exception e) {
             LOG.error("Error processing queue entry {} for '{}'", entryKey, serviceName, e);
             if (!entry.fireAndForget()) {

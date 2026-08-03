@@ -36,16 +36,18 @@ class TwoServiceMainTest {
         cm.start();
         try {
             IspnTransportManager transport = new IspnTransportManager(cm);
+            List<SleeServiceDescriptor> descriptors = List.of(
+                    SleeServiceDescriptor.fromAnnotation(SignalingService.class),
+                    SleeServiceDescriptor.fromAnnotation(AppService.class));
+            // Auto-binding: service classes implement SleeServiceHandler.
             IspnServiceLifecycleHooks hooks = new IspnServiceLifecycleHooks(
                     transport,
-                    desc -> req -> SleeResponse.ok(
-                            (desc.name() + ":" + req.operation()).getBytes(StandardCharsets.UTF_8)));
+                    com.microjainslee.ms.core.SleeServiceHandlerRegistry
+                            .discover(descriptors)::resolve);
 
             MicrosleeBootstrap boot = MicrosleeBootstrap.create(
                     DeploymentConfig.singleNode(),
-                    List.of(
-                            SleeServiceDescriptor.fromAnnotation(SignalingService.class),
-                            SleeServiceDescriptor.fromAnnotation(AppService.class)),
+                    descriptors,
                     hooks,
                     new IspnRemoteClientFactory(transport),
                     transport);

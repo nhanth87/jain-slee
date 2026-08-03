@@ -29,6 +29,7 @@ public final class Ss7RaEndpoint implements RaEndpointPort, RaCommandPort {
     public Ss7RaEndpoint(Ss7ResourceAdaptor delegate, String raName) {
         this.delegate = delegate;
         this.raName = raName;
+        this.delegate.setRaName(raName);
     }
 
     public Ss7RaEndpoint(Ss7ResourceAdaptor delegate) {

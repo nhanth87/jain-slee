@@ -44,6 +44,19 @@ import java.util.List;
  * and the auto-derived remote SSN at the peer point code. Deployments needing
  * asymmetric SSNs or a multi-link topology should build a richer
  * {@link Ss7Config} directly instead of going through {@link Ss7RaConfig}.</p>
+ *
+ * <h2>Multi-node OTID ranges</h2>
+ * <p>When several RA JVMs share a signalling identity (or must never collide
+ * local OTIDs), partition {@link Ss7Config.Tcap#dialogIdRangeStart()} /
+ * {@link Ss7Config.Tcap#dialogIdRangeEnd()} per node with <em>non-overlapping</em>
+ * ranges. Flat {@link Ss7RaConfig} now exposes {@code dialogIdRangeStart/End}
+ * (default {@code 0,0} = jSS7 defaults). Production n-n deployments should set
+ * non-overlapping ranges. TCAP CONTINUE after RA death still requires jSS7
+ * export/import — see {@code docs/adr/0001-ss7-ra-nn-tcap-failover.md}.</p>
+ *
+ * <h2>Link status</h2>
+ * <p>{@link #isStarted()} is local lifecycle only. Peer route readiness is
+ * {@link #isSignalingRouteReady()} / RA {@code isM3uaRouteReady()}.</p>
  */
 public final class Ss7Stack {
 
@@ -183,8 +196,11 @@ public final class Ss7Stack {
         var ruleOutbound = new Ss7Config.Rule("local", 0, "K", wildcard, toRemote, null);
         var sccp = new Ss7Config.Sccp(List.of(localPoint), List.of(ruleInbound, ruleOutbound));
 
+        // dialogIdRangeStart/End: 0,0 → jSS7 defaults; otherwise partitioned OTID space (ADR 0001).
+        cfg.validateDialogIdRange();
         var tcap = new Ss7Config.Tcap(
-                cfg.dialogIdleTimeoutMs(), cfg.invokeTimeoutMs(), cfg.maxDialogs(), 0, 0, false, false);
+                cfg.dialogIdleTimeoutMs(), cfg.invokeTimeoutMs(), cfg.maxDialogs(),
+                cfg.dialogIdRangeStart(), cfg.dialogIdRangeEnd(), false, false);
 
         String protocol = cfg.mapEnabled() ? "map" : (cfg.capEnabled() ? "cap" : "tcap");
         var service = new Ss7Config.Service("primary", cfg.localSsn(), protocol);

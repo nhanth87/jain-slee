@@ -11,7 +11,7 @@ package com.microjainslee.ra.jss7.component;
  * Carries raw ASN.1-encoded parameter bytes and operation metadata.
  * SBBs may further decode the payload using jSS7 MAP/CAP/INAP codecs.
  */
-public sealed interface Ss7TcapComponent {
+public sealed interface Ss7TcapComponent extends java.io.Serializable {
 
     Long invokeId();
 

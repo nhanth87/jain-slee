@@ -16,7 +16,7 @@ public record Ss7Address(
         int natureOfAddress,
         int pointCode,
         int subSystemNumber
-) {
+) implements java.io.Serializable {
     public static Ss7Address of(String gt, int ssn) {
         return new Ss7Address(gt, 0, 1, 4, 0, ssn);
     }

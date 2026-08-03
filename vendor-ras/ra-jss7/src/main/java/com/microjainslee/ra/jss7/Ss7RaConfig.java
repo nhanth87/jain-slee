@@ -14,6 +14,11 @@ package com.microjainslee.ra.jss7;
  * can populate it before {@code raActive()}. Defaults describe a single
  * IPSP-client association suitable for a local loopback test; override for
  * real deployments.</p>
+ *
+ * <p>For multi-node OTID partitioning set {@link #dialogIdRangeStart()} /
+ * {@link #dialogIdRangeEnd()} to non-overlapping ranges (both {@code > 0},
+ * start {@code <} end). {@code 0,0} keeps jSS7 stack defaults. See
+ * {@code docs/adr/0001-ss7-ra-nn-tcap-failover.md}.</p>
  */
 public final class Ss7RaConfig {
 
@@ -49,6 +54,13 @@ public final class Ss7RaConfig {
     private long dialogIdleTimeoutMs = 300_000;
     private long invokeTimeoutMs = 120_000;
     private int maxDialogs = 5000;
+    /**
+     * Inclusive OTID range start. {@code 0} with {@link #dialogIdRangeEnd}{@code 0}
+     * means use jSS7 defaults. Multi-RA: partition non-overlapping ranges.
+     */
+    private long dialogIdRangeStart = 0;
+    /** Inclusive OTID range end (see {@link #dialogIdRangeStart}). */
+    private long dialogIdRangeEnd = 0;
 
     // ── protocol toggles ──────────────────────────────────────
     private boolean mapEnabled = true;
@@ -78,6 +90,8 @@ public final class Ss7RaConfig {
     public long dialogIdleTimeoutMs()    { return dialogIdleTimeoutMs; }
     public long invokeTimeoutMs()        { return invokeTimeoutMs; }
     public int maxDialogs()              { return maxDialogs; }
+    public long dialogIdRangeStart()     { return dialogIdRangeStart; }
+    public long dialogIdRangeEnd()       { return dialogIdRangeEnd; }
     public boolean mapEnabled()          { return mapEnabled; }
     public boolean capEnabled()          { return capEnabled; }
 
@@ -103,14 +117,33 @@ public final class Ss7RaConfig {
     public Ss7RaConfig dialogIdleTimeoutMs(long v)    { this.dialogIdleTimeoutMs = v; return this; }
     public Ss7RaConfig invokeTimeoutMs(long v)        { this.invokeTimeoutMs = v; return this; }
     public Ss7RaConfig maxDialogs(int v)              { this.maxDialogs = v; return this; }
+    public Ss7RaConfig dialogIdRangeStart(long v)     { this.dialogIdRangeStart = v; return this; }
+    public Ss7RaConfig dialogIdRangeEnd(long v)       { this.dialogIdRangeEnd = v; return this; }
     public Ss7RaConfig mapEnabled(boolean v)          { this.mapEnabled = v; return this; }
     public Ss7RaConfig capEnabled(boolean v)          { this.capEnabled = v; return this; }
+
+    /**
+     * Validate OTID range: both 0 (defaults) or {@code start > 0 && end > start}.
+     *
+     * @throws IllegalArgumentException when the range is inconsistent
+     */
+    public void validateDialogIdRange() {
+        if (dialogIdRangeStart == 0 && dialogIdRangeEnd == 0) {
+            return;
+        }
+        if (dialogIdRangeStart <= 0 || dialogIdRangeEnd <= dialogIdRangeStart) {
+            throw new IllegalArgumentException(
+                    "dialogIdRange must be both 0 (defaults) or start>0 and end>start; got ["
+                            + dialogIdRangeStart + ", " + dialogIdRangeEnd + "]");
+        }
+    }
 
     @Override
     public String toString() {
         return "Ss7RaConfig{" + stackName + " " + hostIp + ":" + hostPort
                 + " -> " + peerIp + ":" + peerPort + " opc=" + originatingPointCode
                 + " dpc=" + destinationPointCode + " ssn=" + localSsn
+                + " otid=[" + dialogIdRangeStart + "," + dialogIdRangeEnd + "]"
                 + " map=" + mapEnabled + " cap=" + capEnabled + "}";
     }
 }

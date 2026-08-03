@@ -11,7 +11,6 @@
 package com.example.ms.quarkus.bootstrap;
 
 import com.example.ms.quarkus.events.MsServiceCallEvent;
-import com.example.ms.quarkus.handlers.ServiceHandlers;
 import com.example.ms.quarkus.sbbs.MsAppBridgeSbb;
 import com.example.ms.quarkus.sbbs.MsGatewaySbb;
 import com.example.ms.quarkus.services.HttpRaService;
@@ -99,14 +98,15 @@ public class MsQuarkusBootstrap {
         clusterManager = new ClusterManager(sleeCfg, nodeId);
         clusterManager.start();
 
+        // Handlers auto-bind via the jainslee-ms registry: the @SleeService
+        // classes implement SleeServiceHandler (n-n providers also supported).
         MicrosleeMsSupport.MsRuntime runtime = MicrosleeMsSupport.start(
                 container,
                 clusterManager,
                 config,
                 List.of(
                         SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
-                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)),
-                ServiceHandlers::forDescriptor);
+                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)));
 
         runtimeHolder.set(runtime);
 

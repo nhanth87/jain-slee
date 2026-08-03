@@ -10,7 +10,6 @@
 
 package com.example.ms.quarkus;
 
-import com.example.ms.quarkus.handlers.ServiceHandlers;
 import com.example.ms.quarkus.services.HttpRaService;
 import com.example.ms.quarkus.services.HttpSbbService;
 import com.microjainslee.cluster.ClusterManager;
@@ -43,7 +42,8 @@ class MsBootstrapLogicTest {
 
     @BeforeEach
     void setUp() {
-        ServiceHandlers.resetCounters();
+        HttpRaService.resetCalls();
+        HttpSbbService.resetCalls();
         container = new MicroSleeContainer();
         container.start();
     }
@@ -78,14 +78,13 @@ class MsBootstrapLogicTest {
                 DeploymentConfig.singleNode(),
                 List.of(
                         SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
-                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)),
-                ServiceHandlers::forDescriptor);
+                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)));
 
         SleeResponse resp = runtime.bootstrap().client("http-ra")
                 .call(new SleeRequest("ping", new byte[0]));
         assertTrue(resp.success());
         assertEquals("pong", new String(resp.payload(), StandardCharsets.UTF_8));
-        assertEquals(1, ServiceHandlers.httpRaCalls());
+        assertEquals(1, HttpRaService.calls());
         assertTrue(runtime.config().isLocal("http-ra"));
     }
 
@@ -97,8 +96,7 @@ class MsBootstrapLogicTest {
         remoteHttpRa = new IspnQueueServer(
                 "http-ra",
                 new com.microjainslee.ms.ispn.IspnTransportManager(clusterManager),
-                ServiceHandlers.forDescriptor(
-                        SleeServiceDescriptor.fromAnnotation(HttpRaService.class)));
+                new HttpRaService());
         remoteHttpRa.start();
         new com.microjainslee.ms.ispn.IspnTransportManager(clusterManager)
                 .publishState("http-ra", ServiceState.READY);
@@ -118,8 +116,7 @@ class MsBootstrapLogicTest {
                 cfg,
                 List.of(
                         SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
-                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)),
-                ServiceHandlers::forDescriptor);
+                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)));
 
         assertFalse(cfg.isLocal("http-ra"));
         assertTrue(cfg.isLocal("http-sbb"));

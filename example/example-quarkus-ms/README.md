@@ -189,8 +189,7 @@ example/example-quarkus-ms/
     ├── bootstrap/MsQuarkusBootstrap.java
     ├── sbbs/MsGatewaySbb.java
     ├── sbbs/MsAppBridgeSbb.java
-    ├── services/{HttpRa,HttpSbb}Service.java
-    └── handlers/ServiceHandlers.java
+    └── services/{HttpRa,HttpSbb}Service.java   ← @SleeService + SleeServiceHandler (auto-bound)
 ```
 
 ---

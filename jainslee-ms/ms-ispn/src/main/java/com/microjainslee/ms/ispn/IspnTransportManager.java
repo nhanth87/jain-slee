@@ -18,12 +18,20 @@ import org.infinispan.configuration.cache.CacheMode;
 import org.infinispan.configuration.cache.ConfigurationBuilder;
 import org.infinispan.manager.EmbeddedCacheManager;
 
+import java.util.Collection;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 /**
  * Owns Infinispan cache lifecycle for ms queue transport.
  * Reuses {@link ClusterManager#getCacheManager()} — never creates a second manager.
+ *
+ * <p>In cluster mode every node must {@link #ensureServiceCaches(Collection)
+ * pre-define} inbox caches for <em>all</em> known services (not only local
+ * ones). Clustered cache listeners broadcast remove/add callables that call
+ * {@code getCache} on every peer; missing definitions yield
+ * {@code ISPN000436: Cache 'slee.queue.*' has been requested, but no matching
+ * cache configuration exists} during peer shutdown.
  */
 public final class IspnTransportManager implements ServiceReadinessView {
 
@@ -50,6 +58,22 @@ public final class IspnTransportManager implements ServiceReadinessView {
 
     public static String inboxCacheName(String serviceName) {
         return "slee.queue." + serviceName;
+    }
+
+    /**
+     * Define + start shared reply/state caches and an inbox cache per service
+     * name. Safe to call repeatedly. Call once at MS bootstrap with the full
+     * descriptor set so peers survive clustered-listener teardown.
+     */
+    public void ensureServiceCaches(Collection<String> serviceNames) {
+        Objects.requireNonNull(serviceNames, "serviceNames");
+        replyCache();
+        stateCache();
+        for (String name : serviceNames) {
+            if (name != null && !name.isBlank()) {
+                inboxCache(name);
+            }
+        }
     }
 
     public Cache<String, SleeQueueEntry> inboxCache(String serviceName) {

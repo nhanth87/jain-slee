@@ -15,6 +15,7 @@ import com.microjainslee.core.MicroSleeConfiguration;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.infinispan.Cache;
+import org.infinispan.commons.marshall.JavaSerializationMarshaller;
 import org.infinispan.lifecycle.ComponentStatus;
 import org.infinispan.configuration.cache.CacheMode;
 import org.infinispan.configuration.cache.Configuration;
@@ -86,6 +87,11 @@ public class ClusterManager {
     private static final String DEFAULT_TCP_STACK = "default-configs/default-jgroups-tcp.xml";
     private static final String DEFAULT_UDP_STACK = "default-configs/default-jgroups-udp.xml";
 
+    /**
+     * Java-serialization allow-list — see {@link MarshallingAllowList}.
+     * Infinispan 15 defaults to ProtoStream; cluster + ms modules store plain
+     * {@link java.io.Serializable} values and expect JDK serialization on the wire.
+     */
     private final MicroSleeConfiguration configuration;
     private final String nodeId;
     private final boolean clusterMode;
@@ -158,6 +164,19 @@ public class ClusterManager {
             // No transport &mdash; explicit nonClusteredDefault so the global
             // config does not even allocate a JGroups executor.
             global.nonClusteredDefault();
+            // Restore node name / manager name — nonClusteredDefault resets
+            // transport defaults.
+            global.transport().nodeName(nodeId);
+            global.cacheManagerName("micro-jainslee-" + nodeId);
+        }
+        // Apply AFTER transport defaults. Infinispan 15 defaults to ProtoStream;
+        // MS/cluster payloads are plain Serializable and must use JDK marshalling
+        // or state transfer fails with "No marshaller registered for …ServiceStateRecord".
+        var allow = global.serialization()
+                .marshaller(new JavaSerializationMarshaller())
+                .allowList();
+        for (String regexp : MarshallingAllowList.REGEXPS) {
+            allow.addRegexp(regexp);
         }
         return global.build();
     }

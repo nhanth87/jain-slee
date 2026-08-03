@@ -11,8 +11,9 @@
 package com.example.ms.quarkus.sbbs;
 
 import com.example.ms.quarkus.bootstrap.MsRuntimeHolder;
-import com.example.ms.quarkus.handlers.ServiceHandlers;
 import com.example.ms.quarkus.http.HttpReply;
+import com.example.ms.quarkus.services.HttpRaService;
+import com.example.ms.quarkus.services.HttpSbbService;
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.RaCommandPort;
 import com.microjainslee.api.Sbb;
@@ -153,8 +154,8 @@ public final class MsGatewaySbb implements Sbb, SleeEventHandler {
         out.put("localStates", local);
         out.put("ispnStates", remote);
         out.put("counters", Map.of(
-                "httpRaCalls", ServiceHandlers.httpRaCalls(),
-                "httpSbbCalls", ServiceHandlers.httpSbbCalls()));
+                "httpRaCalls", HttpRaService.calls(),
+                "httpSbbCalls", HttpSbbService.calls()));
         return HttpReply.json(toJson(out));
     }
 

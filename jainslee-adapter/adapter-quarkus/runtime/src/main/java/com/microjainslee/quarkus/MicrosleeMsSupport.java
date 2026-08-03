@@ -16,6 +16,7 @@ import com.microjainslee.ms.api.SleeServiceDescriptor;
 import com.microjainslee.ms.api.SleeServiceHandler;
 import com.microjainslee.ms.core.MicrosleeBootstrap;
 import com.microjainslee.ms.core.ServiceLifecycleHooks;
+import com.microjainslee.ms.core.SleeServiceHandlerRegistry;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.ms.ispn.IspnRemoteClientFactory;
 import com.microjainslee.ms.ispn.IspnServiceLifecycleHooks;
@@ -57,6 +58,37 @@ public final class MicrosleeMsSupport {
                 .bootstrap();
     }
 
+    /**
+     * Auto-wired variant: handlers are discovered by
+     * {@link SleeServiceHandlerRegistry#discover} (ServiceLoader providers +
+     * self-handling {@code @SleeService} classes). No hand-written
+     * name-to-handler glue in the application.
+     */
+    public static MsRuntime start(
+            MicroSleeContainer container,
+            ClusterManager clusterManager,
+            DeploymentConfig config,
+            List<SleeServiceDescriptor> descriptors)
+            throws Exception {
+        return start(container, clusterManager, config, descriptors,
+                SleeServiceHandlerRegistry.discover(descriptors));
+    }
+
+    /**
+     * Auto-wired variant with a caller-prepared n-n registry (programmatic
+     * bindings on top of discovery).
+     */
+    public static MsRuntime start(
+            MicroSleeContainer container,
+            ClusterManager clusterManager,
+            DeploymentConfig config,
+            List<SleeServiceDescriptor> descriptors,
+            SleeServiceHandlerRegistry registry)
+            throws Exception {
+        Objects.requireNonNull(registry, "registry");
+        return start(container, clusterManager, config, descriptors, registry::resolve);
+    }
+
     public static MsRuntime start(
             MicroSleeContainer container,
             ClusterManager clusterManager,
@@ -71,6 +103,16 @@ public final class MicrosleeMsSupport {
         Objects.requireNonNull(handlerFactory, "handlerFactory");
 
         IspnTransportManager transport = new IspnTransportManager(clusterManager);
+        // Pre-define slee.queue.<every-service> on this node so peer clustered
+        // listener add/remove (shutdown) does not hit ISPN000436.
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        for (SleeServiceDescriptor d : descriptors) {
+            names.add(d.name());
+        }
+        for (String svc : config.services().keySet()) {
+            names.add(svc);
+        }
+        transport.ensureServiceCaches(names);
 
         ServiceLifecycleHooks raHooks = new ServiceLifecycleHooks() {
             @Override

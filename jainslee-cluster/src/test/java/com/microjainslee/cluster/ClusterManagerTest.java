@@ -13,6 +13,7 @@ package com.microjainslee.cluster;
 import com.microjainslee.core.MicroSleeConfiguration;
 
 import org.infinispan.Cache;
+import org.infinispan.commons.marshall.JavaSerializationMarshaller;
 import org.infinispan.configuration.cache.CacheMode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -92,6 +93,11 @@ class ClusterManagerTest {
         clusterManager = new ClusterManager(localConfig(), null);
         assertThat(clusterManager.isClusterMode()).isFalse();
         assertThat(clusterManager.isClustered()).isFalse();
+        assertThat(clusterManager.getCacheManager()
+                .getCacheManagerConfiguration()
+                .serialization()
+                .marshaller())
+                .isInstanceOf(JavaSerializationMarshaller.class);
 
         Cache<String, String> cache = clusterManager.getCache("local-1", CacheMode.LOCAL);
         assertThat(cache).isNotNull();

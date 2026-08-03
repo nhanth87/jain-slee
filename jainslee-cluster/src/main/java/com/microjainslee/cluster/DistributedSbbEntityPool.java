@@ -76,16 +76,14 @@ import java.util.function.Supplier;
  * The reflective contract requires a {@code (int, int, boolean, ClusterManager)}
  * constructor &mdash; the same constructor exposed below.
  *
- * <h2>Marshalling caveat</h2>
+ * <h2>Marshalling</h2>
  * CMP field values stored in {@link SbbEntitySnapshot} must be
- * {@link java.io.Serializable} because the default Infinispan
- * marshaller is Java serialization. SBBs that hold non-serializable
- * CMP state (e.g. {@link java.nio.ByteBuffer}, file handles, network
- * sockets) must mark those fields {@code transient} in the accessor
- * or store them through {@link com.microjainslee.core.CmpBackedSbb}'s
- * own store rather than relying on the snapshot.
- *
- * <p><b>R&amp;D only &mdash; never for production.</b>
+ * {@link java.io.Serializable} and match {@link MarshallingAllowList}
+ * ({@code com.microjainslee.*}, {@code com.example.*}, {@code java.*}, arrays).
+ * {@link #takeSnapshot} validates each field before the snapshot is built;
+ * non-conforming values fail fast with {@link IllegalArgumentException}.
+ * SBBs that hold non-serializable state (sockets, buffers, …) must keep those
+ * fields out of {@code @CmpField} accessors.
  */
 public final class DistributedSbbEntityPool {
 
@@ -253,7 +251,9 @@ public final class DistributedSbbEntityPool {
             CmpField ann = m.getAnnotation(CmpField.class);
             try {
                 m.setAccessible(true);
-                values.put(ann.value(), m.invoke(sbb));
+                Object value = m.invoke(sbb);
+                MarshallingAllowList.assertMarshallable("@CmpField '" + ann.value() + "'", value);
+                values.put(ann.value(), value);
             } catch (IllegalAccessException | InvocationTargetException ex) {
                 throw new IllegalStateException(
                         "Failed to read @CmpField '" + ann.value()

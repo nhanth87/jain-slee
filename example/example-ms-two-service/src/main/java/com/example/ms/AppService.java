@@ -10,8 +10,23 @@
 
 package com.example.ms;
 
+import com.microjainslee.ms.api.SleeRequest;
+import com.microjainslee.ms.api.SleeResponse;
+import com.microjainslee.ms.api.SleeServiceHandler;
 import com.microjainslee.ms.api.annotation.SleeService;
 
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Self-handling service: the jainslee-ms handler registry auto-binds this
+ * class because it implements {@link SleeServiceHandler}.
+ */
 @SleeService(name = "app", dependsOn = {"signaling"}, startPriority = 20)
-public final class AppService {
+public final class AppService implements SleeServiceHandler {
+
+    @Override
+    public SleeResponse invoke(SleeRequest req) {
+        return SleeResponse.ok(
+                ("app:" + req.operation()).getBytes(StandardCharsets.UTF_8));
+    }
 }

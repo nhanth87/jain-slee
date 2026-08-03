@@ -12,7 +12,6 @@ package com.example.ms.quarkus;
 
 import com.example.ms.quarkus.bootstrap.MsRuntimeHolder;
 import com.example.ms.quarkus.events.MsServiceCallEvent;
-import com.example.ms.quarkus.handlers.ServiceHandlers;
 import com.example.ms.quarkus.sbbs.MsAppBridgeSbb;
 import com.example.ms.quarkus.sbbs.MsGatewaySbb;
 import com.example.ms.quarkus.services.HttpRaService;
@@ -56,7 +55,8 @@ class MsHttpSleeSmokeTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        ServiceHandlers.resetCounters();
+        HttpRaService.resetCalls();
+        HttpSbbService.resetCalls();
         container = new MicroSleeContainer(MicroSleeConfiguration.builder()
                 .eventRouterBufferSize(64)
                 .preferVirtualThreads(false)
@@ -76,8 +76,7 @@ class MsHttpSleeSmokeTest {
                 DeploymentConfig.singleNode(),
                 List.of(
                         SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
-                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)),
-                ServiceHandlers::forDescriptor);
+                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)));
         holder.set(runtime);
 
         container.registerSbbType(MsGatewaySbb.class,
@@ -149,6 +148,6 @@ class MsHttpSleeSmokeTest {
         assertTrue(resp.body().contains("\"success\":true"), resp.body());
         assertTrue(resp.body().contains("\"payload\":\"pong\""), resp.body());
         assertTrue(resp.body().contains("\"viaLocal\":true"), resp.body());
-        assertEquals(1, ServiceHandlers.httpRaCalls());
+        assertEquals(1, HttpRaService.calls());
     }
 }

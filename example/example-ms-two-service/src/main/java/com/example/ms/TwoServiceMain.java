@@ -15,8 +15,8 @@ import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.ms.api.SleeRequest;
 import com.microjainslee.ms.api.SleeResponse;
 import com.microjainslee.ms.api.SleeServiceDescriptor;
-import com.microjainslee.ms.api.SleeServiceHandler;
 import com.microjainslee.ms.core.MicrosleeBootstrap;
+import com.microjainslee.ms.core.SleeServiceHandlerRegistry;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.ms.ispn.IspnRemoteClientFactory;
 import com.microjainslee.ms.ispn.IspnServiceLifecycleHooks;
@@ -39,13 +39,20 @@ public final class TwoServiceMain {
         clusterManager.start();
 
         IspnTransportManager transport = new IspnTransportManager(clusterManager);
-        IspnServiceLifecycleHooks hooks = new IspnServiceLifecycleHooks(transport, TwoServiceMain::handlerFor);
+        transport.ensureServiceCaches(List.of("signaling", "app"));
+
+        List<SleeServiceDescriptor> descriptors = List.of(
+                SleeServiceDescriptor.fromAnnotation(SignalingService.class),
+                SleeServiceDescriptor.fromAnnotation(AppService.class));
+
+        // Handlers auto-bind: the @SleeService classes implement
+        // SleeServiceHandler, discovered by the jainslee-ms registry (n-n).
+        SleeServiceHandlerRegistry registry = SleeServiceHandlerRegistry.discover(descriptors);
+        IspnServiceLifecycleHooks hooks = new IspnServiceLifecycleHooks(transport, registry::resolve);
 
         MicrosleeBootstrap boot = MicrosleeBootstrap.create(
                 config,
-                List.of(
-                        SleeServiceDescriptor.fromAnnotation(SignalingService.class),
-                        SleeServiceDescriptor.fromAnnotation(AppService.class)),
+                descriptors,
                 hooks,
                 new IspnRemoteClientFactory(transport),
                 transport);
@@ -69,11 +76,6 @@ public final class TwoServiceMain {
 
         boot.stop();
         clusterManager.stop();
-    }
-
-    private static SleeServiceHandler handlerFor(SleeServiceDescriptor desc) {
-        return req -> SleeResponse.ok(
-                (desc.name() + ":" + req.operation()).getBytes(StandardCharsets.UTF_8));
     }
 
     private TwoServiceMain() {

@@ -17,7 +17,7 @@ import java.util.List;
  * Each command carries raw components; the RA encodes and sends via jSS7.
  * Typed MAP SMS commands are handled by {@code MapProtocolAdapter.sendOutbound}.
  */
-public sealed interface Ss7Command extends OutboundCommand {
+public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable {
 
     String dialogId();
     Ss7Address targetAddress();

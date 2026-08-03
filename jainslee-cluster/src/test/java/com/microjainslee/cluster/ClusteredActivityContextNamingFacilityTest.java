@@ -46,12 +46,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       is meaningless without JGroups.</li>
  * </ol>
  *
- * <p>Marshalling caveat: the test uses
- * {@link ClusterTestUtil.SerializableAci} (a {@link java.io.Serializable}
- * stub) instead of {@code InMemoryActivityContext} so we can
- * exercise the Infinispan wire path. See
- * {@link ClusteredActivityContextNamingFacility} class javadoc for
- * the P5 follow-up task.
+ * <p>Marshalling: the cluster cache stores only activity-context <em>names</em>
+ * ({@code String}). Live ACI instances stay node-local; remote lookup returns
+ * {@link NamedActivityContext}. Tests may use any ACI implementation
+ * (including non-{@link java.io.Serializable} ones).
  */
 class ClusteredActivityContextNamingFacilityTest {
 
@@ -218,6 +216,52 @@ class ClusteredActivityContextNamingFacilityTest {
         localFacility.bind("dup", first);
         localFacility.bind("dup", second);
         assertThat(localFacility.lookup("dup")).isSameAs(second);
+    }
+
+    @Test
+    @DisplayName("bind stores only the activity-context name in the ISPN cache")
+    void cacheStoresStringNamesNotLiveAci() {
+        ActivityContextInterface aci = new NonSerializableAci("ns-aci");
+        localFacility.bind("ns-aci", aci);
+
+        assertThat(localFacility.getCache().get("ns-aci")).isEqualTo("ns-aci");
+        assertThat(localFacility.lookup("ns-aci")).isSameAs(aci);
+
+        // Wire value must be Java-serializable under the cluster marshaller.
+        Object wire = localFacility.getCache().get("ns-aci");
+        assertThat(wire).isInstanceOf(String.class);
+    }
+
+    @Test
+    @DisplayName("lookup without local live ACI returns NamedActivityContext")
+    void lookupRemoteStyleReturnsNamedHandle() throws Exception {
+        localFacility.getCache().put("remote-only", "remote-only");
+        ActivityContextInterface lookedUp = localFacility.lookup("remote-only");
+        assertThat(lookedUp).isInstanceOf(NamedActivityContext.class);
+        assertThat(lookedUp.getActivityContextName()).isEqualTo("remote-only");
+    }
+
+    /** ACI that is deliberately not Serializable (locks / graphs simulation). */
+    private static final class NonSerializableAci implements ActivityContextInterface {
+        private final String name;
+        private final Object lock = new Object(); // not Serializable
+
+        NonSerializableAci(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public String getActivityContextName() {
+            return name;
+        }
+
+        @Override
+        public void attach(com.microjainslee.api.SbbLocalObject sbbLocalObject) {
+        }
+
+        @Override
+        public void detach(com.microjainslee.api.SbbLocalObject sbbLocalObject) {
+        }
     }
 
     // -----------------------------------------------------------------

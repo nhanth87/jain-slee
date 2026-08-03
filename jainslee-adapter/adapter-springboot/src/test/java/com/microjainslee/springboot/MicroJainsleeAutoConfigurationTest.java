@@ -259,9 +259,13 @@ public class MicroJainsleeAutoConfigurationTest {
             @Override public String getRaName() { return "testRa"; }
         };
 
-        // Mock RaCommandPort
+        // Mock RaCommandPort that records delivered commands.
+        java.util.List<OutboundCommand> delivered =
+                java.util.Collections.synchronizedList(new java.util.ArrayList<>());
         RaCommandPort mockCommand = new RaCommandPort() {
-            @Override public void sendCommand(OutboundCommand command) { }
+            @Override public void sendCommand(OutboundCommand command) {
+                delivered.add(command);
+            }
         };
 
         List<RaEndpointPort> endpoints = Collections.singletonList(mockEndpoint);
@@ -279,11 +283,17 @@ public class MicroJainsleeAutoConfigurationTest {
         LIFECYCLE.getMethod("start").invoke(lifecycle);
         assertEquals(MicroSleeContainer.State.STARTED, container.getState());
 
-        // Verify the RA was registered: getRaCommandPort should return our mock.
+        // Verify the RA was registered. The container intentionally wraps the
+        // raw port (ObservingRaCommandPort for telemetry), so assert behavior:
+        // commands sent through the registered port reach our mock.
         RaCommandPort registeredCmd = container.getRaCommandPort("testRa");
         assertNotNull("RaCommandPort should be registered after lifecycle.start()", registeredCmd);
-        assertTrue("Registered RaCommandPort should be our mock",
-                registeredCmd == mockCommand);
+        OutboundCommand probe = new OutboundCommand() { };
+        registeredCmd.sendCommand(probe);
+        assertEquals("Registered RaCommandPort should forward commands to our mock",
+                1, delivered.size());
+        assertTrue("Forwarded command should be the probe instance",
+                delivered.get(0) == probe);
 
         // Clean up.
         LIFECYCLE.getMethod("stop").invoke(lifecycle);

@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0
+ * micro-jainslee 1.2.0
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -15,7 +15,7 @@ import com.microjainslee.quarkus.MicrosleeMsSupport;
 import jakarta.enterprise.context.ApplicationScoped;
 
 /**
- * Holds the booted {@link MicrosleeMsSupport.MsRuntime} for REST resources.
+ * Holds the booted {@link MicrosleeMsSupport.MsRuntime} for SBBs.
  */
 @ApplicationScoped
 public class MsRuntimeHolder {

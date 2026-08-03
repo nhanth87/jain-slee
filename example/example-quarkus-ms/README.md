@@ -1,6 +1,20 @@
 # example-quarkus-ms
 
-Quarkus 3 demo of the **micro-jainslee microservice layer** (`ms-api` / `ms-core` / `ms-ispn`).
+Quarkus 3 **CDI host** for the micro-jainslee microservice layer (`ms-api` / `ms-core` / `ms-ispn`), wired the same way as other Quarkus examples:
+
+- `@Inject MicroSleeContainer` + `onStart(@Observes StartupEvent)` (adapter-quarkus owns create/start/stop)
+- Real **SBBs** + **events** + **`ra-http-server`** ports — not Quarkus REST controllers calling services directly
+
+```
+HTTP ──► ra-http-server ──► HttpWebRequestEvent ──► MsGatewaySbb
+                                                      │
+                                         SleeServiceClient("signaling")
+                                                      │
+                                         Direct (single) or ISPN (cluster)
+
+Local SLEE plane (SBB-to-SBB):
+  MsServiceCallEvent ──► MsAppBridgeSbb ──► SleeServiceClient("signaling")
+```
 
 Same codebase, two deploy modes:
 
@@ -12,14 +26,14 @@ Same codebase, two deploy modes:
 Business code only uses `SleeServiceClient` — it never chooses Direct vs ISPN.
 
 ```
-@SleeService(name = "signaling")          ← leaf
+@SleeService(name = "signaling")          ← leaf MS descriptor
 @SleeService(name = "app", dependsOn = "signaling")
          │
          ▼
- MicrosleeBootstrap + SleeServiceClientFactory
-         │
-    ┌────┴────┐
- Direct     IspnQueue  ← decided by deployment.yml + JAINSLEE_NODE_ID
+ MicrosleeMsSupport + SleeServiceClientFactory
+    │
+┌────┴────┐
+Direct   IspnQueue  ← decided by deployment.yml + JAINSLEE_NODE_ID
 ```
 
 ---
@@ -33,7 +47,7 @@ Business code only uses `SleeServiceClient` — it never chooses Direct vs ISPN.
 ```bash
 export JAVA_HOME=/path/to/jdk-25
 cd /path/to/jain-slee   # repo root
-mvn -pl jainslee-ms/ms-api,jainslee-ms/ms-core,jainslee-ms/ms-ispn,jainslee-adapter/adapter-quarkus/runtime -am install -DskipTests
+mvn -pl jainslee-ms/ms-api,jainslee-ms/ms-core,jainslee-ms/ms-ispn,jainslee-adapter/adapter-quarkus/runtime,vendor-ras/ra-http-server -am install -DskipTests
 ```
 
 ---
@@ -64,22 +78,25 @@ target/quarkus-app/quarkus-run.jar
 # or:
 mvn quarkus:dev
 # or:
-java -jar target/quarkus-app/quarkus-run.jar
+java -Dhttp.ra.port=8080 -jar target/quarkus-app/quarkus-run.jar
 ```
 
-Listen: **http://127.0.0.1:8080**
+Listen: **http://127.0.0.1:8080** (`http.ra.port` — `ra-http-server`, not Quarkus HTTP)
+
+Built-in RA probe: `GET /health` → `{"status":"ok"}`. Demo topology: `GET /api/health`.
 
 ### Smoke test
 
 ```bash
-# Health / topology
+# Health / topology (MsGatewaySbb)
 curl -s http://127.0.0.1:8080/api/health | jq .
 
 # Local states + ISPN readiness + call counters
 curl -s http://127.0.0.1:8080/api/ms/state | jq .
 
-# Call signaling (Direct — viaLocal=true)
-curl -s -X POST 'http://127.0.0.1:8080/api/demo/call-signaling?op=ping' | jq .
+# Call signaling (Direct — viaLocal=true) via SBB chain
+curl -s -X POST 'http://127.0.0.1:8080/api/demo/call-signaling?op=ping' \
+  -H 'Content-Type: text/plain' -d '' | jq .
 # → {"success":true,"payload":"pong","viaLocal":true,...}
 
 curl -s -X POST 'http://127.0.0.1:8080/api/demo/call-signaling?op=echo' \
@@ -107,8 +124,8 @@ Expected `/api/health` snippet:
 
 Each process loads `deployment-cluster.yml` and activates **only** services assigned to its node id.
 
-| Process | Node id | HTTP | Local services |
-|---------|---------|------|----------------|
+| Process | Node id | HTTP (`http.ra.port`) | Local services |
+|---------|---------|----------------------|----------------|
 | A | `node-signaling` | 8081 | `signaling` |
 | B | `node-app` | 8082 | `app` |
 
@@ -153,14 +170,15 @@ If the remote call times out, check:
 
 ---
 
-## REST API
+## HTTP API (via ra-http-server → MsGatewaySbb)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/health` | Mode, node id, which services are local |
+| `GET` | `/health` | RA built-in probe (`{"status":"ok"}`) |
+| `GET` | `/api/health` | Mode, node id, which MS services are local |
 | `GET` | `/api/ms/state` | Local orchestrator states, ISPN readiness, counters |
-| `POST` | `/api/demo/call-signaling?op=` | Request/response via `SleeServiceClient` |
-| `POST` | `/api/demo/notify-signaling?op=` | Fire-and-forget |
+| `POST` | `/api/demo/call-signaling?op=` | Gateway SBB → `SleeServiceClient` (request/response) |
+| `POST` | `/api/demo/notify-signaling?op=` | Gateway SBB → `SleeServiceClient.notify` |
 
 Body for POST endpoints: raw `text/plain` (optional).
 
@@ -170,13 +188,13 @@ Body for POST endpoints: raw `text/plain` (optional).
 
 | Property / env | Meaning |
 |----------------|---------|
+| `http.ra.port` | `ra-http-server` listen port (default 8080) |
 | classpath `deployment.yml` | Default single topology |
 | `-Djainslee.deployment.resource=deployment-cluster.yml` | Cluster topology resource |
 | `-Djainslee.node-id=` / `JAINSLEE_NODE_ID` | This process’s node |
 | `JAINSLEE_DEPLOYMENT_CONFIG=/path/file.yml` | Absolute topology file |
 | `jainslee.ms.cluster-enabled` | Enable JGroups/Infinispan cluster |
 | `jainslee.ms.cluster-initial-hosts` | JGroups discovery hosts |
-| `quarkus.http.port` | REST listen port |
 
 ---
 
@@ -191,12 +209,22 @@ example/example-quarkus-ms/
 │   ├── run-cluster-signaling.sh
 │   └── run-cluster-app.sh
 └── src/main/java/com/example/ms/quarkus/
-    ├── bootstrap/MsQuarkusBootstrap.java   ← CDI startup
+    ├── bootstrap/MsQuarkusBootstrap.java   ← CDI StartupEvent wiring
     ├── bootstrap/MsRuntimeHolder.java
+    ├── sbbs/MsGatewaySbb.java              ← HTTP RA event → reply port
+    ├── sbbs/MsAppBridgeSbb.java            ← MsServiceCallEvent → MS client
+    ├── events/MsServiceCallEvent.java
+    ├── http/HttpReply.java
     ├── services/{Signaling,App}Service.java ← @SleeService markers
-    ├── handlers/ServiceHandlers.java        ← business invoke
-    └── api/MsDemoResource.java              ← REST
+    └── handlers/ServiceHandlers.java        ← MS invoke implementations
 ```
+
+Boot sequence in `MsQuarkusBootstrap`:
+
+1. `container.start()` (if needed)
+2. `ClusterManager` + `MicrosleeMsSupport.start(...)`
+3. `registerSbbType` → `createIesDispatcher` → `mapEventToSbb`
+4. `registerRa(httpEndpoint, httpEndpoint)`
 
 ---
 
@@ -208,14 +236,17 @@ mvn test
 ```
 
 - `MsBootstrapLogicTest` — single-mode Direct + cluster-split ISPN (no HTTP)
-- `MsDemoResourceTest` — `@QuarkusTest` hits `/api/health` and `/api/demo/call-signaling`
+- `MsHttpSleeSmokeTest` — real `ra-http-server` → `MsGatewaySbb` → `/api/health` and call-signaling
+- `MsAppBridgeSbbTest` — local `MsServiceCallEvent` → `MsAppBridgeSbb` → signaling client
 
 ---
 
 ## Notes
 
-- `ms-*` modules never import `jainslee-core`; Quarkus wiring uses `adapter-quarkus` + `MicrosleeMsSupport`.
+- Quarkus is the **CDI host only** (`quarkus-arc`). There is **no** `quarkus-rest` — HTTP is exclusively `ra-http-server`.
+- `ms-*` modules never import `jainslee-core` for transport; Quarkus wiring uses `adapter-quarkus` + `MicrosleeMsSupport`.
 - This example **pins Infinispan 15.0.0.Final + protostream 5.0.1.Final** so Quarkus BOM cannot upgrade them to 16.x / 6.x (breaks `ClusterManager`).
 - POST demo endpoints require `Content-Type: text/plain`.
 - Pure-Java (non-Quarkus) sibling: `example/example-ms-two-service`.
+- SLEE-shaped Quarkus siblings: `example-quarkus-helloworld-web`, `example-quarkus-ussdgw`.
 - Design background: `docs/vi/microjainslee-microservice.md`.

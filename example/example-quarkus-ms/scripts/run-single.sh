@@ -10,7 +10,8 @@ export PATH="${JAVA_HOME}/bin:${PATH}"
 echo "==> Building example-quarkus-ms (needs micro-jainslee 1.2.0-SNAPSHOT installed)"
 mvn -q -DskipTests package
 
-echo "==> Starting single-node demo on http://127.0.0.1:8080"
+echo "==> Starting single-node demo on http://127.0.0.1:8080 (ra-http-server)"
 exec java ${JAVA_OPTS:-} \
   -Djainslee.ms.cluster-enabled=false \
+  -Dhttp.ra.port=8080 \
   -jar target/quarkus-app/quarkus-run.jar

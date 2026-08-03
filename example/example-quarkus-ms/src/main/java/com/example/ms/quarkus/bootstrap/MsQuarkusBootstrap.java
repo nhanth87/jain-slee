@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0
+ * micro-jainslee 1.2.0
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -10,7 +10,10 @@
 
 package com.example.ms.quarkus.bootstrap;
 
+import com.example.ms.quarkus.events.MsServiceCallEvent;
 import com.example.ms.quarkus.handlers.ServiceHandlers;
+import com.example.ms.quarkus.sbbs.MsAppBridgeSbb;
+import com.example.ms.quarkus.sbbs.MsGatewaySbb;
 import com.example.ms.quarkus.services.AppService;
 import com.example.ms.quarkus.services.SignalingService;
 import com.microjainslee.cluster.ClusterManager;
@@ -19,12 +22,18 @@ import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.ms.api.SleeServiceDescriptor;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.quarkus.MicrosleeMsSupport;
+import com.microjainslee.ra.httpserver.HttpServerRaEndpoint;
+import com.microjainslee.ra.httpserver.HttpServerResourceAdaptor;
+import com.microjainslee.ra.httpserver.events.HttpWebRequestEvent;
+
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
+
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -32,8 +41,17 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.util.List;
 
 /**
- * Starts {@link MicroSleeContainer}, {@link ClusterManager}, then the
- * microservice orchestrator (signaling + app) via {@link MicrosleeMsSupport}.
+ * Quarkus CDI host for the MS demo.
+ *
+ * <p>Boot order (adapter-quarkus owns {@link MicroSleeContainer} create/start):
+ * <ol>
+ *   <li>Ensure container STARTED</li>
+ *   <li>{@link ClusterManager} + {@link MicrosleeMsSupport} ({@code @SleeService})</li>
+ *   <li>{@code registerSbbType} → {@code createIesDispatcher} → {@code mapEventToSbb}</li>
+ *   <li>{@code registerRa} for {@code ra-http-server}</li>
+ * </ol>
+ *
+ * <p>All demo HTTP rides the RA — Quarkus has no REST stack here.</p>
  */
 @ApplicationScoped
 public class MsQuarkusBootstrap {
@@ -46,6 +64,9 @@ public class MsQuarkusBootstrap {
     @Inject
     MsRuntimeHolder runtimeHolder;
 
+    @ConfigProperty(name = "http.ra.port", defaultValue = "8080")
+    int httpRaPort;
+
     @ConfigProperty(name = "jainslee.ms.cluster-enabled", defaultValue = "false")
     boolean clusterEnabled;
 
@@ -56,6 +77,7 @@ public class MsQuarkusBootstrap {
     String clusterInitialHosts;
 
     private ClusterManager clusterManager;
+    private volatile HttpServerRaEndpoint httpEndpoint;
 
     void onStart(@Observes @Priority(1000) StartupEvent ev) throws Exception {
         DeploymentConfig config = DeploymentConfig.load();
@@ -86,16 +108,28 @@ public class MsQuarkusBootstrap {
 
         runtimeHolder.set(runtime);
 
-        LOG.info("Quarkus MS ready: mode={} nodeId={} clusterEnabled={} localServices={}",
+        wireSbbsAndHttpRa();
+
+        LOG.info("Quarkus MS ready: mode={} nodeId={} clusterEnabled={} http.ra.port={} localServices={}",
                 config.mode(),
                 nodeId,
                 clusterEnabled,
+                httpRaPort,
                 config.mode() == DeploymentConfig.Mode.SINGLE
                         ? "signaling,app"
                         : describeLocal(config));
     }
 
     void onStop(@Observes ShutdownEvent ev) {
+        HttpServerRaEndpoint ep = httpEndpoint;
+        httpEndpoint = null;
+        if (ep != null) {
+            try {
+                ep.deactivate();
+            } catch (RuntimeException re) {
+                LOG.warn("HTTP RA deactivate failed: {}", re.toString());
+            }
+        }
         try {
             if (runtimeHolder.isReady()) {
                 runtimeHolder.get().bootstrap().stop();
@@ -110,6 +144,40 @@ public class MsQuarkusBootstrap {
                 LOG.warn("ClusterManager stop failed: {}", e.toString());
             }
         }
+    }
+
+    private void wireSbbsAndHttpRa() {
+        int droppedGw = container.getSbbTypeRegistry()
+                .unregisterByName(MsGatewaySbb.class.getSimpleName());
+        int droppedApp = container.getSbbTypeRegistry()
+                .unregisterByName(MsAppBridgeSbb.class.getSimpleName());
+        if (droppedGw + droppedApp > 0) {
+            LOG.info("Dropped {} stale SBB pool(s) (live-reload)", droppedGw + droppedApp);
+        }
+
+        container.registerSbbType(MsGatewaySbb.class,
+                () -> new MsGatewaySbb(runtimeHolder));
+        container.registerSbbType(MsAppBridgeSbb.class,
+                () -> new MsAppBridgeSbb(runtimeHolder));
+        container.createIesDispatcher();
+        container.mapEventToSbb(HttpWebRequestEvent.class, "MsGatewaySbb");
+        container.mapEventToSbb(MsServiceCallEvent.class, "MsAppBridgeSbb");
+
+        HttpServerResourceAdaptor ra = new HttpServerResourceAdaptor();
+        ra.setPort(httpRaPort);
+        ra.setHost("0.0.0.0");
+
+        httpEndpoint = new HttpServerRaEndpoint(ra);
+        httpEndpoint.setPort(httpRaPort);
+        container.registerRa(httpEndpoint, httpEndpoint);
+        LOG.info("ra-http-server registered on port {} (gateway=MsGatewaySbb, bridge=MsAppBridgeSbb)",
+                httpRaPort);
+    }
+
+    /** Bound HTTP RA port (useful for tests with {@code http.ra.port=0}). */
+    public int httpPort() {
+        HttpServerRaEndpoint ep = httpEndpoint;
+        return ep == null ? httpRaPort : ep.port();
     }
 
     private static String describeLocal(DeploymentConfig config) {

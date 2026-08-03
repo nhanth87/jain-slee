@@ -18,7 +18,7 @@ exec java ${JAVA_OPTS:-} \
   -Djainslee.node-id=node-signaling \
   -Djainslee.ms.cluster-enabled=true \
   -Djainslee.ms.cluster-initial-hosts=127.0.0.1[7800] \
-  -Dquarkus.http.port=8081 \
+  -Dhttp.ra.port=8081 \
   -Djava.net.preferIPv4Stack=true \
   -Djgroups.bind_addr=127.0.0.1 \
   -jar target/quarkus-app/quarkus-run.jar

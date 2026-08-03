@@ -16,7 +16,8 @@ FILTER="tcp port 8081 or tcp port 8082 or tcp port 7800"
 echo "Capturing on lo → ${OUT}"
 echo "Filter: ${FILTER}"
 echo "Start run-ms-ra.sh, then run-ms-sbb.sh, then:"
-echo "  curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-sbb?op=ping' -H 'Content-Type: text/plain' -d ''"
+echo "  curl -s -X POST 'http://127.0.0.1:8081/api/ms/http-sbb?op=ping' -H 'Content-Type: text/plain' -d ''"
+echo "  # alias: /api/demo/call-sbb?op=ping"
 echo "Ctrl-C to stop."
 
 if command -v tcpdump >/dev/null 2>&1; then

@@ -1,0 +1,4 @@
+# Test classpath catalog for SleeServiceCatalogTest
+
+com.microjainslee.ms.core.SleeServiceCatalogTest$AlphaService  # marker A
+com.microjainslee.ms.core.SleeServiceCatalogTest$BetaService

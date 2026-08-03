@@ -45,6 +45,10 @@ public class MsRuntimeHolder {
 
     /** n-n registry diagnostics ({@code service → binding sources}). */
     public Map<String, List<String>> handlerBindings() {
+        MicrosleeMsSupport.MsRuntime r = runtime;
+        if (r != null && r.registry() != null) {
+            return r.registry().describe();
+        }
         return handlerBindings;
     }
 

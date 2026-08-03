@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Micro-services INGRESS node: http-ra + http-aux + MsGatewaySbb on :8081.
+# Micro-services INGRESS node: http-ra + http-aux + MsHttpGatewaySbb on :8081.
 # Runs from target/node-ra/ (private copy) — never shares jars with node-sbb.
 #
 # Start this first, then scripts/run-ms-sbb.sh.
+# Curl ingress: POST /api/ms/{service}?op=  (aliases: /api/demo/call-{ra|aux|sbb})
 # Rebuild: stop both JVMs, then MS_REBUILD=1 ./scripts/prepare-ms-nodes.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,7 +21,7 @@ if [[ ! -f "${APP}" ]]; then
 fi
 
 echo "==> node-ra on :8081 from ${APP}"
-echo "    expect log: gatewaySbbs=true http.ra.port=8081 localServices=http-ra,http-aux"
+echo "    expect log: gateway=true httpRa=true ingressService=http-ra http.ra.port=8081 localServices=http-ra,http-aux"
 exec java ${JAVA_OPTS:-} \
   -Djainslee.deployment.resource=deployment-microservices.yml \
   -Djainslee.node-id=node-ra \

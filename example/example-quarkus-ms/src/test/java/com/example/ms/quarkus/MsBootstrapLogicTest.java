@@ -14,6 +14,7 @@ import com.example.ms.quarkus.services.HttpAuxService;
 import com.example.ms.quarkus.services.HttpRaService;
 import com.example.ms.quarkus.services.HttpSbbService;
 import com.example.ms.quarkus.services.MsSharedDiagHandler;
+import com.example.ms.quarkus.services.MsSharedDiagProvider;
 import com.example.ms.quarkus.services.MsSharedStatusProvider;
 import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.core.MicroSleeConfiguration;
@@ -22,6 +23,7 @@ import com.microjainslee.ms.api.ServiceState;
 import com.microjainslee.ms.api.SleeRequest;
 import com.microjainslee.ms.api.SleeResponse;
 import com.microjainslee.ms.api.SleeServiceDescriptor;
+import com.microjainslee.ms.core.SleeServiceCatalog;
 import com.microjainslee.ms.core.SleeServiceHandlerRegistry;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.ms.ispn.IspnQueueServer;
@@ -46,19 +48,11 @@ class MsBootstrapLogicTest {
     private IspnQueueServer remotePeer;
 
     private static List<SleeServiceDescriptor> allDescriptors() {
-        return List.of(
-                SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
-                SleeServiceDescriptor.fromAnnotation(HttpAuxService.class),
-                SleeServiceDescriptor.fromAnnotation(HttpSbbService.class));
+        return SleeServiceCatalog.load();
     }
 
     private static SleeServiceHandlerRegistry nnRegistry() {
-        SleeServiceHandlerRegistry registry = SleeServiceHandlerRegistry.discover(allDescriptors());
-        MsSharedDiagHandler diag = new MsSharedDiagHandler();
-        for (String svc : List.of("http-ra", "http-sbb", "http-aux")) {
-            registry.register(svc, List.of("diag"), 50, diag);
-        }
-        return registry;
+        return SleeServiceHandlerRegistry.discover(allDescriptors());
     }
 
     @BeforeEach
@@ -97,11 +91,7 @@ class MsBootstrapLogicTest {
         clusterManager.start();
 
         runtime = MicrosleeMsSupport.start(
-                container,
-                clusterManager,
-                DeploymentConfig.singleNode(),
-                allDescriptors(),
-                nnRegistry());
+                container, clusterManager, DeploymentConfig.singleNode());
 
         SleeResponse resp = runtime.bootstrap().client("http-ra")
                 .call(new SleeRequest("ping", new byte[0]));
@@ -121,11 +111,10 @@ class MsBootstrapLogicTest {
         assertTrue(registry.describe().get("http-ra").stream()
                 .anyMatch(s -> s.contains("MsSharedStatusProvider")));
         assertTrue(registry.describe().get("http-sbb").stream()
-                .anyMatch(s -> s.contains("MsSharedDiagHandler") || s.contains("programmatic")));
+                .anyMatch(s -> s.contains("MsSharedDiagProvider")));
 
         runtime = MicrosleeMsSupport.start(
-                container, clusterManager, DeploymentConfig.singleNode(),
-                allDescriptors(), registry);
+                container, clusterManager, DeploymentConfig.singleNode());
 
         SleeResponse statusRa = runtime.bootstrap().client("http-ra")
                 .call(new SleeRequest("status", new byte[0]));
@@ -142,7 +131,7 @@ class MsBootstrapLogicTest {
         assertEquals("shared-diag",
                 new String(diagAux.payload(), StandardCharsets.UTF_8));
         assertTrue(MsSharedStatusProvider.calls() >= 2);
-        assertEquals(1, MsSharedDiagHandler.calls());
+        assertEquals(1, MsSharedDiagProvider.calls());
     }
 
     @Test
@@ -167,8 +156,7 @@ class MsBootstrapLogicTest {
                 .service("http-sbb", "node-sbb")
                 .build();
 
-        runtime = MicrosleeMsSupport.start(
-                container, clusterManager, cfg, allDescriptors(), nnRegistry());
+        runtime = MicrosleeMsSupport.start(container, clusterManager, cfg);
 
         assertTrue(cfg.isLocal("http-ra"));
         assertTrue(cfg.isLocal("http-aux"));
@@ -196,8 +184,7 @@ class MsBootstrapLogicTest {
                 .service("http-sbb", "node-sbb")
                 .build();
 
-        runtime = MicrosleeMsSupport.start(
-                container, clusterManager, cfg, allDescriptors(), nnRegistry());
+        runtime = MicrosleeMsSupport.start(container, clusterManager, cfg);
 
         assertEquals(ServiceState.STOPPED, runtime.transport().stateOf("http-sbb"));
 
@@ -232,8 +219,7 @@ class MsBootstrapLogicTest {
                 .service("http-sbb", "node-sbb")
                 .build();
 
-        runtime = MicrosleeMsSupport.start(
-                container, clusterManager, cfg, allDescriptors(), nnRegistry());
+        runtime = MicrosleeMsSupport.start(container, clusterManager, cfg);
 
         assertFalse(cfg.isLocal("http-ra"));
         assertTrue(cfg.isLocal("http-sbb"));

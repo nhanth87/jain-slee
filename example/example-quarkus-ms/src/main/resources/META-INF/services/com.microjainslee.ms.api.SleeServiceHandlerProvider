@@ -1,1 +1,2 @@
 com.example.ms.quarkus.services.MsSharedStatusProvider
+com.example.ms.quarkus.services.MsSharedDiagProvider

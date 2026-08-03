@@ -16,6 +16,7 @@ import com.microjainslee.ms.api.SleeRequest;
 import com.microjainslee.ms.api.SleeResponse;
 import com.microjainslee.ms.api.SleeServiceDescriptor;
 import com.microjainslee.ms.core.MicrosleeBootstrap;
+import com.microjainslee.ms.core.SleeServiceCatalog;
 import com.microjainslee.ms.core.SleeServiceHandlerRegistry;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.ms.ispn.IspnRemoteClientFactory;
@@ -38,12 +39,11 @@ public final class TwoServiceMain {
                 MicroSleeConfiguration.defaults(), config.myNodeId());
         clusterManager.start();
 
-        IspnTransportManager transport = new IspnTransportManager(clusterManager);
-        transport.ensureServiceCaches(List.of("signaling", "app"));
+        List<SleeServiceDescriptor> descriptors = loadDescriptors();
 
-        List<SleeServiceDescriptor> descriptors = List.of(
-                SleeServiceDescriptor.fromAnnotation(SignalingService.class),
-                SleeServiceDescriptor.fromAnnotation(AppService.class));
+        IspnTransportManager transport = new IspnTransportManager(clusterManager);
+        transport.ensureServiceCaches(
+                descriptors.stream().map(SleeServiceDescriptor::name).toList());
 
         // Handlers auto-bind: the @SleeService classes implement
         // SleeServiceHandler, discovered by the jainslee-ms registry (n-n).
@@ -76,6 +76,20 @@ public final class TwoServiceMain {
 
         boot.stop();
         clusterManager.stop();
+    }
+
+    /**
+     * Prefer classpath {@link SleeServiceCatalog}; fall back to annotation
+     * scan of the known demo services if the catalog resource is absent.
+     */
+    static List<SleeServiceDescriptor> loadDescriptors() {
+        List<SleeServiceDescriptor> fromCatalog = SleeServiceCatalog.load();
+        if (!fromCatalog.isEmpty()) {
+            return fromCatalog;
+        }
+        return List.of(
+                SleeServiceDescriptor.fromAnnotation(SignalingService.class),
+                SleeServiceDescriptor.fromAnnotation(AppService.class));
     }
 
     private TwoServiceMain() {

@@ -3,7 +3,7 @@
 # Runs from target/node-sbb/ (private copy) — never mvn-package into the RA JVM tree.
 #
 # Start run-ms-ra.sh first, then this script.
-# Demo ingress is on :8081 — curl call-sbb there (ISPN → this node).
+# Ingress is on :8081 — curl POST /api/ms/http-sbb?op=ping there (ISPN → this node).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -20,7 +20,7 @@ if [[ ! -f "${APP}" ]]; then
 fi
 
 echo "==> node-sbb on :8082 from ${APP}"
-echo "    expect log: gatewaySbbs=false http.ra.port=8082 localServices=http-sbb"
+echo "    expect log: gateway=false httpRa=true ingressService=http-ra http.ra.port=8082 localServices=http-sbb"
 echo "    RA→SBB invoke logs appear here (stdout), not in curl :8082/health"
 echo "    look for: [IspnQueueServer:http-sbb] received ... and [http-sbb] invoke ..."
 exec java ${JAVA_OPTS:-} \

@@ -36,6 +36,13 @@
             <version>${project.version}</version>
             <optional>true</optional>
         </dependency>
+        <!-- Optional HTTP ingress for MsHttpIngressSupport / MsHttpGatewaySbb. -->
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>ra-http-server</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-core</artifactId>

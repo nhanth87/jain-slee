@@ -1,0 +1,24 @@
+flowchart LR
+    Client(["Client"]) -->|HTTP :8081| RA
+
+    subgraph nodeRA["node-ra — ingress"]
+        RA["ra-http-server"]
+        GW["MsHttpGatewaySbb"]
+        Local["http-ra / http-aux<br/>Direct local"]
+        RA --> GW
+        GW --> Local
+    end
+
+    subgraph fabric["Infinispan / JGroups :7800"]
+        Q["ms-ispn queue"]
+    end
+
+    subgraph nodeSBB["node-sbb — business"]
+        HttpSbb["http-sbb"]
+        Health["ra-http-server<br/>/health :8082 only"]
+    end
+
+    GW -->|"remote http-sbb"| Q
+    Q --> HttpSbb
+    HttpSbb -->|reply| Q
+    Q -->|reply| GW

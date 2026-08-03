@@ -14,28 +14,22 @@ import com.microjainslee.ms.api.SleeRequest;
 import com.microjainslee.ms.api.SleeResponse;
 import com.microjainslee.ms.api.SleeServiceHandler;
 
-import java.nio.charset.StandardCharsets;
-import java.util.concurrent.atomic.AtomicLong;
-
 /**
- * Programmatic n-n handler: a <em>single</em> instance registered for
- * {@code diag} on many services (beats self-handlers via programmatic tier).
+ * Thin handler facade kept for counters/diagnostics endpoints.
+ * Prefer {@link MsSharedDiagProvider} (ServiceLoader SPI) for registration.
  */
 public final class MsSharedDiagHandler implements SleeServiceHandler {
 
-    private static final AtomicLong CALLS = new AtomicLong();
-
     @Override
     public SleeResponse invoke(SleeRequest req) {
-        CALLS.incrementAndGet();
-        return SleeResponse.ok("shared-diag".getBytes(StandardCharsets.UTF_8));
+        return MsSharedDiagProvider.handle(req);
     }
 
     public static long calls() {
-        return CALLS.get();
+        return MsSharedDiagProvider.calls();
     }
 
     public static void resetCalls() {
-        CALLS.set(0);
+        MsSharedDiagProvider.resetCalls();
     }
 }

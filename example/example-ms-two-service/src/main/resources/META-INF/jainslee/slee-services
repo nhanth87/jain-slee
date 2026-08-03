@@ -1,0 +1,5 @@
+# Catalog of @SleeService types for SleeServiceCatalog.load().
+# APT (SleeServiceAnnotationProcessor) merges discovered FQCNs into this file
+# under CLASS_OUTPUT; keep this hand-written list so boot works without APT.
+com.example.ms.SignalingService
+com.example.ms.AppService

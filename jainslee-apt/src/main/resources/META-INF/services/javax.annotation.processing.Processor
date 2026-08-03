@@ -1,1 +1,2 @@
 com.microjainslee.apt.MicroJainsleeAnnotationProcessor
+com.microjainslee.apt.SleeServiceAnnotationProcessor

@@ -16,6 +16,7 @@ import com.microjainslee.ms.api.SleeServiceDescriptor;
 import com.microjainslee.ms.api.SleeServiceHandler;
 import com.microjainslee.ms.core.MicrosleeBootstrap;
 import com.microjainslee.ms.core.ServiceLifecycleHooks;
+import com.microjainslee.ms.core.SleeServiceCatalog;
 import com.microjainslee.ms.core.SleeServiceHandlerRegistry;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.ms.ispn.IspnRemoteClientFactory;
@@ -40,12 +41,15 @@ public final class MicrosleeMsSupport {
     }
 
     /**
-     * Booted microservice runtime: bootstrap + ISPN transport + resolved config.
+     * Booted microservice runtime: bootstrap + ISPN transport + resolved config
+     * plus the handler registry and catalog descriptors used for this start.
      */
     public record MsRuntime(
             MicrosleeBootstrap bootstrap,
             IspnTransportManager transport,
-            DeploymentConfig config) {
+            DeploymentConfig config,
+            SleeServiceHandlerRegistry registry,
+            List<SleeServiceDescriptor> descriptors) {
     }
 
     public static MicrosleeBootstrap boot(
@@ -56,6 +60,20 @@ public final class MicrosleeMsSupport {
             throws Exception {
         return start(container, clusterManager, DeploymentConfig.load(), descriptors, handlerFactory)
                 .bootstrap();
+    }
+
+    /**
+     * Catalog-driven start: load {@link SleeServiceCatalog}, discover handlers,
+     * then follow the existing start path.
+     */
+    public static MsRuntime start(
+            MicroSleeContainer container,
+            ClusterManager clusterManager,
+            DeploymentConfig config)
+            throws Exception {
+        List<SleeServiceDescriptor> descriptors = SleeServiceCatalog.load();
+        SleeServiceHandlerRegistry registry = SleeServiceHandlerRegistry.discover(descriptors);
+        return start(container, clusterManager, config, descriptors, registry);
     }
 
     /**
@@ -86,7 +104,7 @@ public final class MicrosleeMsSupport {
             SleeServiceHandlerRegistry registry)
             throws Exception {
         Objects.requireNonNull(registry, "registry");
-        return start(container, clusterManager, config, descriptors, registry::resolve);
+        return doStart(container, clusterManager, config, descriptors, registry::resolve, registry);
     }
 
     public static MsRuntime start(
@@ -96,17 +114,30 @@ public final class MicrosleeMsSupport {
             List<SleeServiceDescriptor> descriptors,
             Function<SleeServiceDescriptor, SleeServiceHandler> handlerFactory)
             throws Exception {
+        return doStart(container, clusterManager, config, descriptors, handlerFactory, null);
+    }
+
+    private static MsRuntime doStart(
+            MicroSleeContainer container,
+            ClusterManager clusterManager,
+            DeploymentConfig config,
+            List<SleeServiceDescriptor> descriptors,
+            Function<SleeServiceDescriptor, SleeServiceHandler> handlerFactory,
+            SleeServiceHandlerRegistry registry)
+            throws Exception {
         Objects.requireNonNull(container, "container");
         Objects.requireNonNull(clusterManager, "clusterManager");
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(descriptors, "descriptors");
         Objects.requireNonNull(handlerFactory, "handlerFactory");
 
+        List<SleeServiceDescriptor> frozen = List.copyOf(descriptors);
+
         IspnTransportManager transport = new IspnTransportManager(clusterManager);
         // Pre-define slee.queue.<every-service> on this node so peer clustered
         // listener add/remove (shutdown) does not hit ISPN000436.
         java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
-        for (SleeServiceDescriptor d : descriptors) {
+        for (SleeServiceDescriptor d : frozen) {
             names.add(d.name());
         }
         for (String svc : config.services().keySet()) {
@@ -131,11 +162,11 @@ public final class MicrosleeMsSupport {
 
         MicrosleeBootstrap bootstrap = MicrosleeBootstrap.create(
                 config,
-                descriptors,
+                frozen,
                 hooks,
                 new IspnRemoteClientFactory(transport),
                 transport);
         bootstrap.start();
-        return new MsRuntime(bootstrap, transport, config);
+        return new MsRuntime(bootstrap, transport, config, registry, frozen);
     }
 }

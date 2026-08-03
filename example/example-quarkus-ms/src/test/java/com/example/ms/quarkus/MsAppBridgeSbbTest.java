@@ -13,14 +13,12 @@ package com.example.ms.quarkus;
 import com.example.ms.quarkus.bootstrap.MsRuntimeHolder;
 import com.example.ms.quarkus.events.MsServiceCallEvent;
 import com.example.ms.quarkus.sbbs.MsAppBridgeSbb;
-import com.example.ms.quarkus.services.HttpAuxService;
 import com.example.ms.quarkus.services.HttpRaService;
 import com.example.ms.quarkus.services.HttpSbbService;
 import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.ms.api.SleeResponse;
-import com.microjainslee.ms.api.SleeServiceDescriptor;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.quarkus.MicrosleeMsSupport;
 
@@ -29,7 +27,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -63,13 +60,7 @@ class MsAppBridgeSbbTest {
 
         MsRuntimeHolder holder = new MsRuntimeHolder();
         runtime = MicrosleeMsSupport.start(
-                container,
-                clusterManager,
-                DeploymentConfig.singleNode(),
-                List.of(
-                        SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
-                        SleeServiceDescriptor.fromAnnotation(HttpAuxService.class),
-                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)));
+                container, clusterManager, DeploymentConfig.singleNode());
         holder.set(runtime);
 
         container.registerSbbType(MsAppBridgeSbb.class, () -> new MsAppBridgeSbb(holder));

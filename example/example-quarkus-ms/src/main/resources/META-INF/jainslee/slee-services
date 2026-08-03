@@ -1,0 +1,3 @@
+com.example.ms.quarkus.services.HttpRaService
+com.example.ms.quarkus.services.HttpAuxService
+com.example.ms.quarkus.services.HttpSbbService

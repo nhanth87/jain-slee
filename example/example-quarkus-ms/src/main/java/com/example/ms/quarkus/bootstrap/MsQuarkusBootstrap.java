@@ -112,7 +112,9 @@ public class MsQuarkusBootstrap {
                 healthRaOnLeaf,
                 runtime,
                 MsHttpGatewaySbb.class,
-                rt -> new MsHttpGatewaySbb(() -> runtimeHolder.isReady() ? runtimeHolder.get() : null));
+                rt -> new MsHttpGatewaySbb(
+                        () -> runtimeHolder.isReady() ? runtimeHolder.get() : null,
+                        MsHttpIngressSupport.newIspnChild(container)));
         this.ingress = result;
 
         if (result.gatewayWired()) {
@@ -164,9 +166,9 @@ public class MsQuarkusBootstrap {
             LOG.info("Dropped {} stale app-bridge SBB pool(s) (live-reload)", droppedApp);
         }
         container.registerSbbType(MsAppBridgeSbb.class,
-                () -> new MsAppBridgeSbb(runtimeHolder));
+                () -> new MsAppBridgeSbb(runtimeHolder, MsHttpIngressSupport.newIspnChild(container)));
         container.mapEventToSbb(MsServiceCallEvent.class, "MsAppBridgeSbb");
-        LOG.info("App bridge SBB registered (MsAppBridgeSbb)");
+        LOG.info("App bridge SBB registered (MsAppBridgeSbb → IspnMsClientSbb → ispn-queue-ra)");
     }
 
     /** Bound HTTP RA port (useful for tests with {@code http.ra.port=0}). */

@@ -22,6 +22,7 @@ import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.ms.ispn.IspnRemoteClientFactory;
 import com.microjainslee.ms.ispn.IspnServiceLifecycleHooks;
 import com.microjainslee.ms.ispn.IspnTransportManager;
+import com.microjainslee.ms.ispn.ra.IspnQueueRaEndpoint;
 
 import java.util.List;
 import java.util.Objects;
@@ -167,6 +168,12 @@ public final class MicrosleeMsSupport {
                 new IspnRemoteClientFactory(transport),
                 transport);
         bootstrap.start();
+
+        // ADR 0002: SBB outbound MS traffic goes through ispn-queue-ra, not
+        // MicrosleeBootstrap.client() directly.
+        IspnQueueRaEndpoint ispnRa = new IspnQueueRaEndpoint(bootstrap, transport, config);
+        container.registerRa(ispnRa, ispnRa);
+
         return new MsRuntime(bootstrap, transport, config, registry, frozen);
     }
 }

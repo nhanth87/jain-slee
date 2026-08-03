@@ -27,6 +27,11 @@
     <dependencies>
         <dependency>
             <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
             <artifactId>ms-api</artifactId>
             <version>${project.version}</version>
         </dependency>

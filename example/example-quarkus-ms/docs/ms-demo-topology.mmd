@@ -4,9 +4,13 @@ flowchart LR
     subgraph nodeRA["node-ra — ingress"]
         RA["ra-http-server"]
         GW["MsHttpGatewaySbb"]
+        Child["IspnMsClientSbb"]
+        IspnRa["ispn-queue-ra"]
         Local["http-ra / http-aux<br/>Direct local"]
         RA --> GW
-        GW --> Local
+        GW --> Child
+        Child --> IspnRa
+        IspnRa --> Local
     end
 
     subgraph fabric["Infinispan / JGroups :7800"]
@@ -18,7 +22,11 @@ flowchart LR
         Health["ra-http-server<br/>/health :8082 only"]
     end
 
-    GW -->|"remote http-sbb"| Q
+    IspnRa -->|"remote http-sbb"| Q
     Q --> HttpSbb
     HttpSbb -->|reply| Q
-    Q -->|reply| GW
+    Q -->|reply| IspnRa
+    IspnRa --> Child
+    Child --> GW
+    GW --> RA
+    RA -->|HTTP response| Client

@@ -21,6 +21,7 @@ import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.ms.api.SleeResponse;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.quarkus.MicrosleeMsSupport;
+import com.microjainslee.quarkus.ms.MsHttpIngressSupport;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -63,7 +64,8 @@ class MsAppBridgeSbbTest {
                 container, clusterManager, DeploymentConfig.singleNode());
         holder.set(runtime);
 
-        container.registerSbbType(MsAppBridgeSbb.class, () -> new MsAppBridgeSbb(holder));
+        container.registerSbbType(MsAppBridgeSbb.class,
+                () -> new MsAppBridgeSbb(holder, MsHttpIngressSupport.newIspnChild(container)));
         container.createIesDispatcher();
         container.mapEventToSbb(MsServiceCallEvent.class, "MsAppBridgeSbb");
     }

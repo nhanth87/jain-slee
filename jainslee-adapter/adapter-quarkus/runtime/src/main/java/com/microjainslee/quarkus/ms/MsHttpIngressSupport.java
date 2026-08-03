@@ -69,7 +69,8 @@ public final class MsHttpIngressSupport {
     }
 
     /**
-     * Wire with the default {@link MsHttpGatewaySbb}.
+     * Wire with the default {@link MsHttpGatewaySbb} and an {@link IspnMsClientSbb}
+     * child collaborator bound to {@code ispn-queue-ra}.
      */
     public static IngressResult wire(
             MicroSleeContainer container,
@@ -79,7 +80,8 @@ public final class MsHttpIngressSupport {
             boolean healthRaOnLeaf,
             MicrosleeMsSupport.MsRuntime msRuntime) {
         return wire(container, config, ingressServiceName, httpPort, healthRaOnLeaf,
-                msRuntime, MsHttpGatewaySbb.class, MsHttpGatewaySbb::new);
+                msRuntime, MsHttpGatewaySbb.class,
+                rt -> new MsHttpGatewaySbb(rt, newIspnChild(container)));
     }
 
     /**
@@ -126,6 +128,13 @@ public final class MsHttpIngressSupport {
         return new IngressResult(gatewayWired, endpoint != null, endpoint, httpPort);
     }
 
+    /** Create an {@link IspnMsClientSbb} that resolves {@code ispn-queue-ra} from the container. */
+    public static IspnMsClientSbb newIspnChild(MicroSleeContainer container) {
+        Objects.requireNonNull(container, "container");
+        return new IspnMsClientSbb(
+                () -> container.getRaCommandPort(com.microjainslee.ms.ispn.ra.IspnQueueRaEndpoint.RA_NAME));
+    }
+
     /**
      * Always register {@code ra-http-server} on {@code port} (no gateway).
      */
@@ -161,19 +170,23 @@ public final class MsHttpIngressSupport {
             LOG.info("Dropped {} stale gateway SBB pool(s) (live-reload)", dropped);
         }
 
+        // Register child type so InjectRa path works when pooled as an entity.
+        container.registerSbbType(IspnMsClientSbb.class, IspnMsClientSbb::new);
+
         container.registerSbbType(gatewaySbbClass, () -> gatewaySbbFactory.apply(msRuntime));
         container.createIesDispatcher();
         container.mapEventToSbb(HttpWebRequestEvent.class, sbbName);
-        LOG.info("MS HTTP gateway SBB registered: {}", sbbName);
+        LOG.info("MS HTTP gateway SBB registered: {} (child IspnMsClientSbb → ispn-queue-ra)", sbbName);
     }
 
     /**
-     * Convenience: register default {@link MsHttpGatewaySbb}.
+     * Convenience: register default {@link MsHttpGatewaySbb} with ISPN child.
      */
     public static void wireGateway(
             MicroSleeContainer container,
             MicrosleeMsSupport.MsRuntime msRuntime) {
-        wireGateway(container, msRuntime, MsHttpGatewaySbb.class, MsHttpGatewaySbb::new);
+        wireGateway(container, msRuntime, MsHttpGatewaySbb.class,
+                rt -> new MsHttpGatewaySbb(rt, newIspnChild(container)));
     }
 
     static boolean anyLocalService(DeploymentConfig config) {

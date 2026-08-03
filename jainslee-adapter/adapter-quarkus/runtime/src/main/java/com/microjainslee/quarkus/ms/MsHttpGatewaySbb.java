@@ -23,7 +23,6 @@ import com.microjainslee.ms.api.SleeResponse;
 import com.microjainslee.ms.api.SleeServiceDescriptor;
 import com.microjainslee.ms.api.exception.ServiceCallTimeoutException;
 import com.microjainslee.ms.api.exception.ServiceUnavailableException;
-import com.microjainslee.ms.core.MicrosleeBootstrap;
 import com.microjainslee.ms.core.SleeServiceHandlerRegistry;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.quarkus.MicrosleeMsSupport;
@@ -44,7 +43,7 @@ import java.util.function.Supplier;
 
 /**
  * Generic MS HTTP gateway SBB: {@code ra-http-server} → path dispatch →
- * {@link MicrosleeBootstrap#client} → reply on {@code http-server-ra}.
+ * child {@link IspnMsClientSbb} → {@code ispn-queue-ra} → reply on {@code http-server-ra}.
  *
  * <p>Routes:
  * <ul>
@@ -60,23 +59,40 @@ public final class MsHttpGatewaySbb implements Sbb, SleeEventHandler {
     private static final Logger LOG = LogManager.getLogger(MsHttpGatewaySbb.class);
 
     private final Supplier<MicrosleeMsSupport.MsRuntime> runtimeSource;
+    private final IspnMsClientSbb ispnChild;
 
     @InjectRa(name = "http-server-ra")
     private volatile RaCommandPort http;
 
     private volatile SbbLocalObject self;
 
-    public MsHttpGatewaySbb(MicrosleeMsSupport.MsRuntime runtime) {
+    public MsHttpGatewaySbb(MicrosleeMsSupport.MsRuntime runtime, IspnMsClientSbb ispnChild) {
         Objects.requireNonNull(runtime, "runtime");
         this.runtimeSource = () -> runtime;
+        this.ispnChild = Objects.requireNonNull(ispnChild, "ispnChild");
     }
 
     /**
      * Lazy source for apps that hold runtime in a CDI bean (ready after boot).
      * Returning {@code null} yields HTTP 503 until ready.
      */
-    public MsHttpGatewaySbb(Supplier<MicrosleeMsSupport.MsRuntime> runtimeSource) {
+    public MsHttpGatewaySbb(
+            Supplier<MicrosleeMsSupport.MsRuntime> runtimeSource,
+            IspnMsClientSbb ispnChild) {
         this.runtimeSource = Objects.requireNonNull(runtimeSource, "runtimeSource");
+        this.ispnChild = Objects.requireNonNull(ispnChild, "ispnChild");
+    }
+
+    /** @deprecated Prefer constructors that take {@link IspnMsClientSbb}. */
+    @Deprecated
+    public MsHttpGatewaySbb(MicrosleeMsSupport.MsRuntime runtime) {
+        this(runtime, new IspnMsClientSbb());
+    }
+
+    /** @deprecated Prefer constructors that take {@link IspnMsClientSbb}. */
+    @Deprecated
+    public MsHttpGatewaySbb(Supplier<MicrosleeMsSupport.MsRuntime> runtimeSource) {
+        this(runtimeSource, new IspnMsClientSbb());
     }
 
     public void bindSelf(SbbLocalObject self) {
@@ -163,7 +179,7 @@ public final class MsHttpGatewaySbb implements Sbb, SleeEventHandler {
         body.put("mode", cfg.mode().name());
         body.put("nodeId", cfg.myNodeId() == null ? "single" : cfg.myNodeId());
         body.put("local", localFlags(rt));
-        body.put("ingress", "ra-http-server→MsHttpGatewaySbb");
+        body.put("ingress", "ra-http-server→MsHttpGatewaySbb→IspnMsClientSbb→ispn-queue-ra");
         return Reply.json(MsHttpJson.toJson(body));
     }
 
@@ -194,7 +210,7 @@ public final class MsHttpGatewaySbb implements Sbb, SleeEventHandler {
         }
         Map<String, Object> remote = new LinkedHashMap<>();
         for (String name : knownServiceNames(rt)) {
-            remote.put(name, rt.transport().stateOf(name).name());
+            remote.put(name, ispnChild.queryState(name).name());
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("localStates", local);
@@ -219,14 +235,13 @@ public final class MsHttpGatewaySbb implements Sbb, SleeEventHandler {
                 ? new byte[0]
                 : req.getBody().getBytes(StandardCharsets.UTF_8);
 
-        MicrosleeBootstrap boot = rt.bootstrap();
         SleeRequest sleeReq = new SleeRequest(op, payload);
         boolean viaLocal = rt.config().isLocal(serviceName);
-        ServiceState remoteState = viaLocal ? null : rt.transport().stateOf(serviceName);
+        ServiceState remoteState = viaLocal ? null : ispnChild.queryState(serviceName);
 
         if (notifyOnly) {
             try {
-                boot.client(serviceName).notify(sleeReq);
+                ispnChild.notify(serviceName, sleeReq);
             } catch (ServiceUnavailableException | ServiceCallTimeoutException ex) {
                 LOG.warn("[ms-http-gw] notify {} op={} viaLocal={} failed: {}",
                         serviceName, op, viaLocal, ex.getMessage());
@@ -245,7 +260,7 @@ public final class MsHttpGatewaySbb implements Sbb, SleeEventHandler {
         try {
             LOG.info("[ms-http-gw] call {} op={} viaLocal={} remoteState={}",
                     serviceName, op, viaLocal, remoteState == null ? "local" : remoteState);
-            resp = boot.client(serviceName).call(sleeReq);
+            resp = ispnChild.call(serviceName, sleeReq);
         } catch (ServiceUnavailableException ex) {
             LOG.warn("[ms-http-gw] call {} op={} viaLocal={} unavailable: {}",
                     serviceName, op, viaLocal, ex.getMessage());

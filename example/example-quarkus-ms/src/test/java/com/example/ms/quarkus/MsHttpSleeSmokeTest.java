@@ -77,7 +77,7 @@ class MsHttpSleeSmokeTest {
         holder.set(runtime);
 
         container.registerSbbType(MsAppBridgeSbb.class,
-                () -> new MsAppBridgeSbb(holder));
+                () -> new MsAppBridgeSbb(holder, MsHttpIngressSupport.newIspnChild(container)));
         container.createIesDispatcher();
         container.mapEventToSbb(MsServiceCallEvent.class, "MsAppBridgeSbb");
 
@@ -89,7 +89,9 @@ class MsHttpSleeSmokeTest {
                 true,
                 runtime,
                 MsHttpGatewaySbb.class,
-                rt -> new MsHttpGatewaySbb(holder.isReady() ? holder.get() : rt));
+                rt -> new MsHttpGatewaySbb(
+                        holder.isReady() ? holder.get() : rt,
+                        MsHttpIngressSupport.newIspnChild(container)));
         // bind to loopback for the test (wireHttpRa uses 0.0.0.0)
         port = ingress.httpPort();
     }

@@ -7,9 +7,11 @@ Quarkus 3 **CDI host** for the micro-jainslee microservice layer (`ms-api` / `ms
 - Real **SBBs** + **events** + **`ra-http-server`** — not Quarkus REST controllers
 - Service catalog: `META-INF/jainslee/slee-services` (APT / classpath) + SPI handlers via `SleeServiceHandlerRegistry` (**n-n**, not one-handler-per-service)
 
-### Demo path (micro-services) — Client → :8081 → Infinispan → SBB → reply
+### Demo path (micro-services) — Client → :8081 → child → ispn-queue-ra → Infinispan → SBB → reply
 
 Ingress is **only** on `node-ra` (`http.ra.port=8081`). `node-sbb` (`:8082`) serves leaf `/health` and runs `http-sbb`; it is **not** the demo HTTP ingress.
+
+SBBs must not call `MicrosleeBootstrap.client()` / ISPN APIs directly (ADR 0002): gateway uses child `IspnMsClientSbb` → `ispn-queue-ra`.
 
 ```mermaid
 sequenceDiagram
@@ -17,21 +19,27 @@ sequenceDiagram
     participant Client
     participant RA as node-ra<br/>ra-http-server :8081
     participant GW as MsHttpGatewaySbb
+    participant Child as IspnMsClientSbb
+    participant IspnRa as ispn-queue-ra
     participant ISPN as Infinispan<br/>ms-ispn queue
     participant SBB as node-sbb<br/>http-sbb
 
     Client->>RA: POST /api/ms/http-sbb?op=ping
     RA->>GW: HttpWebRequestEvent
-    GW->>ISPN: client("http-sbb") enqueue
+    GW->>Child: call http-sbb
+    Child->>IspnRa: sendCommand CallService
+    IspnRa->>ISPN: IspnQueueClient enqueue
     ISPN->>SBB: queue deliver
     Note over SBB: business handler<br/>HttpSbbService
     SBB-->>ISPN: response envelope
-    ISPN-->>GW: reply (viaLocal=false)
+    ISPN-->>IspnRa: SleeResponse
+    IspnRa-->>Child: reply
+    Child-->>GW: SleeResponse
     GW-->>RA: HTTP JSON body
     RA-->>Client: 200 + payload
 ```
 
-Local leaves on the same node skip the fabric (`http-ra` / `http-aux` → `DirectServiceClient`).
+Local leaves on the same node skip the fabric (`http-ra` / `http-aux` → Direct inside `ispn-queue-ra`).
 
 ```mermaid
 flowchart LR
@@ -40,9 +48,13 @@ flowchart LR
     subgraph nodeRA["node-ra — ingress"]
         RA["ra-http-server"]
         GW["MsHttpGatewaySbb"]
+        Child["IspnMsClientSbb"]
+        IspnRa["ispn-queue-ra"]
         Local["http-ra / http-aux<br/>Direct local"]
         RA --> GW
-        GW --> Local
+        GW --> Child
+        Child --> IspnRa
+        IspnRa --> Local
     end
 
     subgraph fabric["Infinispan / JGroups :7800"]
@@ -54,10 +66,12 @@ flowchart LR
         Health["ra-http-server<br/>/health :8082 only"]
     end
 
-    GW -->|"remote http-sbb"| Q
+    IspnRa -->|"remote http-sbb"| Q
     Q --> HttpSbb
     HttpSbb -->|reply| Q
-    Q -->|reply| GW
+    Q -->|reply| IspnRa
+    IspnRa --> Child
+    Child --> GW
     GW --> RA
     RA -->|HTTP response| Client
 ```

@@ -19,25 +19,27 @@ import com.microjainslee.api.SleeEvent;
 import com.microjainslee.api.SleeEventHandler;
 import com.microjainslee.ms.api.SleeRequest;
 import com.microjainslee.ms.api.SleeResponse;
-import com.microjainslee.ms.core.MicrosleeBootstrap;
+import com.microjainslee.quarkus.ms.IspnMsClientSbb;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
  * App-side bridge SBB: receives {@link MsServiceCallEvent} and talks to the
- * {@code http-ra} microservice through {@link MicrosleeBootstrap#client}
- * (Direct or Infinispan — transparent to this SBB).
+ * {@code http-ra} microservice through child {@link IspnMsClientSbb} →
+ * {@code ispn-queue-ra} (Direct or Infinispan — transparent).
  */
 public final class MsAppBridgeSbb implements Sbb, SleeEventHandler {
 
     private static final Logger LOG = LogManager.getLogger(MsAppBridgeSbb.class);
 
     private final MsRuntimeHolder runtimeHolder;
+    private final IspnMsClientSbb ispnChild;
     private volatile SbbLocalObject self;
 
-    public MsAppBridgeSbb(MsRuntimeHolder runtimeHolder) {
+    public MsAppBridgeSbb(MsRuntimeHolder runtimeHolder, IspnMsClientSbb ispnChild) {
         this.runtimeHolder = runtimeHolder;
+        this.ispnChild = ispnChild;
     }
 
     public void bindSelf(SbbLocalObject self) {
@@ -70,14 +72,13 @@ public final class MsAppBridgeSbb implements Sbb, SleeEventHandler {
                 call.response().complete(SleeResponse.error("ms runtime not ready"));
                 return;
             }
-            MicrosleeBootstrap boot = runtimeHolder.get().bootstrap();
             SleeRequest req = new SleeRequest(call.operation(), call.payload());
             if (call.notifyOnly()) {
-                boot.client("http-ra").notify(req);
+                ispnChild.notify("http-ra", req);
                 call.response().complete(SleeResponse.ok(new byte[0]));
                 LOG.info("[MsAppBridge] notify http-ra op={}", call.operation());
             } else {
-                SleeResponse resp = boot.client("http-ra").call(req);
+                SleeResponse resp = ispnChild.call("http-ra", req);
                 call.response().complete(resp);
                 LOG.info("[MsAppBridge] call http-ra op={} success={}",
                         call.operation(), resp.success());

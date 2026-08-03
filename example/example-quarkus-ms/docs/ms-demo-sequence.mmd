@@ -3,15 +3,21 @@ sequenceDiagram
     participant Client
     participant RA as node-ra<br/>ra-http-server :8081
     participant GW as MsHttpGatewaySbb
+    participant Child as IspnMsClientSbb
+    participant IspnRa as ispn-queue-ra
     participant ISPN as Infinispan<br/>ms-ispn queue
     participant SBB as node-sbb<br/>http-sbb
 
     Client->>RA: POST /api/ms/http-sbb?op=ping
     RA->>GW: HttpWebRequestEvent
-    GW->>ISPN: client("http-sbb") enqueue
+    GW->>Child: call http-sbb
+    Child->>IspnRa: sendCommand CallService
+    IspnRa->>ISPN: IspnQueueClient enqueue
     ISPN->>SBB: queue deliver
     Note over SBB: business handler<br/>HttpSbbService
     SBB-->>ISPN: response envelope
-    ISPN-->>GW: reply (viaLocal=false)
+    ISPN-->>IspnRa: SleeResponse
+    IspnRa-->>Child: reply
+    Child-->>GW: SleeResponse
     GW-->>RA: HTTP JSON body
     RA-->>Client: 200 + payload

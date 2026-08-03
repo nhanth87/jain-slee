@@ -65,6 +65,21 @@ mvn -Pexamples -pl example/example-quarkus-ms -am package
 
 Runnable Quarkus app: `target/quarkus-app/quarkus-run.jar`
 
+### Micro-services: separate node copies (required)
+
+Both MS JVMs **must not** share `target/quarkus-app`. Starting `run-ms-sbb.sh` used to run `mvn package` into that tree while `node-ra` still had jars open → `NoSuchFileException` under `lib/main/*.jar`, dead Vert.x listener, **curl :8081 hangs with no `MsGatewaySbb` logs**.
+
+```bash
+./scripts/prepare-ms-nodes.sh
+# stages:
+#   target/node-ra/quarkus-run.jar
+#   target/node-sbb/quarkus-run.jar
+```
+
+- `run-ms-ra.sh` / `run-ms-sbb.sh` call prepare (package only if needed) and launch from their **own** copy.
+- After code changes: **stop both JVMs**, then `MS_REBUILD=1 ./scripts/prepare-ms-nodes.sh`.
+- **Never** `mvn clean` / `mvn package` while either node is running.
+
 ---
 
 ## 1) Single mode (recommended first)
@@ -101,12 +116,16 @@ curl -s -X POST 'http://127.0.0.1:8080/api/demo/call-ra?op=status' \
 
 ```bash
 ./scripts/run-ms-ra.sh
+# log must include: gatewaySbbs=true http.ra.port=8081 localServices=http-ra,http-aux
+# and: ra-http-server registered on port 8081
 ```
 
 ### Terminal B — http-sbb (after A is up)
 
 ```bash
 ./scripts/run-ms-sbb.sh
+# log must include: gatewaySbbs=false http.ra.port=8082 localServices=http-sbb
+# (uses target/node-sbb — does NOT rewrite target/node-ra)
 ```
 
 ### Verify — curl **8081** (primary)
@@ -206,9 +225,10 @@ example/example-quarkus-ms/
 ├── README.md
 ├── pom.xml
 ├── scripts/
+│   ├── prepare-ms-nodes.sh   ← package + copy to target/node-{ra,sbb}
 │   ├── run-single.sh
-│   ├── run-ms-ra.sh      ← :8081 ingress
-│   ├── run-ms-sbb.sh     ← :8082 health / http-sbb
+│   ├── run-ms-ra.sh      ← :8081 ingress (target/node-ra)
+│   ├── run-ms-sbb.sh     ← :8082 health / http-sbb (target/node-sbb)
 │   └── capture-lo.sh
 └── src/main/java/com/example/ms/quarkus/
     ├── bootstrap/MsQuarkusBootstrap.java

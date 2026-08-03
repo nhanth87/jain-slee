@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Micro-services SBB node: hosts http-sbb only. Port :8082 is /health (no gateway).
-# Demo ingress is on node-ra :8081 — call-sbb from there reaches this node via ISPN.
+# Runs from target/node-sbb/ (private copy) — never mvn-package into the RA JVM tree.
+#
 # Start run-ms-ra.sh first, then this script.
+# Demo ingress is on :8081 — curl call-sbb there (ISPN → this node).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -9,15 +11,22 @@ cd "$ROOT"
 export JAVA_HOME="${JAVA_HOME:-${HOME}/.local/share/mise/installs/java/zulu-25.34.17.0}"
 export PATH="${JAVA_HOME}/bin:${PATH}"
 
-mvn -q -DskipTests package
+"${ROOT}/scripts/prepare-ms-nodes.sh"
 
-echo "==> node-sbb on :8082 (http-sbb only; no gateway — curl demo APIs on :8081)"
+APP="${ROOT}/target/node-sbb/quarkus-run.jar"
+if [[ ! -f "${APP}" ]]; then
+  echo "ERROR: missing ${APP}" >&2
+  exit 1
+fi
+
+echo "==> node-sbb on :8082 from ${APP}"
+echo "    expect log: gatewaySbbs=false http.ra.port=8082 localServices=http-sbb"
 exec java ${JAVA_OPTS:-} \
   -Djainslee.deployment.resource=deployment-microservices.yml \
   -Djainslee.node-id=node-sbb \
   -Djainslee.ms.cluster-enabled=true \
-  -Djainslee.ms.cluster-initial-hosts=127.0.0.1[7800] \
+  "-Djainslee.ms.cluster-initial-hosts=127.0.0.1[7800]" \
   -Dhttp.ra.port=8082 \
   -Djava.net.preferIPv4Stack=true \
   -Djgroups.bind_addr=127.0.0.1 \
-  -jar target/quarkus-app/quarkus-run.jar
+  -jar "${APP}"

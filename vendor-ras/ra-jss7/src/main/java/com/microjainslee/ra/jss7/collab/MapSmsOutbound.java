@@ -63,10 +63,14 @@ final class MapSmsOutbound {
     private final Map<Long, String> localToCorrelation = new ConcurrentHashMap<>();
 
     MapSmsOutbound(MAPProvider provider, Ss7Stack stack) {
-        this.provider = provider;
-        this.sccpFactory = stack.sccpProvider() == null
+        this(provider, stack.sccpProvider() == null
                 ? null
-                : stack.sccpProvider().getParameterFactory();
+                : stack.sccpProvider().getParameterFactory());
+    }
+
+    MapSmsOutbound(MAPProvider provider, ParameterFactory sccpFactory) {
+        this.provider = provider;
+        this.sccpFactory = sccpFactory;
     }
 
     boolean send(OutboundCommand command) {
@@ -102,13 +106,15 @@ final class MapSmsOutbound {
     }
 
     private void sendSri(Ss7Command.MapSendRoutingInfoForSm cmd) {
+        MAPDialogSms dialog = null;
+        boolean sent = false;
         try {
             MAPApplicationContext ac = MAPApplicationContext.getInstance(
                     MAPApplicationContextName.shortMsgGatewayContext,
                     MAPApplicationContextVersion.version3);
             SccpAddress dest = toSccp(cmd.targetAddress());
             SccpAddress orig = toSccp(cmd.localAddress());
-            MAPDialogSms dialog = provider.getMAPServiceSms()
+            dialog = provider.getMAPServiceSms()
                     .createNewDialog(ac, orig, null, dest, null);
             dialog.setNetworkId(cmd.networkId());
             remember(dialog.getLocalDialogId(), cmd.dialogId());
@@ -124,22 +130,28 @@ final class MapSmsOutbound {
                     msisdn, true, sc, null, false,
                     null, null, null, false, null, false, false, null, null, false);
             dialog.send();
+            sent = true;
             LOG.info("[ra-jss7] SRI-SM sent corr={} localDialog={} msisdn={}",
                     cmd.dialogId(), dialog.getLocalDialogId(), cmd.msisdn());
         } catch (MAPException | RuntimeException e) {
+            if (!sent) {
+                releaseUnsent(dialog, cmd.dialogId());
+            }
             LOG.error("[ra-jss7] SRI-SM failed corr={}: {}", cmd.dialogId(), e.toString());
             throw new IllegalStateException("MAP SRI-SM failed: " + e.getMessage(), e);
         }
     }
 
     private void sendMt(Ss7Command.MapMtForwardSm cmd) {
+        MAPDialogSms dialog = null;
+        boolean sent = false;
         try {
             MAPApplicationContext ac = MAPApplicationContext.getInstance(
                     MAPApplicationContextName.shortMsgMTRelayContext,
                     MAPApplicationContextVersion.version3);
             SccpAddress dest = toSccp(cmd.targetAddress());
             SccpAddress orig = toSccp(cmd.localAddress());
-            MAPDialogSms dialog = provider.getMAPServiceSms()
+            dialog = provider.getMAPServiceSms()
                     .createNewDialog(ac, orig, null, dest, null);
             dialog.setNetworkId(cmd.networkId());
             remember(dialog.getLocalDialogId(), cmd.dialogId());
@@ -164,12 +176,41 @@ final class MapSmsOutbound {
             dialog.addMtForwardShortMessageRequest(
                     da, oa, si, false, null, null, null, false, null, null, null, null);
             dialog.send();
+            sent = true;
             LOG.info("[ra-jss7] MT-ForwardSM sent corr={} localDialog={} imsi={} lmsiLen={}",
                     cmd.dialogId(), dialog.getLocalDialogId(), cmd.imsi(),
                     lmsiBytes == null ? 0 : lmsiBytes.length);
         } catch (MAPException | RuntimeException e) {
+            if (!sent) {
+                releaseUnsent(dialog, cmd.dialogId());
+            }
             LOG.error("[ra-jss7] MT-ForwardSM failed corr={}: {}", cmd.dialogId(), e.toString());
             throw new IllegalStateException("MAP MT-ForwardSM failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Discard a dialog whose request never reached the wire. {@code createNewDialog} already
+     * registered it in the jSS7 TCAP dialog table, so skipping this holds a {@code maxDialogs}
+     * slot until the dialog idle timer expires: during an M3UA flap every retry burns another
+     * slot, and {@code createNewDialog} keeps refusing long after the link is back.
+     *
+     * <p>Only ever call this when {@code send()} did not complete — releasing a dialog that is
+     * already on the wire would drop an in-flight SRI/MT. Never lets a release failure mask the
+     * original cause.
+     */
+    private void releaseUnsent(MAPDialogSms dialog, String correlation) {
+        if (dialog == null) {
+            return;
+        }
+        Long localId = dialog.getLocalDialogId();
+        try {
+            dialog.release();
+        } catch (Throwable t) {
+            LOG.warn("[ra-jss7] release of unsent dialog failed corr={} localDialog={}: {}",
+                    correlation, localId, t.toString());
+        } finally {
+            forget(localId);
         }
     }
 

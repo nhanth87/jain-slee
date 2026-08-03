@@ -131,6 +131,14 @@
             <groupId>org.mobicents.protocols.sctp</groupId>
             <artifactId>sctp-impl</artifactId>
             <version>${sctp.version}</version>
+            <exclusions>
+                <!-- Pulls TestNG onto compile CP → Surefire prefers TestNG over JUnit,
+                     whose JUnit-mode bridge then reports "Tests run: 0" with BUILD SUCCESS. -->
+                <exclusion>
+                    <groupId>org.testng</groupId>
+                    <artifactId>testng</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>

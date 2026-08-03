@@ -255,6 +255,35 @@ public class ClusterManager {
         return nodeId;
     }
 
+    /**
+     * Whether {@code candidateNodeId} is the local node or present in the
+     * current Infinispan/JGroups membership view. Used by MS readiness to
+     * treat {@code READY} published by a departed peer as unavailable.
+     */
+    public boolean isNodePresent(String candidateNodeId) {
+        if (candidateNodeId == null || candidateNodeId.isBlank()) {
+            return false;
+        }
+        if (candidateNodeId.equals(nodeId)) {
+            return true;
+        }
+        if (!clusterMode) {
+            return false;
+        }
+        var members = cacheManager.getMembers();
+        if (members == null || members.isEmpty()) {
+            return false;
+        }
+        for (var member : members) {
+            String s = String.valueOf(member);
+            // JGroups Address.toString() may be the logical name or embed it.
+            if (candidateNodeId.equals(s) || s.contains(candidateNodeId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** @return {@code true} when a JGroups transport will be started. */
     public boolean isClusterMode() {
         return clusterMode;

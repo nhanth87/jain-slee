@@ -151,6 +151,9 @@ curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-aux?op=ping' \
 curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-sbb?op=ping' \
   -H 'Content-Type: text/plain' -d '' | jq .
 # → {"success":true,"payload":"http-sbb-handled:ping","service":"http-sbb","viaLocal":false,...}
+# Watch **stdout of run-ms-sbb.sh** for:
+#   [IspnQueueServer:http-sbb] received ...
+#   [http-sbb] invoke op=ping ...
 
 # Shared n-n op (same provider on every service)
 curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-sbb?op=status' \
@@ -158,14 +161,35 @@ curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-sbb?op=status' \
 # → payload=shared-status:http-sbb
 ```
 
+### Fail-hard when SBB is down
+
+`call-ra` / `call-aux` stay local on node-ra — they **must** still succeed if you only stop 8082.
+
+`call-sbb` must **not** return `success:true` without a READY peer:
+
+```bash
+# stop run-ms-sbb.sh (Ctrl+C), then:
+curl -s -o /tmp/sbb.json -w '%{http_code}\n' -X POST \
+  'http://127.0.0.1:8081/api/demo/call-sbb?op=ping' \
+  -H 'Content-Type: text/plain' -d ''
+# → HTTP 503, body success=false, error mentions STOPPED / no READY peer
+cat /tmp/sbb.json | jq .
+```
+
+If the peer was killed without publishing STOPPED, stale READY is treated as
+STOPPED when the owner leaves the cluster view — expect HTTP **503**
+(`success:false`, not READY). A READY peer with no consumer yields HTTP **502**
+timeout — never a fake OK.
+
 ### 8082 — not demo ingress
 
 ```bash
 curl -s http://127.0.0.1:8082/health
 # → RA built-in {"status":"ok"} — no /api/demo gateway here
+# Business invoke logs are in stdout of run-ms-sbb.sh, not in this HTTP body.
 ```
 
-If a remote call times out: both processes need `jainslee.ms.cluster-enabled=true`, same `cluster-initial-hosts`, and RA node started first with `ispnStates.http-ra=READY`.
+If a remote call is unavailable/times out: both processes need `jainslee.ms.cluster-enabled=true`, same `cluster-initial-hosts`, RA started first, and a live READY `http-sbb` on node-sbb.
 
 ---
 

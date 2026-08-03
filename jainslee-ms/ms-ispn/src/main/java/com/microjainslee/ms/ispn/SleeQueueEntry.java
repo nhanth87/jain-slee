@@ -108,6 +108,11 @@ public final class SleeQueueEntry implements Serializable {
         if (type == EntryType.ERROR) {
             return SleeResponse.error(errorMessage == null ? "error" : errorMessage);
         }
+        if (type != EntryType.RESPONSE) {
+            throw new IllegalStateException(
+                    "Cannot convert " + type + " queue entry to SleeResponse"
+                            + " (corrId=" + correlationId + ")");
+        }
         return SleeResponse.ok(payload);
     }
 

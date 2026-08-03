@@ -27,6 +27,8 @@ import com.microjainslee.api.annotations.InjectRa;
 import com.microjainslee.ms.api.ServiceState;
 import com.microjainslee.ms.api.SleeRequest;
 import com.microjainslee.ms.api.SleeResponse;
+import com.microjainslee.ms.api.exception.ServiceCallTimeoutException;
+import com.microjainslee.ms.api.exception.ServiceUnavailableException;
 import com.microjainslee.ms.core.MicrosleeBootstrap;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.quarkus.MicrosleeMsSupport;
@@ -219,10 +221,19 @@ public final class MsGatewaySbb implements Sbb, SleeEventHandler {
         MicrosleeBootstrap boot = runtimeHolder.get().bootstrap();
         SleeRequest sleeReq = new SleeRequest(op, payload);
         boolean viaLocal = runtimeHolder.get().config().isLocal(serviceName);
+        ServiceState remoteState = viaLocal
+                ? null
+                : runtimeHolder.get().transport().stateOf(serviceName);
 
         if (notifyOnly) {
-            boot.client(serviceName).notify(sleeReq);
-            LOG.info("[gateway] notify {} op={}", serviceName, op);
+            try {
+                boot.client(serviceName).notify(sleeReq);
+            } catch (ServiceUnavailableException | ServiceCallTimeoutException ex) {
+                LOG.warn("[gateway] notify {} op={} viaLocal={} failed: {}",
+                        serviceName, op, viaLocal, ex.getMessage());
+                return msError(503, serviceName, op, viaLocal, remoteState, ex.getMessage());
+            }
+            LOG.info("[gateway] notify {} op={} viaLocal={}", serviceName, op, viaLocal);
             return HttpReply.json(toJson(Map.of(
                     "notified", true,
                     "op", op,
@@ -230,7 +241,21 @@ public final class MsGatewaySbb implements Sbb, SleeEventHandler {
                     "viaLocal", viaLocal)));
         }
 
-        SleeResponse resp = boot.client(serviceName).call(sleeReq);
+        final SleeResponse resp;
+        try {
+            LOG.info("[gateway] call {} op={} viaLocal={} remoteState={}",
+                    serviceName, op, viaLocal, remoteState == null ? "local" : remoteState);
+            resp = boot.client(serviceName).call(sleeReq);
+        } catch (ServiceUnavailableException ex) {
+            LOG.warn("[gateway] call {} op={} viaLocal={} unavailable: {}",
+                    serviceName, op, viaLocal, ex.getMessage());
+            return msError(503, serviceName, op, viaLocal, remoteState, ex.getMessage());
+        } catch (ServiceCallTimeoutException ex) {
+            LOG.warn("[gateway] call {} op={} viaLocal={} timeout: {}",
+                    serviceName, op, viaLocal, ex.getMessage());
+            return msError(502, serviceName, op, viaLocal, remoteState, ex.getMessage());
+        }
+
         LOG.info("[gateway] call {} op={} success={} viaLocal={}",
                 serviceName, op, resp.success(), viaLocal);
 
@@ -240,9 +265,32 @@ public final class MsGatewaySbb implements Sbb, SleeEventHandler {
         out.put("error", resp.errorMessage() == null ? "" : resp.errorMessage());
         out.put("service", serviceName);
         out.put("viaLocal", viaLocal);
+        if (remoteState != null) {
+            out.put("remoteState", remoteState.name());
+        }
         return resp.success()
                 ? HttpReply.json(toJson(out))
                 : HttpReply.json(502, toJson(out));
+    }
+
+    private static HttpReply msError(
+            int status,
+            String serviceName,
+            String op,
+            boolean viaLocal,
+            ServiceState remoteState,
+            String error) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("success", false);
+        out.put("payload", "");
+        out.put("error", error == null ? "error" : error);
+        out.put("service", serviceName);
+        out.put("op", op);
+        out.put("viaLocal", viaLocal);
+        if (remoteState != null) {
+            out.put("remoteState", remoteState.name());
+        }
+        return HttpReply.json(status, toJson(out));
     }
 
     @SuppressWarnings("unchecked")

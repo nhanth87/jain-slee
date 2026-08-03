@@ -98,7 +98,18 @@ public final class IspnTransportManager implements ServiceReadinessView {
     @Override
     public ServiceState stateOf(String serviceName) {
         ServiceStateRecord rec = stateCache().get(serviceName);
-        return rec == null ? ServiceState.STOPPED : rec.state();
+        if (rec == null) {
+            return ServiceState.STOPPED;
+        }
+        // Peer crash / hard kill often leaves READY in the REPL state cache.
+        // If the publishing node is gone from the cluster view, treat as STOPPED
+        // so callers fail-fast instead of waiting for a queue consumer that
+        // will never reply.
+        if ((rec.state() == ServiceState.READY || rec.state() == ServiceState.DEGRADED)
+                && !clusterManager.isNodePresent(rec.nodeId())) {
+            return ServiceState.STOPPED;
+        }
+        return rec.state();
     }
 
     private <K, V> Cache<K, V> getOrCreate(String name, org.infinispan.configuration.cache.Configuration cfg) {

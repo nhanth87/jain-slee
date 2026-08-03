@@ -29,6 +29,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>Implements {@link SleeServiceHandler} so the jainslee-ms handler
  * registry auto-binds it — no hand-written name switch anywhere.
+ *
+ * <p>Receive logs appear in <strong>stdout of {@code run-ms-sbb.sh}</strong>
+ * (port 8082 is /health only — not the place to look for invoke logs).
  */
 @SleeService(
         name = "http-sbb",
@@ -42,10 +45,13 @@ public final class HttpSbbService implements SleeServiceHandler {
 
     @Override
     public SleeResponse invoke(SleeRequest req) {
-        CALLS.incrementAndGet();
+        long n = CALLS.incrementAndGet();
         String op = req.operation() == null ? "" : req.operation();
-        LOG.info("[http-sbb] invoke op={}", op);
-        return SleeResponse.ok(("http-sbb-handled:" + op).getBytes(StandardCharsets.UTF_8));
+        int payloadLen = req.payload() == null ? 0 : req.payload().length;
+        LOG.info("[http-sbb] invoke op={} call#{} payloadLen={}", op, n, payloadLen);
+        String body = "http-sbb-handled:" + op;
+        LOG.info("[http-sbb] reply op={} result={} call#{}", op, body, n);
+        return SleeResponse.ok(body.getBytes(StandardCharsets.UTF_8));
     }
 
     public static long calls() {

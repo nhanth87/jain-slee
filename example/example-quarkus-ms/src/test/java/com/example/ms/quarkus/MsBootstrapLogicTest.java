@@ -182,6 +182,35 @@ class MsBootstrapLogicTest {
     }
 
     @Test
+    void microServicesRaNodeFailsWhenHttpSbbNotReady() throws Exception {
+        clusterManager = new ClusterManager(MicroSleeConfiguration.defaults(), "node-ra");
+        clusterManager.start();
+
+        DeploymentConfig cfg = DeploymentConfig.builder()
+                .mode(DeploymentConfig.Mode.MICROSERVICES)
+                .myNodeId("node-ra")
+                .node("node-ra", "127.0.0.1", 9000)
+                .node("node-sbb", "127.0.0.1", 9000)
+                .service("http-ra", "node-ra")
+                .service("http-aux", "node-ra")
+                .service("http-sbb", "node-sbb")
+                .build();
+
+        runtime = MicrosleeMsSupport.start(
+                container, clusterManager, cfg, allDescriptors(), nnRegistry());
+
+        assertEquals(ServiceState.STOPPED, runtime.transport().stateOf("http-sbb"));
+
+        var ex = org.junit.jupiter.api.Assertions.assertThrows(
+                com.microjainslee.ms.api.exception.ServiceUnavailableException.class,
+                () -> runtime.bootstrap().client("http-sbb")
+                        .call(new SleeRequest("ping", new byte[0])));
+        assertTrue(ex.getMessage().contains("http-sbb"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("no READY peer"), ex.getMessage());
+        assertEquals(0, HttpSbbService.calls());
+    }
+
+    @Test
     void microServicesSbbNodeCallsRemoteHttpRa() throws Exception {
         clusterManager = new ClusterManager(MicroSleeConfiguration.defaults(), "node-sbb");
         clusterManager.start();

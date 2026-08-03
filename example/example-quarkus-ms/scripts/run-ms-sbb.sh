@@ -21,6 +21,8 @@ fi
 
 echo "==> node-sbb on :8082 from ${APP}"
 echo "    expect log: gatewaySbbs=false http.ra.port=8082 localServices=http-sbb"
+echo "    RA→SBB invoke logs appear here (stdout), not in curl :8082/health"
+echo "    look for: [IspnQueueServer:http-sbb] received ... and [http-sbb] invoke ..."
 exec java ${JAVA_OPTS:-} \
   -Djainslee.deployment.resource=deployment-microservices.yml \
   -Djainslee.node-id=node-sbb \

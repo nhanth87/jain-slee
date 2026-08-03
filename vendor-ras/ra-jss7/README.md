@@ -12,3 +12,8 @@ Design: [`docs/adr/0001-ss7-ra-nn-tcap-failover.md`](../../docs/adr/0001-ss7-ra-
 ## Link status truth
 
 Use `Ss7ResourceAdaptor.isM3uaRouteReady()` for peer route readiness — never `isActive()` / `Ss7Stack.isStarted()` alone.
+
+## P2 TCAP export/import (spike)
+
+jSS7 j25 coral-valley adds `TCAPProvider.exportDialog` / `importDialog`. This RA does **not** call them yet — bump/publish `ss7.version` `9.2.8-j25` with that API first, then wire `TcapDialogFailoverPort`. Sticky P1 ownership remains the supported path. See `docs/adr/0001-ss7-ra-nn-tcap-failover.md`.
+

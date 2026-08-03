@@ -13,6 +13,7 @@ package com.example.ms.quarkus;
 import com.example.ms.quarkus.bootstrap.MsRuntimeHolder;
 import com.example.ms.quarkus.events.MsServiceCallEvent;
 import com.example.ms.quarkus.sbbs.MsAppBridgeSbb;
+import com.example.ms.quarkus.services.HttpAuxService;
 import com.example.ms.quarkus.services.HttpRaService;
 import com.example.ms.quarkus.services.HttpSbbService;
 import com.microjainslee.cluster.ClusterManager;
@@ -67,6 +68,7 @@ class MsAppBridgeSbbTest {
                 DeploymentConfig.singleNode(),
                 List.of(
                         SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
+                        SleeServiceDescriptor.fromAnnotation(HttpAuxService.class),
                         SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)));
         holder.set(runtime);
 

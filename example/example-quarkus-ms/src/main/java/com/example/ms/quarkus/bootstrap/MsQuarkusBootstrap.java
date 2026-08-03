@@ -13,12 +13,15 @@ package com.example.ms.quarkus.bootstrap;
 import com.example.ms.quarkus.events.MsServiceCallEvent;
 import com.example.ms.quarkus.sbbs.MsAppBridgeSbb;
 import com.example.ms.quarkus.sbbs.MsGatewaySbb;
+import com.example.ms.quarkus.services.HttpAuxService;
 import com.example.ms.quarkus.services.HttpRaService;
 import com.example.ms.quarkus.services.HttpSbbService;
+import com.example.ms.quarkus.services.MsSharedDiagHandler;
 import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.ms.api.SleeServiceDescriptor;
+import com.microjainslee.ms.core.SleeServiceHandlerRegistry;
 import com.microjainslee.ms.core.config.DeploymentConfig;
 import com.microjainslee.quarkus.MicrosleeMsSupport;
 import com.microjainslee.ra.httpserver.HttpServerRaEndpoint;
@@ -38,6 +41,7 @@ import org.apache.logging.log4j.Logger;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Quarkus CDI host for the MS demo.
@@ -49,9 +53,12 @@ import java.util.List;
  *   <li>Conditional SBB + HTTP RA wiring by local services</li>
  * </ol>
  *
+ * <p>Telecom-style ingress (micro-services):
  * <ul>
- *   <li>{@code http-sbb} local (or SINGLE): gateway + bridge SBBs + HTTP RA ingress</li>
- *   <li>{@code http-ra} only: HTTP RA for {@code /health} (no gateway SBB)</li>
+ *   <li>{@code http-ra} local (or SINGLE): {@code ra-http-server} + gateway/bridge SBBs
+ *       — public HTTP API on this node (e.g. :8081)</li>
+ *   <li>{@code http-sbb} only: business MS service; optional HTTP RA for built-in
+ *       {@code /health} only (no gateway — not the demo ingress)</li>
  * </ul>
  */
 @ApplicationScoped
@@ -98,21 +105,37 @@ public class MsQuarkusBootstrap {
         clusterManager = new ClusterManager(sleeCfg, nodeId);
         clusterManager.start();
 
-        // Handlers auto-bind via the jainslee-ms registry: the @SleeService
-        // classes implement SleeServiceHandler (n-n providers also supported).
+        // n-n registry: ServiceLoader providers + self-handlers + programmatic
+        // bindings (one diag handler → many services).
+        List<SleeServiceDescriptor> descriptors = List.of(
+                SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
+                SleeServiceDescriptor.fromAnnotation(HttpAuxService.class),
+                SleeServiceDescriptor.fromAnnotation(HttpSbbService.class));
+        SleeServiceHandlerRegistry registry = SleeServiceHandlerRegistry.discover(descriptors);
+        MsSharedDiagHandler diag = new MsSharedDiagHandler();
+        for (String svc : List.of("http-ra", "http-sbb", "http-aux")) {
+            registry.register(svc, List.of("diag"), 50, diag);
+        }
+        Map<String, List<String>> bindings = registry.describe();
+
         MicrosleeMsSupport.MsRuntime runtime = MicrosleeMsSupport.start(
                 container,
                 clusterManager,
                 config,
-                List.of(
-                        SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
-                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)));
+                descriptors,
+                registry);
 
-        runtimeHolder.set(runtime);
+        runtimeHolder.set(runtime, bindings);
+        LOG.info("MS n-n handler bindings: {}", bindings);
 
+        // Ingress + gateway live with the RA/signaling node (http-ra), not http-sbb.
+        // Hitting :8081 exercises: HTTP → MsGatewaySbb → MS client → reply on same connection.
         boolean wireGateway = config.mode() == DeploymentConfig.Mode.SINGLE
+                || config.isLocal("http-ra");
+        // HTTP transport on ingress node; SBB-only node may keep RA for /health only.
+        boolean wireHttpRa = wireGateway
+                || config.isLocal("http-ra")
                 || config.isLocal("http-sbb");
-        boolean wireHttpRa = wireGateway || config.isLocal("http-ra");
 
         if (wireGateway) {
             wireGatewaySbbs();
@@ -196,10 +219,10 @@ public class MsQuarkusBootstrap {
 
     private static String describeLocal(DeploymentConfig config) {
         if (config.mode() == DeploymentConfig.Mode.SINGLE) {
-            return "http-ra,http-sbb";
+            return "http-ra,http-aux,http-sbb";
         }
         StringBuilder sb = new StringBuilder();
-        for (String name : List.of("http-ra", "http-sbb")) {
+        for (String name : List.of("http-ra", "http-aux", "http-sbb")) {
             if (config.isLocal(name)) {
                 if (!sb.isEmpty()) {
                     sb.append(',');

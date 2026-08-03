@@ -23,29 +23,27 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Business MS service on {@code node-sbb}. Ingress is <em>not</em> here —
- * the RA node gateway reaches this service via Infinispan queue
- * ({@code /api/demo/call-sbb} on :8081).
+ * Second leaf MS service on {@code node-ra} — demonstrates many services per
+ * node (n side of service placement) alongside {@link HttpRaService}.
  *
- * <p>Implements {@link SleeServiceHandler} so the jainslee-ms handler
- * registry auto-binds it — no hand-written name switch anywhere.
+ * <p>Shares the {@code status}/{@code diag} handlers with other services via
+ * the n-n {@code SleeServiceHandlerRegistry}.
  */
 @SleeService(
-        name = "http-sbb",
+        name = "http-aux",
         transport = TransportType.INFINISPAN_QUEUE,
-        dependsOn = {"http-ra"},
-        startPriority = 20)
-public final class HttpSbbService implements SleeServiceHandler {
+        startPriority = 15)
+public final class HttpAuxService implements SleeServiceHandler {
 
-    private static final Logger LOG = LogManager.getLogger(HttpSbbService.class);
+    private static final Logger LOG = LogManager.getLogger(HttpAuxService.class);
     private static final AtomicLong CALLS = new AtomicLong();
 
     @Override
     public SleeResponse invoke(SleeRequest req) {
         CALLS.incrementAndGet();
         String op = req.operation() == null ? "" : req.operation();
-        LOG.info("[http-sbb] invoke op={}", op);
-        return SleeResponse.ok(("http-sbb-handled:" + op).getBytes(StandardCharsets.UTF_8));
+        LOG.info("[http-aux] invoke op={}", op);
+        return SleeResponse.ok(("http-aux-handled:" + op).getBytes(StandardCharsets.UTF_8));
     }
 
     public static long calls() {

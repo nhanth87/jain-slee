@@ -4,36 +4,39 @@ Quarkus 3 **CDI host** for the micro-jainslee microservice layer (`ms-api` / `ms
 
 - `@Inject MicroSleeContainer` + `onStart(@Observes StartupEvent)` (adapter-quarkus owns create/start/stop)
 - Real **SBBs** + **events** + **`ra-http-server`** — not Quarkus REST controllers
+- **n-n** handler bindings via `SleeServiceHandlerRegistry` (not one-handler-per-service)
 
 ```
-HTTP ──► ra-http-server ──► HttpWebRequestEvent ──► MsGatewaySbb
-                                                      │
-                                         SleeServiceClient("http-ra")
-                                                      │
-                                         Direct (single) or ISPN (micro-services)
+HTTP :8081 ──► ra-http-server ──► HttpWebRequestEvent ──► MsGatewaySbb
+                                                              │
+                              ┌───────────────────────────────┼───────────────────────────────┐
+                              ▼                               ▼                               ▼
+                     client("http-ra")               client("http-aux")              client("http-sbb")
+                     (local Direct)                  (local Direct)                  (ISPN → node-sbb)
+```
+
+### n-n diagram (handlers ↔ services ↔ nodes)
+
+```
+  Handlers                          Services                         Nodes
+  ────────                          ────────                         ─────
+  HttpRaService (self *) ─────────► http-ra  ─────────────────────► node-ra (:8081 ingress)
+  HttpAuxService (self *) ────────► http-aux ─────────────────────► node-ra
+  HttpSbbService (self *) ────────► http-sbb ─────────────────────► node-sbb (:8082 /health)
+  MsSharedStatusProvider ──status──► http-ra + http-sbb + http-aux     (1 provider → N services)
+  MsSharedDiagHandler ─────diag────► http-ra + http-sbb + http-aux     (1 instance → N services)
 ```
 
 Same codebase, two deploy modes:
 
 | Mode | What runs | How services call each other |
 |------|-----------|------------------------------|
-| **single** (default) | `http-ra` + `http-sbb` in one JVM | `DirectServiceClient` (in-process) |
+| **single** (default) | `http-ra` + `http-aux` + `http-sbb` in one JVM | `DirectServiceClient` (in-process) |
 | **micro-services** | each process activates only its services | Infinispan queue (`ms-ispn`) |
 
 `mode: micro-services` is **service placement** (which JVM runs which `@SleeService`).  
 `jainslee.ms.cluster-enabled` is the **JGroups/Infinispan fabric** — different knob.  
 Deprecated YAML alias: `mode: cluster` → same as `micro-services`.
-
-```
-@SleeService(name = "http-ra")
-@SleeService(name = "http-sbb", dependsOn = "http-ra")
-         │
-         ▼
- MicrosleeMsSupport + SleeServiceClientFactory
-    │
-┌────┴────┐
-Direct   IspnQueue  ← decided by deployment.yml + JAINSLEE_NODE_ID
-```
 
 ---
 
@@ -78,18 +81,23 @@ curl -s http://127.0.0.1:8080/api/health | jq .
 curl -s -X POST 'http://127.0.0.1:8080/api/demo/call-ra?op=ping' \
   -H 'Content-Type: text/plain' -d '' | jq .
 # → viaLocal=true
+curl -s -X POST 'http://127.0.0.1:8080/api/demo/call-ra?op=status' \
+  -H 'Content-Type: text/plain' -d '' | jq .
+# → shared-status:http-ra  (n-n ServiceLoader provider)
 ```
 
 ---
 
 ## 2) Micro-services mode (two processes, ISPN queue)
 
-| Process | Node id | HTTP (`http.ra.port`) | Local services | Wiring |
-|---------|---------|----------------------|----------------|--------|
-| A | `node-ra` | 8081 | `http-ra` | HTTP RA only (`/health`) |
-| B | `node-sbb` | 8082 | `http-sbb` | HTTP RA + gateway SBB → calls `http-ra` via ISPN |
+**Ingress is on the RA node (:8081)** — not the SBB node.
 
-### Terminal A — http-ra
+| Process | Node id | HTTP (`http.ra.port`) | Local services | Role |
+|---------|---------|----------------------|----------------|------|
+| A | `node-ra` | **8081 (demo ingress)** | `http-ra`, `http-aux` | `ra-http-server` + `MsGatewaySbb` |
+| B | `node-sbb` | 8082 | `http-sbb` | Business MS only; built-in `/health` (no gateway) |
+
+### Terminal A — ingress / RA (start first)
 
 ```bash
 ./scripts/run-ms-ra.sh
@@ -101,61 +109,78 @@ curl -s -X POST 'http://127.0.0.1:8080/api/demo/call-ra?op=ping' \
 ./scripts/run-ms-sbb.sh
 ```
 
-### Verify
+### Verify — curl **8081** (primary)
 
 ```bash
-curl -s http://127.0.0.1:8081/health
-# → RA built-in {"status":"ok"}
+curl -s http://127.0.0.1:8081/api/health | jq .
+# → mode=MICROSERVICES, local.http-ra=true, local.http-aux=true, local.http-sbb=false
 
-curl -s http://127.0.0.1:8082/api/health | jq .
-# → mode=MICROSERVICES, local.http-sbb=true, local.http-ra=false
+curl -s http://127.0.0.1:8081/api/ms/handlers | jq .
+# → n-n bindings (self + status provider + diag)
 
-curl -s -X POST 'http://127.0.0.1:8082/api/demo/call-ra?op=ping' \
+# Local leaf on RA node
+curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-ra?op=ping' \
   -H 'Content-Type: text/plain' -d '' | jq .
-# → {"success":true,"payload":"pong","viaLocal":false,...}
+# → {"success":true,"payload":"pong","service":"http-ra","viaLocal":true,...}
+
+# Second local service (many services on one node)
+curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-aux?op=ping' \
+  -H 'Content-Type: text/plain' -d '' | jq .
+# → viaLocal=true, service=http-aux
+
+# Cross-node: gateway on 8081 → ISPN → http-sbb on node-sbb
+curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-sbb?op=ping' \
+  -H 'Content-Type: text/plain' -d '' | jq .
+# → {"success":true,"payload":"http-sbb-handled:ping","service":"http-sbb","viaLocal":false,...}
+
+# Shared n-n op (same provider on every service)
+curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-sbb?op=status' \
+  -H 'Content-Type: text/plain' -d '' | jq .
+# → payload=shared-status:http-sbb
 ```
 
-If the remote call times out: both processes need `jainslee.ms.cluster-enabled=true`, same `cluster-initial-hosts`, and RA node started first with `ispnStates.http-ra=READY`.
+### 8082 — not demo ingress
+
+```bash
+curl -s http://127.0.0.1:8082/health
+# → RA built-in {"status":"ok"} — no /api/demo gateway here
+```
+
+If a remote call times out: both processes need `jainslee.ms.cluster-enabled=true`, same `cluster-initial-hosts`, and RA node started first with `ispnStates.http-ra=READY`.
 
 ---
 
 ## Wireshark / tcpdump
 
-Fixed ports for capture on loopback:
-
 | Port | Traffic |
 |------|---------|
-| 8082 | Client → HTTP SBB gateway |
-| 8081 | Optional health on RA node |
+| **8081** | Client → HTTP gateway (demo ingress) |
+| 8082 | Optional `/health` on SBB node |
 | 7800 | JGroups / Infinispan fabric |
 
 ```bash
-# Live in Wireshark
-wireshark -i lo -f "tcp port 8082 or tcp port 8081 or tcp port 7800"
-
-# Or write a pcap
+wireshark -i lo -f "tcp port 8081 or tcp port 8082 or tcp port 7800"
 sudo ./scripts/capture-lo.sh /tmp/quarkus-ms-lo.pcap
 ```
 
-Suggested sequence:
-
-1. Start capture.
-2. `./scripts/run-ms-ra.sh` then `./scripts/run-ms-sbb.sh`.
-3. `curl` `POST http://127.0.0.1:8082/api/demo/call-ra?op=ping`.
-4. Expect HTTP on **8082**, JGroups TCP on **7800**, response `"viaLocal":false`.
+Suggested sequence: start capture → `run-ms-ra.sh` → `run-ms-sbb.sh` → `curl POST …:8081/api/demo/call-sbb?op=ping` → expect HTTP on **8081**, JGroups on **7800**, `"viaLocal":false`.
 
 ---
 
-## HTTP API (via ra-http-server → MsGatewaySbb)
+## HTTP API (via ra-http-server → MsGatewaySbb on ingress node)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | RA built-in probe |
+| `GET` | `/health` | RA built-in probe (any node with HTTP RA) |
 | `GET` | `/api/health` | Mode, node id, local services |
-| `GET` | `/api/ms/state` | Orchestrator + ISPN + counters |
-| `POST` | `/api/demo/call-ra?op=` | Gateway → `SleeServiceClient("http-ra")` |
-| `POST` | `/api/demo/notify-ra?op=` | Fire-and-forget notify |
-| `POST` | `/api/demo/call-signaling?op=` | Alias of `call-ra` |
+| `GET` | `/api/ms/state` | Orchestrator + ISPN + n-n counters |
+| `GET` | `/api/ms/handlers` | n-n registry bindings |
+| `POST` | `/api/demo/call-ra?op=` | Gateway → `http-ra` |
+| `POST` | `/api/demo/call-aux?op=` | Gateway → `http-aux` |
+| `POST` | `/api/demo/call-sbb?op=` | Gateway → `http-sbb` (remote in MS mode) |
+| `POST` | `/api/demo/notify-ra\|aux\|sbb?op=` | Fire-and-forget notify |
+
+Useful ops: `ping`, `echo`, `status` (shared provider), `diag` (shared programmatic).
 
 Body for POST: raw `text/plain` (optional).
 
@@ -182,14 +207,17 @@ example/example-quarkus-ms/
 ├── pom.xml
 ├── scripts/
 │   ├── run-single.sh
-│   ├── run-ms-ra.sh
-│   ├── run-ms-sbb.sh
+│   ├── run-ms-ra.sh      ← :8081 ingress
+│   ├── run-ms-sbb.sh     ← :8082 health / http-sbb
 │   └── capture-lo.sh
 └── src/main/java/com/example/ms/quarkus/
     ├── bootstrap/MsQuarkusBootstrap.java
     ├── sbbs/MsGatewaySbb.java
     ├── sbbs/MsAppBridgeSbb.java
-    └── services/{HttpRa,HttpSbb}Service.java   ← @SleeService + SleeServiceHandler (auto-bound)
+    └── services/
+        ├── HttpRaService.java / HttpAuxService.java / HttpSbbService.java
+        ├── MsSharedStatusProvider.java   ← ServiceLoader → many services
+        └── MsSharedDiagHandler.java      ← programmatic → many services
 ```
 
 ---
@@ -201,8 +229,8 @@ cd example/example-quarkus-ms
 mvn test
 ```
 
-- `MsBootstrapLogicTest` — single Direct + micro-services split ISPN
-- `MsHttpSleeSmokeTest` — RA → gateway → call-ra
+- `MsBootstrapLogicTest` — single Direct + micro-services ISPN + n-n registry
+- `MsHttpSleeSmokeTest` — RA → gateway → call-ra / shared status
 - `MsAppBridgeSbbTest` — `MsServiceCallEvent` → bridge → http-ra
 
 ---
@@ -212,3 +240,4 @@ mvn test
 - Quarkus is the **CDI host only** — no `quarkus-rest`.
 - Example pins Infinispan **15.0.0.Final** + protostream **5.0.1.Final**.
 - Sibling: `example/example-ms-two-service`. Design: `docs/vi/microjainslee-microservice.md`.
+- This demo does **not** claim SS7 CONTINUE sticky failover — HTTP MS n-n only.

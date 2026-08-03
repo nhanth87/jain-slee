@@ -7,16 +7,16 @@
 #   sudo ./scripts/capture-lo.sh /tmp/x.pcap
 #
 # Then open the pcap in Wireshark, or live-capture with:
-#   wireshark -i lo -f "tcp port 8082 or tcp port 8081 or tcp port 7800"
+#   wireshark -i lo -f "tcp port 8081 or tcp port 8082 or tcp port 7800"
 set -euo pipefail
 
 OUT="${1:-/tmp/quarkus-ms-lo.pcap}"
-FILTER="tcp port 8082 or tcp port 8081 or tcp port 7800"
+FILTER="tcp port 8081 or tcp port 8082 or tcp port 7800"
 
 echo "Capturing on lo → ${OUT}"
 echo "Filter: ${FILTER}"
 echo "Start run-ms-ra.sh, then run-ms-sbb.sh, then:"
-echo "  curl -s -X POST 'http://127.0.0.1:8082/api/demo/call-ra?op=ping' -H 'Content-Type: text/plain' -d ''"
+echo "  curl -s -X POST 'http://127.0.0.1:8081/api/demo/call-sbb?op=ping' -H 'Content-Type: text/plain' -d ''"
 echo "Ctrl-C to stop."
 
 if command -v tcpdump >/dev/null 2>&1; then

@@ -1,9 +1,12 @@
-# Two-process topology: each Quarkus process activates only its assigned services.
+# Two-process n-n topology: each Quarkus process activates its assigned services.
 # Remote calls use Infinispan distributed queues (ms-ispn).
 # JGroups fabric is separate: -Djainslee.ms.cluster-enabled=true
 #
-# Terminal A: -Djainslee.node-id=node-ra  -Dhttp.ra.port=8081
-# Terminal B: -Djainslee.node-id=node-sbb -Dhttp.ra.port=8082
+# Ingress is on the RA node (http-ra + http-aux + MsGatewaySbb):
+#   Terminal A: -Djainslee.node-id=node-ra  -Dhttp.ra.port=8081   ← curl here
+#   Terminal B: -Djainslee.node-id=node-sbb -Dhttp.ra.port=8082   ← /health only
+#
+# Services (many) × handlers (many) via SleeServiceHandlerRegistry — not 1-1.
 mode: micro-services
 
 nodes:
@@ -11,5 +14,8 @@ nodes:
   node-sbb: { host: "127.0.0.1", base-port: 9000 }
 
 services:
+  # Two MS services on the ingress/RA node
   http-ra:  { node: node-ra,  transport: INFINISPAN_QUEUE, port: 9001 }
+  http-aux: { node: node-ra,  transport: INFINISPAN_QUEUE, port: 9003 }
+  # Business MS service on the SBB node (reached from :8081 via ISPN)
   http-sbb: { node: node-sbb, transport: INFINISPAN_QUEUE, port: 9002 }

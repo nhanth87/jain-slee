@@ -24,8 +24,8 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Leaf MS service hosted with {@code ra-http-server} on {@code node-ra}.
- * In micro-services mode other nodes call it via Infinispan queue.
+ * Leaf MS service hosted with {@code ra-http-server} ingress on {@code node-ra}.
+ * Local gateway calls it in-process; remote nodes reach it via Infinispan queue.
  *
  * <p>Implements {@link SleeServiceHandler} so the jainslee-ms handler
  * registry auto-binds it — no hand-written name switch anywhere.

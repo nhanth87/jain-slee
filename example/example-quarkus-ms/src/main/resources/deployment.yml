@@ -1,4 +1,5 @@
-# Single-JVM topology: both services local → SleeServiceClient uses Direct.
+# Single-JVM topology: all services local → SleeServiceClient uses Direct.
+# Same n-n handler registry as micro-services (status/diag shared across services).
 mode: single
 
 nodes:
@@ -7,4 +8,5 @@ nodes:
 
 services:
   http-ra:  { node: node-ra,  transport: INFINISPAN_QUEUE, port: 9001 }
+  http-aux: { node: node-ra,  transport: INFINISPAN_QUEUE, port: 9003 }
   http-sbb: { node: node-sbb, transport: INFINISPAN_QUEUE, port: 9002 }

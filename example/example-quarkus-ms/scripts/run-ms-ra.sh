@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Micro-services node that hosts only "http-ra" (HTTP RA leaf) on :8081.
-# Start this first, then scripts/run-ms-sbb.sh.
+# Micro-services INGRESS node: http-ra + http-aux + MsGatewaySbb on :8081.
+# Curl demo APIs here. Start this first, then scripts/run-ms-sbb.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -10,7 +10,7 @@ export PATH="${JAVA_HOME}/bin:${PATH}"
 
 mvn -q -DskipTests package
 
-echo "==> node-ra on :8081 (http-ra leaf; JGroups fabric :7800)"
+echo "==> node-ra on :8081 (ingress: ra-http-server + gateway; services http-ra,http-aux)"
 exec java ${JAVA_OPTS:-} \
   -Djainslee.deployment.resource=deployment-microservices.yml \
   -Djainslee.node-id=node-ra \

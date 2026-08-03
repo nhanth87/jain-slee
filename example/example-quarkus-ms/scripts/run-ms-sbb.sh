@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Micro-services node that hosts only "http-sbb" (HTTP gateway SBB) on :8082.
+# Micro-services SBB node: hosts http-sbb only. Port :8082 is /health (no gateway).
+# Demo ingress is on node-ra :8081 — call-sbb from there reaches this node via ISPN.
 # Start run-ms-ra.sh first, then this script.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,7 +11,7 @@ export PATH="${JAVA_HOME}/bin:${PATH}"
 
 mvn -q -DskipTests package
 
-echo "==> node-sbb on :8082 (calls http-ra via Infinispan queue)"
+echo "==> node-sbb on :8082 (http-sbb only; no gateway — curl demo APIs on :8081)"
 exec java ${JAVA_OPTS:-} \
   -Djainslee.deployment.resource=deployment-microservices.yml \
   -Djainslee.node-id=node-sbb \

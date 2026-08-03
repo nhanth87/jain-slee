@@ -16,8 +16,8 @@ import java.util.Objects;
 
 /**
  * Serializable TCAP dialog metadata for the {@link Ss7DialogCacheNames#TCAP_DIALOG_META}
- * cache (P0). Not a live jSS7 {@code DialogImpl} — CONTINUE takeover requires a future
- * jSS7 export/import API (ADR 0001 P2).
+ * cache (P0). Not a live jSS7 {@code DialogImpl}. CONTINUE takeover uses
+ * {@link TcapDialogSnapshotPayload} + jSS7 import (ADR 0001 P2).
  *
  * <p>Values must stay within {@link MarshallingAllowList} ({@code com.microjainslee.*}).
  */

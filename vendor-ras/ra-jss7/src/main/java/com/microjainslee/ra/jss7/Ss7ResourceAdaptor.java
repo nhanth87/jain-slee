@@ -12,8 +12,10 @@ import com.microjainslee.api.SleeEvent;
 import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.cluster.Ss7DialogClusterCaches;
 import com.microjainslee.ra.jss7.cluster.IspnStickyCommandBus;
+import com.microjainslee.ra.jss7.cluster.Jss7TcapDialogFailoverPort;
 import com.microjainslee.ra.jss7.cluster.Ss7DialogOwnershipTracker;
 import com.microjainslee.ra.jss7.cluster.StickyRaCommandRouter;
+import com.microjainslee.ra.jss7.cluster.TcapDialogFailoverPort;
 import com.microjainslee.ra.jss7.collab.CapProtocolAdapter;
 import com.microjainslee.ra.jss7.collab.MapProtocolAdapter;
 import com.microjainslee.ra.jss7.collab.Ss7EventPublisher;
@@ -44,12 +46,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * commands are sticky-routed ({@link StickyRaCommandRouter}) then adapters /
  * TCAP.</p>
  *
- * <p><strong>n-n / failover (P1):</strong> write-through dialog ownership via
+ * <p><strong>n-n / failover (P1 + P2 wire):</strong> write-through dialog ownership via
  * {@link Ss7DialogOwnershipTracker}; sticky outbound to owner RA over the same
- * {@link ClusterManager} fabric ({@link IspnStickyCommandBus}). TCAP CONTINUE
- * after this RA dies remains <em>unsupported</em> (P2 / jSS7 export-import) —
- * see {@code docs/adr/0001-ss7-ra-nn-tcap-failover.md}. Delivery gates must use
- * {@link #isM3uaRouteReady()}, never {@link #isActive()} alone.</p>
+ * {@link ClusterManager} fabric ({@link IspnStickyCommandBus}). P2 wires
+ * {@link TcapDialogFailoverPort} / jSS7 {@code exportDialog}/{@code importDialog}
+ * + CONTINUE-miss resolver — <em>not</em> full STP multi-ASP lab HA.
+ * Delivery gates must use {@link #isM3uaRouteReady()}, never {@link #isActive()} alone.</p>
  */
 public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublisher {
 
@@ -73,6 +75,7 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     private volatile Ss7DialogOwnershipTracker ownershipTracker;
     private volatile StickyRaCommandRouter stickyRouter;
     private volatile IspnStickyCommandBus stickyBus;
+    private volatile TcapDialogFailoverPort failoverPort;
 
     // ── configuration ────────────────────────────────────────
     public void setBootstrapPort(RaBootstrapPort bp) { this.bootstrap = bp; }
@@ -114,6 +117,12 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
 
     public StickyRaCommandRouter stickyRouter() {
         return stickyRouter;
+    }
+
+    /** P2 failover port (wired when stack + ownership are up; else unsupported). */
+    public TcapDialogFailoverPort failoverPort() {
+        TcapDialogFailoverPort p = failoverPort;
+        return p != null ? p : TcapDialogFailoverPort.unsupported();
     }
 
     /** RA lifecycle active — **not** peer route-ready; use {@link #isM3uaRouteReady()}. */
@@ -171,6 +180,7 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
             try { a.detach(); } catch (RuntimeException e) { LOG.warn("detach {} failed", a.protocol(), e); }
         }
         adapters.clear();
+        clearMissingDialogResolver();
         if (stack != null) { stack.stop(); stack = null; }
         sessions.values().forEach(this::endActivity);
         sessions.clear();
@@ -207,6 +217,37 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         } else {
             stickyBus = null;
         }
+        wireFailoverPort(caches);
+    }
+
+    private void wireFailoverPort(Ss7DialogClusterCaches caches) {
+        Ss7Stack s = stack;
+        if (s == null || ownershipTracker == null) {
+            failoverPort = TcapDialogFailoverPort.unsupported();
+            return;
+        }
+        Jss7TcapDialogFailoverPort wired = new Jss7TcapDialogFailoverPort(
+                () -> {
+                    Ss7Stack st = stack;
+                    return st != null ? st.tcapProvider() : null;
+                },
+                () -> {
+                    Ss7Stack st = stack;
+                    return st != null && st.sccpProvider() != null
+                            ? st.sccpProvider().getParameterFactory()
+                            : null;
+                },
+                ownershipTracker,
+                caches);
+        failoverPort = wired;
+        try {
+            if (s.tcapProvider() != null) {
+                s.tcapProvider().setMissingDialogResolver(wired);
+                LOG.info("[ra-jss7] P2 TCAP failover port wired (CONTINUE-miss resolver on)");
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("[ra-jss7] failed to register MissingDialogResolver: {}", e.toString());
+        }
     }
 
     private void teardownOwnership() {
@@ -221,6 +262,21 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         }
         stickyRouter = null;
         ownershipTracker = null;
+        failoverPort = null;
+    }
+
+    private void clearMissingDialogResolver() {
+        Ss7Stack s = stack;
+        if (s == null) {
+            return;
+        }
+        try {
+            if (s.tcapProvider() != null) {
+                s.tcapProvider().setMissingDialogResolver(null);
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("[ra-jss7] clear MissingDialogResolver: {}", e.toString());
+        }
     }
 
     private void logOtidRangeGuidance() {
@@ -270,12 +326,30 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         }
         if (event instanceof Ss7Event.TcapBegin || sessionCreated) {
             tracker.onDialogOpened(dialogId, parseOtid(dialogId), null, 0, 0, stateOf(event), null);
+            exportSnapshotBestEffort(dialogId);
         } else if (event instanceof Ss7Event.TcapContinue) {
             tracker.onDialogTouched(dialogId, "Active", null, 0, 0);
+            exportSnapshotBestEffort(dialogId);
         } else if (event instanceof Ss7Event.TcapEnd || event instanceof Ss7Event.TcapAbort) {
             // closed in forceEndSession
         } else {
             tracker.onDialogTouched(dialogId, "Active", null, 0, 0);
+        }
+    }
+
+    private void exportSnapshotBestEffort(String dialogId) {
+        TcapDialogFailoverPort port = failoverPort;
+        if (port == null || dialogId == null) {
+            return;
+        }
+        long otid = parseOtid(dialogId);
+        if (otid <= 0) {
+            return;
+        }
+        try {
+            port.exportAndStore(otid);
+        } catch (RuntimeException e) {
+            LOG.debug("[ra-jss7] exportAndStore({}) failed: {}", otid, e.toString());
         }
     }
 
@@ -371,8 +445,10 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     cmd.targetAddress() != null ? cmd.targetAddress().pointCode() : 0,
                     cmd.targetAddress() != null ? cmd.targetAddress().subSystemNumber() : 0,
                     "Active", cmd.dialogId());
+            exportSnapshotBestEffort(cmd.dialogId());
         } else if (cmd instanceof Ss7Command.TcapContinue) {
             tracker.onDialogTouched(cmd.dialogId(), "Active", null, 0, 0);
+            exportSnapshotBestEffort(cmd.dialogId());
         }
     }
 

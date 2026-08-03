@@ -5,7 +5,7 @@ SS7 Resource Adaptor (SCTP → M3UA → SCCP → TCAP → MAP/CAP) for micro-jai
 ## Clustering / n-n (ADR 0001)
 
 - **P1 (shipped):** sticky dialog ownership write-through + outbound routing to the owner RA via Infinispan (`Ss7DialogOwnershipTracker`, `StickyRaCommandRouter`, `IspnStickyCommandBus`). Bind a `ClusterManager` with `Ss7ResourceAdaptor.setClusterManager(...)` before `raActive()`.
-- **P2 (not done):** TCAP CONTINUE after RA death requires jSS7 `exportDialog` / `importDialog` + multi-ASP network path.
+- **P2 (RA-wired, not STP-lab HA):** `Jss7TcapDialogFailoverPort` calls jSS7 `exportDialog` / `importDialog`, stores `TcapDialogSnapshotPayload` in ISPN, and registers `TcapMissingDialogResolver` for CONTINUE miss. Multi-ASP / MAP state / invoke timers remain open.
 
 Design: [`docs/adr/0001-ss7-ra-nn-tcap-failover.md`](../../docs/adr/0001-ss7-ra-nn-tcap-failover.md)
 
@@ -13,7 +13,6 @@ Design: [`docs/adr/0001-ss7-ra-nn-tcap-failover.md`](../../docs/adr/0001-ss7-ra-
 
 Use `Ss7ResourceAdaptor.isM3uaRouteReady()` for peer route readiness — never `isActive()` / `Ss7Stack.isStarted()` alone.
 
-## P2 TCAP export/import (spike)
+## jSS7 dependency
 
-jSS7 j25 coral-valley adds `TCAPProvider.exportDialog` / `importDialog`. This RA does **not** call them yet — bump/publish `ss7.version` `9.2.8-j25` with that API first, then wire `TcapDialogFailoverPort`. Sticky P1 ownership remains the supported path. See `docs/adr/0001-ss7-ra-nn-tcap-failover.md`.
-
+`ss7.version` = `9.2.8-j25`. Requires a local (or published) install of coral-valley `j25` that includes `exportDialog` / `importDialog` / `TcapMissingDialogResolver`.

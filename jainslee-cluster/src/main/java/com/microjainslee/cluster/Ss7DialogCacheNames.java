@@ -28,6 +28,12 @@ public final class Ss7DialogCacheNames {
     public static final String RA_DIALOG_OWNER = "ra-dialog-owner";
 
     /**
+     * Portable TCAP snapshot for CONTINUE takeover (P2): dialog key →
+     * {@link TcapDialogSnapshotPayload}. Not a live jSS7 {@code DialogImpl}.
+     */
+    public static final String TCAP_DIALOG_SNAPSHOT = "tcap-dialog-snapshot";
+
+    /**
      * Sticky outbound command bus (P1): envelopes targeted at an owner node.
      * Consumed by the RA on {@code targetNodeId} — same {@link ClusterManager}
      * fabric as meta/owner (never a second cluster).

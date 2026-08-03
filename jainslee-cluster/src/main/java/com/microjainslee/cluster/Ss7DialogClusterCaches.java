@@ -28,6 +28,7 @@ public final class Ss7DialogClusterCaches {
     private final Cache<String, TcapDialogMeta> metaCache;
     private final Cache<String, String> byRemoteCache;
     private final Cache<String, RaDialogOwner> ownerCache;
+    private final Cache<String, TcapDialogSnapshotPayload> snapshotCache;
     private final Cache<String, Object> stickyCommandCache;
 
     private Ss7DialogClusterCaches(ClusterManager clusterManager) {
@@ -41,6 +42,7 @@ public final class Ss7DialogClusterCaches {
         this.metaCache = clusterManager.getCache(Ss7DialogCacheNames.TCAP_DIALOG_META, mode);
         this.byRemoteCache = clusterManager.getCache(Ss7DialogCacheNames.TCAP_DIALOG_BY_REMOTE, mode);
         this.ownerCache = clusterManager.getCache(Ss7DialogCacheNames.RA_DIALOG_OWNER, mode);
+        this.snapshotCache = clusterManager.getCache(Ss7DialogCacheNames.TCAP_DIALOG_SNAPSHOT, mode);
         this.stickyCommandCache = clusterManager.getCache(Ss7DialogCacheNames.RA_STICKY_COMMANDS, stickyMode);
     }
 
@@ -68,6 +70,11 @@ public final class Ss7DialogClusterCaches {
         return ownerCache;
     }
 
+    /** P2 portable snapshots for CONTINUE takeover (never live DialogImpl). */
+    public Cache<String, TcapDialogSnapshotPayload> snapshotCache() {
+        return snapshotCache;
+    }
+
     /**
      * Sticky outbound command envelopes ({@code envelopeId → Object}).
      * Values are typed by ra-jss7 ({@code Ss7StickyCommandEnvelope}); stored as
@@ -75,6 +82,21 @@ public final class Ss7DialogClusterCaches {
      */
     public Cache<String, Object> stickyCommandCache() {
         return stickyCommandCache;
+    }
+
+    public void putSnapshot(TcapDialogSnapshotPayload snapshot) {
+        Objects.requireNonNull(snapshot, "snapshot");
+        snapshotCache.put(snapshot.dialogKey(), snapshot);
+    }
+
+    public TcapDialogSnapshotPayload getSnapshot(String dialogKey) {
+        return dialogKey == null ? null : snapshotCache.get(dialogKey);
+    }
+
+    public void removeSnapshot(String dialogKey) {
+        if (dialogKey != null) {
+            snapshotCache.remove(dialogKey);
+        }
     }
 
     /**
@@ -97,6 +119,7 @@ public final class Ss7DialogClusterCaches {
         if (previous != null && previous.remoteOtid() != null) {
             byRemoteCache.remove(previous.remoteIndexKey());
         }
+        snapshotCache.remove(dialogKey);
     }
 
     /**

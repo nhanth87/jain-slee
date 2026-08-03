@@ -132,22 +132,57 @@ class Ss7DialogClusterCachesTest {
                 "rm-1", 1L, new byte[] {1}, 1, 8, 2, 6, "Active",
                 manager.getNodeId(), "ra", 0L, "aci", null, 1L);
         caches.putMeta(meta);
+        caches.putSnapshot(new TcapDialogSnapshotPayload(
+                "rm-1", 1L, new byte[] {1},
+                TcapDialogSnapshotPayload.PortableSccpAddress.pcSsn(1, 8),
+                TcapDialogSnapshotPayload.PortableSccpAddress.pcSsn(2, 6),
+                "Active", null, 1L, 0, 8, 2, 0, false, null, 1L));
         caches.tryPutOwnerIfAbsent(new RaDialogOwner("rm-1", manager.getNodeId(), "ra", 0L, 1L));
         caches.removeMeta("rm-1");
         caches.removeOwner("rm-1");
         assertThat(caches.metaCache().get("rm-1")).isNull();
+        assertThat(caches.getSnapshot("rm-1")).isNull();
         assertThat(caches.getOwner("rm-1")).isNull();
         assertThat(caches.byRemoteCache().get(meta.remoteIndexKey())).isNull();
+    }
+
+    @Test
+    void putGetSnapshot() {
+        TcapDialogSnapshotPayload snap = new TcapDialogSnapshotPayload(
+                "snap-1",
+                7L,
+                new byte[] {1, 2},
+                TcapDialogSnapshotPayload.PortableSccpAddress.pcSsn(1, 8),
+                TcapDialogSnapshotPayload.PortableSccpAddress.pcSsn(2, 6),
+                "Active",
+                null,
+                System.nanoTime(),
+                0,
+                8,
+                2,
+                1,
+                false,
+                new boolean[8],
+                System.currentTimeMillis());
+        caches.putSnapshot(snap);
+        assertThat(caches.getSnapshot("snap-1")).isEqualTo(snap);
+        assertThat(caches.snapshotCache().getCacheConfiguration().clustering().cacheMode())
+                .isEqualTo(CacheMode.LOCAL);
     }
 
     @Test
     void marshallingAllowListAcceptsSs7DialogTypes() {
         assertThat(MarshallingAllowList.isAllowedClass(TcapDialogMeta.class)).isTrue();
         assertThat(MarshallingAllowList.isAllowedClass(RaDialogOwner.class)).isTrue();
+        assertThat(MarshallingAllowList.isAllowedClass(TcapDialogSnapshotPayload.class)).isTrue();
         MarshallingAllowList.assertMarshallable("meta", new TcapDialogMeta(
                 "k", 1L, new byte[] {1}, 1, 8, 2, 6, "Idle",
                 "n", "ra", 0L, null, null, 1L));
         MarshallingAllowList.assertMarshallable(
                 "owner", new RaDialogOwner("d", "n", "ra", 0L, 1L));
+        MarshallingAllowList.assertMarshallable("snap", new TcapDialogSnapshotPayload(
+                "k", 1L, null,
+                TcapDialogSnapshotPayload.PortableSccpAddress.pcSsn(1, 8),
+                null, "Idle", null, 0L, 0, 8, 0, 0, false, null, 1L));
     }
 }

@@ -1,31 +1,60 @@
+/*
+ * micro-jainslee 1.2.0
+ * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
+ * Copyright (c) 2026 Tran Nhan (nhanth87). All rights reserved.
+ */
+
 package com.microjainslee.ra.jss7.cluster;
+
+import com.microjainslee.cluster.TcapDialogSnapshotPayload;
 
 import java.util.Optional;
 
 /**
- * SPIKE seam for TCAP dialog CONTINUE takeover after RA ownership move.
- * <p>
- * jSS7 j25 (coral-valley) now exposes {@code TCAPProvider.exportDialog} /
- * {@code importDialog} + {@code TcapDialogSnapshot}. This port is the RA-side
- * hook; it is <strong>not</strong> wired until {@code ra-jss7}'s
- * {@code ss7.version} artifact includes those methods (local {@code mvn install}
- * of jSS7 j25 or a published build). Calling the jSS7 API against an older jar
- * would break compile for ota-sim-push / CI.
- * <p>
- * <b>Not production HA:</b> even after wiring, multi-ASP routing, invoke/MAP
- * state, and timer completeness remain open (see ADR 0001).
+ * RA-side TCAP CONTINUE takeover seam (ADR 0001 P2).
+ *
+ * <p>Wired adapter calls jSS7 {@code TCAPProvider.exportDialog}/{@code importDialog}.
+ * Default {@link #unsupported()} keeps sticky P1-only behaviour.
+ *
+ * <p><b>Not production HA:</b> multi-ASP routing, invoke/MAP state, and timer
+ * completeness remain open even when this port is wired.
  */
 public interface TcapDialogFailoverPort {
 
     /**
-     * @return empty until jSS7 export/import is wired into this RA
+     * Export live dialog into ISPN-safe payload (and optionally write-through).
+     *
+     * @return empty when dialog missing or port unsupported
      */
-    Optional<Object> exportDialogSnapshot(long localOtid);
+    Optional<TcapDialogSnapshotPayload> exportAndStore(long localOtid);
 
     /**
-     * @return false until jSS7 import is wired into this RA
+     * Import a portable payload into this node's TCAP {@code dialogs} map.
+     *
+     * @return {@code true} when import succeeded
      */
-    boolean importDialogSnapshot(Object snapshot);
+    boolean importPayload(TcapDialogSnapshotPayload payload);
+
+    /**
+     * CONTINUE-miss / explicit failover: load snapshot from cluster cache,
+     * {@code importDialog}, and CAS ownership to this node when possible.
+     *
+     * @return {@code true} when dialog is present locally after the call
+     */
+    boolean tryTakeover(long localOtid);
+
+    /** @return empty until jSS7 export/import is wired into this RA */
+    default Optional<Object> exportDialogSnapshot(long localOtid) {
+        return exportAndStore(localOtid).map(p -> (Object) p);
+    }
+
+    /** @return false until jSS7 import is wired into this RA */
+    default boolean importDialogSnapshot(Object snapshot) {
+        if (snapshot instanceof TcapDialogSnapshotPayload payload) {
+            return importPayload(payload);
+        }
+        return false;
+    }
 
     /**
      * Default no-op port — sticky P1 path only.
@@ -33,12 +62,17 @@ public interface TcapDialogFailoverPort {
     static TcapDialogFailoverPort unsupported() {
         return new TcapDialogFailoverPort() {
             @Override
-            public Optional<Object> exportDialogSnapshot(long localOtid) {
+            public Optional<TcapDialogSnapshotPayload> exportAndStore(long localOtid) {
                 return Optional.empty();
             }
 
             @Override
-            public boolean importDialogSnapshot(Object snapshot) {
+            public boolean importPayload(TcapDialogSnapshotPayload payload) {
+                return false;
+            }
+
+            @Override
+            public boolean tryTakeover(long localOtid) {
                 return false;
             }
         };

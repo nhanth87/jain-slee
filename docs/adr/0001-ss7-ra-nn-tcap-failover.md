@@ -1,7 +1,7 @@
 # ADR 0001 — SS7 RA n-n topology and TCAP dialog failover
 
-- **Status:** Accepted (P1 shipped; P2 jSS7 export/import spike proven in unit test — not production HA)
-- **Date:** 2026-08-03 (P2 spike update: 2026-08-03)
+- **Status:** Accepted (P1 shipped; P2 RA-wired — not production / STP-lab HA)
+- **Date:** 2026-08-03 (P2 RA wire update: 2026-08-03)
 - **Deciders:** micro-jainslee maintainers
 - **Related code:** `jainslee-cluster`, `vendor-ras/ra-jss7`, jSS7 j25 `TCAPProviderImpl` / `DialogImpl`
 
@@ -13,16 +13,18 @@ Deployments want **n-n** signalling: RA node-1 ↔ STP1, …, RA-n ↔ STP-n, wi
 |------------|---------|
 | RA-n ↔ STP-n (per-node SCTP/M3UA) | **Yes** (config / `Ss7Config`) |
 | Cross-node SBB fan-in + sticky outbound to owner RA | **Yes (P1)** |
-| TCAP CONTINUE after owning RA death | **Spike only (P2)** — unit-test export/import; lab/multi-ASP still open |
+| TCAP CONTINUE after owning RA death | **RA-wired P2** — export/import + ISPN snapshot + CONTINUE-miss resolver; multi-ASP lab still open |
 
-jSS7 keeps `DialogImpl` in a JVM-local `NonBlockingHashMap` (`TCAPProviderImpl.dialogs`). CONTINUE for an unknown DTID yields `PAbortCauseType.UnrecognizedTxID`. **P2 spike** adds `TcapDialogSnapshot` + `TCAPProvider.exportDialog` / `importDialog` on jSS7 j25 (coral-valley); micro-jainslee still needs a published/`ss7.version` bump before RA wiring.
+jSS7 keeps `DialogImpl` in a JVM-local `NonBlockingHashMap` (`TCAPProviderImpl.dialogs`). CONTINUE for an unknown DTID yields `PAbortCauseType.UnrecognizedTxID` unless a `TcapMissingDialogResolver` supplies a snapshot for `importDialog`.
+
+**jSS7 artifact:** `ss7.version` = `9.2.8-j25` (local `mvn install` from coral-valley `j25` required for export/import + missing-dialog resolver).
 
 ## Decision
 
 1. **Sticky outbound (P1):** Continue/End/Abort/MAP for a dialog must go through the RA that owns the live jSS7 dialog (`StickyRaCommandRouter` + `ra-dialog-owner`). Missing owner or `isM3uaRouteReady()==false` → reject (honest).
 2. **Write-through (P1):** `Ss7DialogOwnershipTracker` mirrors meta/owner into ISPN when `ClusterManager` is bound; local-only when not.
 3. **Remote forward (P1):** `IspnStickyCommandBus` on cache `ra-jss7-sticky-cmd` — same `ClusterManager`, not a second fabric.
-4. **CONTINUE takeover (P2):** jSS7 export/import spike exists; full takeover still needs multi-ASP / same-identity network path, invoke/MAP state, and RA wiring.
+4. **CONTINUE takeover (P2 wired):** Owner RA exports jSS7 snapshots into ISPN-safe `TcapDialogSnapshotPayload`; survivor imports via `Jss7TcapDialogFailoverPort` / CONTINUE-miss resolver. Not full STP HA.
 
 ## P1 shipped
 
@@ -40,26 +42,27 @@ jSS7 keeps `DialogImpl` in a JVM-local `NonBlockingHashMap` (`TCAPProviderImpl.d
 |------------|-----|-------|------|-------|
 | `tcap-dialog-meta` | dialog key | `TcapDialogMeta` | `REPL_SYNC` / `LOCAL` | Write-through on Begin/Continue; remove on End |
 | `tcap-dialog-by-remote` | `remotePc:remoteOtid` | local dialog key | same | Peer-side lookup |
+| `tcap-dialog-snapshot` | dialog key | `TcapDialogSnapshotPayload` | same | P2 portable fields (no `org.restcomm.*`) |
 | `ra-dialog-owner` | SLEE `dialogId` | `RaDialogOwner` | same | Sticky fence + generation |
 | `ra-jss7-sticky-cmd` | envelope id | `Ss7StickyCommandEnvelope` | `DIST_SYNC` / `LOCAL` | P1 remote outbound |
 | `sbb-entity-state` / `slee-acnf` / `slee.queue.*` | — | — | existing | Unchanged |
 
-**Allow-list:** `com.microjainslee.*` only — never `org.restcomm.*` stack objects.
+**Allow-list:** `com.microjainslee.*` only — never `org.restcomm.*` stack objects. Snapshots map SCCP addresses to `PortableSccpAddress`.
 
-## P2 spike status (2026-08-03) — honesty first
+## P2 RA-wired status (2026-08-03) — honesty first
 
-**Not production failover.** Unit-test proof only on jSS7 j25.
+**Not production failover. Not STP multi-ASP lab HA.**
 
-### What works in unit test
+### What is wired
 
 | Item | Evidence |
 |------|----------|
-| `TcapDialogSnapshot` POJO | `tcap-api` — local/remote OTID, SCCP addresses, state, ACN OID, idle deadline, networkId, SSN, PC, seqControl, invoke-id bitmap |
-| `TCAPProvider.exportDialog(long)` | Returns snapshot; does not remove from `dialogs` |
-| `TCAPProvider.importDialog(snapshot)` | Registers rehydrated `DialogImpl` into `dialogs` |
-| CONTINUE after rehydrate | `TcapDialogExportImportTest` — same provider and second provider; `processContinue` delivers `onTCContinue`, no P-Abort |
-
-Tree: `worktrees/jSS7/coral-valley/jSS7` (branch `j25`).
+| jSS7 `TcapDialogSnapshot` + `exportDialog` / `importDialog` | coral-valley `j25`; unit tests 3/3 |
+| jSS7 `TcapMissingDialogResolver` on CONTINUE miss | `TCAPProviderImpl.tryImportMissingDialog` |
+| ISPN `TcapDialogSnapshotPayload` + `tcap-dialog-snapshot` | `jainslee-cluster` |
+| RA adapter | `Jss7TcapDialogFailoverPort` — export write-through, `tryTakeover`, CONTINUE-miss resolve |
+| RA lifecycle | `Ss7ResourceAdaptor` registers resolver on `raActive()`; exports on Begin/Continue |
+| Unit tests (no STP) | `Jss7TcapDialogFailoverPortTest`, `Ss7DialogClusterCachesTest`, sticky P1 tests |
 
 ### What still blocks real multi-node STP failover
 
@@ -68,13 +71,14 @@ Tree: `worktrees/jSS7/coral-valley/jSS7` (branch `j25`).
 - **Timers** — idle timer re-armed from deadline; invoke operation timers / live `InvokeImpl` objects are **not** restored.
 - **Invoke tables** — occupancy bitmap restored; outstanding operation objects / linked invokes are empty after import.
 - **MAP/CAP/INAP dialogue state** — above TCAP; not in snapshot.
-- **RA wiring** — `ra-jss7` still on sticky P1; needs jSS7 artifact with export/import (`ss7.version` rebuild/publish) before calling the API. Stub: `TcapDialogFailoverPort`.
-- **ISPN meta alone** — still insufficient without import into survivor `dialogs`.
+- **GT / complex SCCP address fidelity** — portable address stores RI + PC + SSN + GT digits only.
+- **Lab proof** — no multi-ASP STP soak; do not claim production HA.
 
 ```text
-TcapDialogSnapshot { long localOtid; byte[] remoteOtid; ... }
-TCAPProvider.exportDialog(long localOtid)
-TCAPProvider.importDialog(TcapDialogSnapshot)  // registers into dialogs map
+TcapDialogSnapshotPayload { dialogKey, localOtid, PortableSccpAddress, trState, ... }
+TCAPProvider.exportDialog(long) → map → ISPN tcap-dialog-snapshot
+CONTINUE miss → MissingDialogResolver → importDialog(snapshot)
+explicit: TcapDialogFailoverPort.tryTakeover(localOtid) + ownership CAS
 ```
 
 ## Network prerequisite (P2)
@@ -96,7 +100,7 @@ Multi-ASP loadshare under the **same** AS / OPC / SSN / RC (or equivalent). Diff
 |-------|--------|--------|
 | **P0** | Honesty docs; cache POJO skeleton | **Done** |
 | **P1** | Sticky owner + meta write-through + sticky bus + OTID config | **Done** |
-| **P2** | jSS7 export/import; rehydrate; multi-ASP lab | **Spike done (unit)** / lab+RA wiring open |
+| **P2** | jSS7 export/import; RA wire; ISPN snapshot; CONTINUE-miss | **RA-wired** / multi-ASP lab open |
 
 ### ACNF note
 
@@ -104,8 +108,7 @@ Multi-ASP loadshare under the **same** AS / OPC / SSN / RC (or equivalent). Diff
 
 ## References
 
-- `jainslee-cluster`: `Ss7DialogClusterCaches`, `TcapDialogMeta`, `RaDialogOwner`
-- `vendor-ras/ra-jss7`: `Ss7ResourceAdaptor`, `cluster/*`, `README.md`
+- `jainslee-cluster`: `Ss7DialogClusterCaches`, `TcapDialogMeta`, `TcapDialogSnapshotPayload`, `RaDialogOwner`
+- `vendor-ras/ra-jss7`: `Ss7ResourceAdaptor`, `Jss7TcapDialogFailoverPort`, `cluster/*`, `README.md`
 - AGENTS.md — LINK STATUS TRUTH
-- jSS7 j25: `TcapDialogSnapshot`, `TCAPProvider.exportDialog/importDialog`, `TcapDialogExportImportTest`
-- `vendor-ras/ra-jss7/.../TcapDialogFailoverPort` (stub; version bump required)
+- jSS7 j25: `TcapDialogSnapshot`, `TcapMissingDialogResolver`, `TCAPProvider.exportDialog/importDialog`, `TcapDialogExportImportTest`

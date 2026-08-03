@@ -14,8 +14,8 @@ import com.example.ms.quarkus.events.MsServiceCallEvent;
 import com.example.ms.quarkus.handlers.ServiceHandlers;
 import com.example.ms.quarkus.sbbs.MsAppBridgeSbb;
 import com.example.ms.quarkus.sbbs.MsGatewaySbb;
-import com.example.ms.quarkus.services.AppService;
-import com.example.ms.quarkus.services.SignalingService;
+import com.example.ms.quarkus.services.HttpRaService;
+import com.example.ms.quarkus.services.HttpSbbService;
 import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
@@ -47,11 +47,13 @@ import java.util.List;
  * <ol>
  *   <li>Ensure container STARTED</li>
  *   <li>{@link ClusterManager} + {@link MicrosleeMsSupport} ({@code @SleeService})</li>
- *   <li>{@code registerSbbType} → {@code createIesDispatcher} → {@code mapEventToSbb}</li>
- *   <li>{@code registerRa} for {@code ra-http-server}</li>
+ *   <li>Conditional SBB + HTTP RA wiring by local services</li>
  * </ol>
  *
- * <p>All demo HTTP rides the RA — Quarkus has no REST stack here.</p>
+ * <ul>
+ *   <li>{@code http-sbb} local (or SINGLE): gateway + bridge SBBs + HTTP RA ingress</li>
+ *   <li>{@code http-ra} only: HTTP RA for {@code /health} (no gateway SBB)</li>
+ * </ul>
  */
 @ApplicationScoped
 public class MsQuarkusBootstrap {
@@ -102,22 +104,32 @@ public class MsQuarkusBootstrap {
                 clusterManager,
                 config,
                 List.of(
-                        SleeServiceDescriptor.fromAnnotation(SignalingService.class),
-                        SleeServiceDescriptor.fromAnnotation(AppService.class)),
+                        SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
+                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)),
                 ServiceHandlers::forDescriptor);
 
         runtimeHolder.set(runtime);
 
-        wireSbbsAndHttpRa();
+        boolean wireGateway = config.mode() == DeploymentConfig.Mode.SINGLE
+                || config.isLocal("http-sbb");
+        boolean wireHttpRa = wireGateway || config.isLocal("http-ra");
 
-        LOG.info("Quarkus MS ready: mode={} nodeId={} clusterEnabled={} http.ra.port={} localServices={}",
+        if (wireGateway) {
+            wireGatewaySbbs();
+        }
+        if (wireHttpRa) {
+            wireHttpRa();
+        }
+
+        LOG.info("Quarkus MS ready: mode={} nodeId={} fabricClusterEnabled={} http.ra.port={} "
+                        + "gatewaySbbs={} httpRa={} localServices={}",
                 config.mode(),
                 nodeId,
                 clusterEnabled,
                 httpRaPort,
-                config.mode() == DeploymentConfig.Mode.SINGLE
-                        ? "signaling,app"
-                        : describeLocal(config));
+                wireGateway,
+                wireHttpRa,
+                describeLocal(config));
     }
 
     void onStop(@Observes ShutdownEvent ev) {
@@ -146,7 +158,7 @@ public class MsQuarkusBootstrap {
         }
     }
 
-    private void wireSbbsAndHttpRa() {
+    private void wireGatewaySbbs() {
         int droppedGw = container.getSbbTypeRegistry()
                 .unregisterByName(MsGatewaySbb.class.getSimpleName());
         int droppedApp = container.getSbbTypeRegistry()
@@ -162,7 +174,10 @@ public class MsQuarkusBootstrap {
         container.createIesDispatcher();
         container.mapEventToSbb(HttpWebRequestEvent.class, "MsGatewaySbb");
         container.mapEventToSbb(MsServiceCallEvent.class, "MsAppBridgeSbb");
+        LOG.info("Gateway SBBs registered (MsGatewaySbb, MsAppBridgeSbb)");
+    }
 
+    private void wireHttpRa() {
         HttpServerResourceAdaptor ra = new HttpServerResourceAdaptor();
         ra.setPort(httpRaPort);
         ra.setHost("0.0.0.0");
@@ -170,8 +185,7 @@ public class MsQuarkusBootstrap {
         httpEndpoint = new HttpServerRaEndpoint(ra);
         httpEndpoint.setPort(httpRaPort);
         container.registerRa(httpEndpoint, httpEndpoint);
-        LOG.info("ra-http-server registered on port {} (gateway=MsGatewaySbb, bridge=MsAppBridgeSbb)",
-                httpRaPort);
+        LOG.info("ra-http-server registered on port {}", httpRaPort);
     }
 
     /** Bound HTTP RA port (useful for tests with {@code http.ra.port=0}). */
@@ -181,8 +195,11 @@ public class MsQuarkusBootstrap {
     }
 
     private static String describeLocal(DeploymentConfig config) {
+        if (config.mode() == DeploymentConfig.Mode.SINGLE) {
+            return "http-ra,http-sbb";
+        }
         StringBuilder sb = new StringBuilder();
-        for (String name : List.of("signaling", "app")) {
+        for (String name : List.of("http-ra", "http-sbb")) {
             if (config.isLocal(name)) {
                 if (!sb.isEmpty()) {
                     sb.append(',');

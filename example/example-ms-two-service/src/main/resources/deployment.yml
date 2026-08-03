@@ -1,5 +1,5 @@
 # Default demo topology — single JVM runs everything in-process (Direct client).
-# For cluster demos, set mode: cluster and JAINSLEE_NODE_ID=node-1|node-2.
+# For multi-process demos, set mode: micro-services and JAINSLEE_NODE_ID=node-1|node-2.
 mode: single
 
 nodes:

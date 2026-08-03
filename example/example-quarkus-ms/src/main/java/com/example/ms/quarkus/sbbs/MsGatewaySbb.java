@@ -37,14 +37,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Single HTTP gateway SBB for the MS demo. {@code ra-http-server} fires
+ * HTTP gateway SBB for the MS demo. {@code ra-http-server} fires
  * {@link HttpWebRequestEvent}; this SBB dispatches by path, uses
- * {@link MicrosleeBootstrap#client} for demo signaling ops, and replies on the
- * injected {@code http-server-ra} command port.
- *
- * <p>Call/notify are done inline (not via nested {@code routeEvent}+wait) so the
- * EventRouter worker is never blocked. Sibling {@link MsAppBridgeSbb} owns the
- * local {@code MsServiceCallEvent} path for SBB-to-SBB MS invocations.</p>
+ * {@link MicrosleeBootstrap#client}({@code "http-ra"}) for leaf ops, and replies
+ * on the injected {@code http-server-ra} command port.
  */
 public final class MsGatewaySbb implements Sbb, SleeEventHandler {
 
@@ -113,11 +109,13 @@ public final class MsGatewaySbb implements Sbb, SleeEventHandler {
         if ("GET".equals(method) && "/api/ms/state".equals(path)) {
             return state();
         }
-        if ("POST".equals(method) && "/api/demo/call-signaling".equals(path)) {
-            return invokeSignaling(req, false);
+        if ("POST".equals(method) && ("/api/demo/call-ra".equals(path)
+                || "/api/demo/call-signaling".equals(path))) {
+            return invokeHttpRa(req, false);
         }
-        if ("POST".equals(method) && "/api/demo/notify-signaling".equals(path)) {
-            return invokeSignaling(req, true);
+        if ("POST".equals(method) && ("/api/demo/notify-ra".equals(path)
+                || "/api/demo/notify-signaling".equals(path))) {
+            return invokeHttpRa(req, true);
         }
         return HttpReply.notFound();
     }
@@ -133,8 +131,8 @@ public final class MsGatewaySbb implements Sbb, SleeEventHandler {
         body.put("mode", cfg.mode().name());
         body.put("nodeId", cfg.myNodeId() == null ? "single" : cfg.myNodeId());
         body.put("local", Map.of(
-                "signaling", cfg.isLocal("signaling"),
-                "app", cfg.isLocal("app")));
+                "http-ra", cfg.isLocal("http-ra"),
+                "http-sbb", cfg.isLocal("http-sbb")));
         return HttpReply.json(toJson(body));
     }
 
@@ -148,19 +146,19 @@ public final class MsGatewaySbb implements Sbb, SleeEventHandler {
             local.put(e.getKey(), e.getValue().name());
         }
         Map<String, Object> remote = new LinkedHashMap<>();
-        for (String name : new String[]{"signaling", "app"}) {
+        for (String name : new String[]{"http-ra", "http-sbb"}) {
             remote.put(name, rt.transport().stateOf(name).name());
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("localStates", local);
         out.put("ispnStates", remote);
         out.put("counters", Map.of(
-                "signalingCalls", ServiceHandlers.signalingCalls(),
-                "appCalls", ServiceHandlers.appCalls()));
+                "httpRaCalls", ServiceHandlers.httpRaCalls(),
+                "httpSbbCalls", ServiceHandlers.httpSbbCalls()));
         return HttpReply.json(toJson(out));
     }
 
-    private HttpReply invokeSignaling(HttpWebRequestEvent req, boolean notifyOnly) {
+    private HttpReply invokeHttpRa(HttpWebRequestEvent req, boolean notifyOnly) {
         if (!runtimeHolder.isReady()) {
             return HttpReply.json(503, "{\"error\":\"STARTING\"}");
         }
@@ -176,19 +174,19 @@ public final class MsGatewaySbb implements Sbb, SleeEventHandler {
         SleeRequest sleeReq = new SleeRequest(op, payload);
 
         if (notifyOnly) {
-            boot.client("signaling").notify(sleeReq);
-            LOG.info("[gateway] notify signaling op={}", op);
+            boot.client("http-ra").notify(sleeReq);
+            LOG.info("[gateway] notify http-ra op={}", op);
             return HttpReply.json(toJson(Map.of("notified", true, "op", op)));
         }
 
-        SleeResponse resp = boot.client("signaling").call(sleeReq);
-        LOG.info("[gateway] call signaling op={} success={}", op, resp.success());
+        SleeResponse resp = boot.client("http-ra").call(sleeReq);
+        LOG.info("[gateway] call http-ra op={} success={}", op, resp.success());
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("success", resp.success());
         out.put("payload", new String(resp.payload(), StandardCharsets.UTF_8));
         out.put("error", resp.errorMessage() == null ? "" : resp.errorMessage());
-        out.put("viaLocal", runtimeHolder.get().config().isLocal("signaling"));
+        out.put("viaLocal", runtimeHolder.get().config().isLocal("http-ra"));
         return resp.success()
                 ? HttpReply.json(toJson(out))
                 : HttpReply.json(502, toJson(out));

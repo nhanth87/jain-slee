@@ -26,7 +26,7 @@ import org.apache.logging.log4j.Logger;
 
 /**
  * App-side bridge SBB: receives {@link MsServiceCallEvent} and talks to the
- * {@code signaling} microservice through {@link MicrosleeBootstrap#client}
+ * {@code http-ra} microservice through {@link MicrosleeBootstrap#client}
  * (Direct or Infinispan — transparent to this SBB).
  */
 public final class MsAppBridgeSbb implements Sbb, SleeEventHandler {
@@ -73,17 +73,17 @@ public final class MsAppBridgeSbb implements Sbb, SleeEventHandler {
             MicrosleeBootstrap boot = runtimeHolder.get().bootstrap();
             SleeRequest req = new SleeRequest(call.operation(), call.payload());
             if (call.notifyOnly()) {
-                boot.client("signaling").notify(req);
+                boot.client("http-ra").notify(req);
                 call.response().complete(SleeResponse.ok(new byte[0]));
-                LOG.info("[MsAppBridge] notify signaling op={}", call.operation());
+                LOG.info("[MsAppBridge] notify http-ra op={}", call.operation());
             } else {
-                SleeResponse resp = boot.client("signaling").call(req);
+                SleeResponse resp = boot.client("http-ra").call(req);
                 call.response().complete(resp);
-                LOG.info("[MsAppBridge] call signaling op={} success={}",
+                LOG.info("[MsAppBridge] call http-ra op={} success={}",
                         call.operation(), resp.success());
             }
         } catch (RuntimeException ex) {
-            LOG.error("[MsAppBridge] signaling invoke failed op={}", call.operation(), ex);
+            LOG.error("[MsAppBridge] http-ra invoke failed op={}", call.operation(), ex);
             call.response().completeExceptionally(ex);
         }
     }

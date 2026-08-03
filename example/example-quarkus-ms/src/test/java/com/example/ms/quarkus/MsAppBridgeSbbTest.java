@@ -14,8 +14,8 @@ import com.example.ms.quarkus.bootstrap.MsRuntimeHolder;
 import com.example.ms.quarkus.events.MsServiceCallEvent;
 import com.example.ms.quarkus.handlers.ServiceHandlers;
 import com.example.ms.quarkus.sbbs.MsAppBridgeSbb;
-import com.example.ms.quarkus.services.AppService;
-import com.example.ms.quarkus.services.SignalingService;
+import com.example.ms.quarkus.services.HttpRaService;
+import com.example.ms.quarkus.services.HttpSbbService;
 import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
@@ -36,8 +36,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Delivers {@link MsServiceCallEvent} on its own activity (no nested wait
- * inside an HTTP handler) so {@link MsAppBridgeSbb} is proven on the SLEE plane.
+ * Delivers {@link MsServiceCallEvent} on its own activity so
+ * {@link MsAppBridgeSbb} is proven on the SLEE plane.
  */
 class MsAppBridgeSbbTest {
 
@@ -66,8 +66,8 @@ class MsAppBridgeSbbTest {
                 clusterManager,
                 DeploymentConfig.singleNode(),
                 List.of(
-                        SleeServiceDescriptor.fromAnnotation(SignalingService.class),
-                        SleeServiceDescriptor.fromAnnotation(AppService.class)),
+                        SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
+                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)),
                 ServiceHandlers::forDescriptor);
         holder.set(runtime);
 
@@ -90,7 +90,7 @@ class MsAppBridgeSbbTest {
     }
 
     @Test
-    void bridgeCallSignalingViaLocalEvent() throws Exception {
+    void bridgeCallHttpRaViaLocalEvent() throws Exception {
         MsServiceCallEvent call = new MsServiceCallEvent(
                 "echo", "hi".getBytes(StandardCharsets.UTF_8), false);
         container.routeEvent(call, container.createActivityContext("bridge-test"));
@@ -98,6 +98,6 @@ class MsAppBridgeSbbTest {
         SleeResponse resp = call.response().get(5, TimeUnit.SECONDS);
         assertTrue(resp.success());
         assertEquals("echo:hi", new String(resp.payload(), StandardCharsets.UTF_8));
-        assertEquals(1, ServiceHandlers.signalingCalls());
+        assertEquals(1, ServiceHandlers.httpRaCalls());
     }
 }

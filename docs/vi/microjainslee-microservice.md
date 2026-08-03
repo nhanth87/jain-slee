@@ -497,7 +497,7 @@ public class ServiceA extends AbstractRa {
 ```yaml
 # deployment.yml — chỉ cần file này thay đổi khi deploy
 
-mode: cluster   # single | cluster
+mode: micro-services   # single | micro-services (cluster = deprecated alias)
 
 services:
   service-a:
@@ -1073,7 +1073,7 @@ package com.microjainslee.ms.core.config;
  */
 public final class DeploymentConfig {
 
-    public enum Mode { SINGLE, CLUSTER }
+    public enum Mode { SINGLE, MICROSERVICES }
 
     private final Mode mode;
     private final String myNodeId;         // từ env: JAINSLEE_NODE_ID
@@ -1111,7 +1111,7 @@ public record ServiceAssignment(
 **deployment.yml:**
 
 ```yaml
-mode: cluster                # single | cluster
+mode: micro-services         # single | micro-services
 my-node-env-var: JAINSLEE_NODE_ID   # env var chứa node id
 
 nodes:

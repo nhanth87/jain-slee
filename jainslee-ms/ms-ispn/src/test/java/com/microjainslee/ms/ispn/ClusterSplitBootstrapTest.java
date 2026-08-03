@@ -72,7 +72,7 @@ class ClusterSplitBootstrapTest {
         transport.publishState("signaling", ServiceState.READY);
 
         DeploymentConfig cfg = DeploymentConfig.builder()
-                .mode(DeploymentConfig.Mode.CLUSTER)
+                .mode(DeploymentConfig.Mode.MICROSERVICES)
                 .myNodeId("node-2")
                 .node("node-1", "127.0.0.1", 9000)
                 .node("node-2", "127.0.0.1", 9000)

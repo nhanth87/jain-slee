@@ -29,8 +29,16 @@ import java.util.Objects;
  */
 public final class DeploymentConfig {
 
+    /**
+     * Topology mode: {@link #SINGLE} runs every service in this JVM;
+     * {@link #MICROSERVICES} activates only services assigned to {@code myNodeId}.
+     *
+     * <p>Do not confuse with {@code jainslee.ms.cluster-enabled} / JGroups —
+     * that flag is the Infinispan transport fabric, not service placement.</p>
+     */
     public enum Mode {
-        SINGLE, CLUSTER
+        SINGLE,
+        MICROSERVICES
     }
 
     private final Mode mode;
@@ -47,9 +55,10 @@ public final class DeploymentConfig {
         this.myNodeId = myNodeId;
         this.nodes = Collections.unmodifiableMap(new LinkedHashMap<>(nodes));
         this.services = Collections.unmodifiableMap(new LinkedHashMap<>(services));
-        if (mode == Mode.CLUSTER) {
+        if (mode == Mode.MICROSERVICES) {
             if (myNodeId == null || myNodeId.isBlank()) {
-                throw new IllegalArgumentException("CLUSTER mode requires myNodeId (JAINSLEE_NODE_ID)");
+                throw new IllegalArgumentException(
+                        "MICROSERVICES mode requires myNodeId (JAINSLEE_NODE_ID)");
             }
             for (Map.Entry<String, ServiceAssignment> e : services.entrySet()) {
                 if (!nodes.containsKey(e.getValue().nodeId())) {
@@ -170,7 +179,7 @@ public final class DeploymentConfig {
             if (indent == 0 && trimmed.contains(":")) {
                 String[] kv = splitKv(trimmed);
                 if ("mode".equalsIgnoreCase(kv[0])) {
-                    mode = Mode.valueOf(kv[1].trim().toUpperCase(Locale.ROOT));
+                    mode = parseMode(kv[1].trim());
                 }
                 continue;
             }
@@ -201,6 +210,26 @@ public final class DeploymentConfig {
         }
 
         return new DeploymentConfig(mode, myNodeId, nodes, services);
+    }
+
+    /**
+     * Parse topology mode from YAML. Accepts {@code single}, {@code micro-services}
+     * (also {@code microservices} / {@code micro_services}), and deprecated
+     * alias {@code cluster} → {@link Mode#MICROSERVICES}.
+     */
+    static Mode parseMode(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Mode.SINGLE;
+        }
+        String n = raw.trim().toLowerCase(Locale.ROOT).replace('_', '-');
+        return switch (n) {
+            case "single" -> Mode.SINGLE;
+            case "micro-services", "microservices" -> Mode.MICROSERVICES;
+            case "cluster" -> Mode.MICROSERVICES; // deprecated alias
+            default -> throw new IllegalArgumentException(
+                    "Unknown deployment mode '" + raw
+                            + "' (expected single | micro-services)");
+        };
     }
 
     private static String stripComment(String raw) {

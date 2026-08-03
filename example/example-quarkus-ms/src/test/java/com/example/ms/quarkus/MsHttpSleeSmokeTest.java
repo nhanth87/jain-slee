@@ -15,8 +15,8 @@ import com.example.ms.quarkus.events.MsServiceCallEvent;
 import com.example.ms.quarkus.handlers.ServiceHandlers;
 import com.example.ms.quarkus.sbbs.MsAppBridgeSbb;
 import com.example.ms.quarkus.sbbs.MsGatewaySbb;
-import com.example.ms.quarkus.services.AppService;
-import com.example.ms.quarkus.services.SignalingService;
+import com.example.ms.quarkus.services.HttpRaService;
+import com.example.ms.quarkus.services.HttpSbbService;
 import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * End-to-end smoke through real {@code ra-http-server} → {@link MsGatewaySbb}
- * → {@link MsAppBridgeSbb} → {@code SleeServiceClient} (no Quarkus CDI).
+ * → {@code SleeServiceClient("http-ra")} (no Quarkus CDI).
  */
 class MsHttpSleeSmokeTest {
 
@@ -75,8 +75,8 @@ class MsHttpSleeSmokeTest {
                 clusterManager,
                 DeploymentConfig.singleNode(),
                 List.of(
-                        SleeServiceDescriptor.fromAnnotation(SignalingService.class),
-                        SleeServiceDescriptor.fromAnnotation(AppService.class)),
+                        SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
+                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)),
                 ServiceHandlers::forDescriptor);
         holder.set(runtime);
 
@@ -129,16 +129,17 @@ class MsHttpSleeSmokeTest {
         assertEquals(200, resp.statusCode(), resp.body());
         assertTrue(resp.body().contains("\"status\":\"UP\""), resp.body());
         assertTrue(resp.body().contains("\"mode\":\"SINGLE\""), resp.body());
-        assertTrue(resp.body().contains("\"signaling\":true"), resp.body());
+        assertTrue(resp.body().contains("\"http-ra\":true"), resp.body());
+        assertTrue(resp.body().contains("\"http-sbb\":true"), resp.body());
     }
 
     @Test
-    void callSignalingPingViaSbbChain() throws Exception {
+    void callHttpRaPingViaSbbChain() throws Exception {
         HttpClient http = HttpClient.newHttpClient();
         HttpResponse<String> resp = http.send(
                 HttpRequest.newBuilder()
                         .uri(URI.create("http://127.0.0.1:" + port
-                                + "/api/demo/call-signaling?op=ping"))
+                                + "/api/demo/call-ra?op=ping"))
                         .header("Content-Type", "text/plain")
                         .timeout(Duration.ofSeconds(10))
                         .POST(HttpRequest.BodyPublishers.ofString("", StandardCharsets.UTF_8))
@@ -148,6 +149,6 @@ class MsHttpSleeSmokeTest {
         assertTrue(resp.body().contains("\"success\":true"), resp.body());
         assertTrue(resp.body().contains("\"payload\":\"pong\""), resp.body());
         assertTrue(resp.body().contains("\"viaLocal\":true"), resp.body());
-        assertEquals(1, ServiceHandlers.signalingCalls());
+        assertEquals(1, ServiceHandlers.httpRaCalls());
     }
 }

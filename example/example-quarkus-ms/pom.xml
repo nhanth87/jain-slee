@@ -12,8 +12,8 @@
     <name>micro-jainslee example :: Quarkus Microservice (ISPN)</name>
     <description>
         Quarkus 3 CDI host + ra-http-server gateway SBB for the micro-jainslee
-        microservice layer: @SleeService signaling + app, Direct (single) or
-        Infinispan queue (cluster). All demo HTTP rides SLEE (no Quarkus REST).
+        microservice layer: @SleeService http-ra + http-sbb, Direct (single) or
+        Infinispan queue (micro-services). All demo HTTP rides SLEE (no Quarkus REST).
     </description>
 
     <properties>

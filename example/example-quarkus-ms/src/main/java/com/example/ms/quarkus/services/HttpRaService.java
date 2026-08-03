@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0
+ * micro-jainslee 1.2.0
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -14,13 +14,12 @@ import com.microjainslee.ms.api.TransportType;
 import com.microjainslee.ms.api.annotation.SleeService;
 
 /**
- * Application service that depends on {@code signaling}. Calls go Direct
- * (same JVM) or via Infinispan queue (cross-node).
+ * Leaf MS service hosted with {@code ra-http-server} on {@code node-ra}.
+ * In micro-services mode other nodes call it via Infinispan queue.
  */
 @SleeService(
-        name = "app",
+        name = "http-ra",
         transport = TransportType.INFINISPAN_QUEUE,
-        dependsOn = {"signaling"},
-        startPriority = 20)
-public final class AppService {
+        startPriority = 10)
+public final class HttpRaService {
 }

@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0
+ * micro-jainslee 1.2.0
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -11,8 +11,8 @@
 package com.example.ms.quarkus;
 
 import com.example.ms.quarkus.handlers.ServiceHandlers;
-import com.example.ms.quarkus.services.AppService;
-import com.example.ms.quarkus.services.SignalingService;
+import com.example.ms.quarkus.services.HttpRaService;
+import com.example.ms.quarkus.services.HttpSbbService;
 import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
@@ -39,7 +39,7 @@ class MsBootstrapLogicTest {
     private MicroSleeContainer container;
     private ClusterManager clusterManager;
     private MicrosleeMsSupport.MsRuntime runtime;
-    private IspnQueueServer remoteSignaling;
+    private IspnQueueServer remoteHttpRa;
 
     @BeforeEach
     void setUp() {
@@ -54,9 +54,9 @@ class MsBootstrapLogicTest {
             runtime.bootstrap().stop();
             runtime = null;
         }
-        if (remoteSignaling != null) {
-            remoteSignaling.stop();
-            remoteSignaling = null;
+        if (remoteHttpRa != null) {
+            remoteHttpRa.stop();
+            remoteHttpRa = null;
         }
         if (clusterManager != null) {
             clusterManager.stop();
@@ -77,40 +77,39 @@ class MsBootstrapLogicTest {
                 clusterManager,
                 DeploymentConfig.singleNode(),
                 List.of(
-                        SleeServiceDescriptor.fromAnnotation(SignalingService.class),
-                        SleeServiceDescriptor.fromAnnotation(AppService.class)),
+                        SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
+                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)),
                 ServiceHandlers::forDescriptor);
 
-        SleeResponse resp = runtime.bootstrap().client("signaling")
+        SleeResponse resp = runtime.bootstrap().client("http-ra")
                 .call(new SleeRequest("ping", new byte[0]));
         assertTrue(resp.success());
         assertEquals("pong", new String(resp.payload(), StandardCharsets.UTF_8));
-        assertEquals(1, ServiceHandlers.signalingCalls());
-        assertTrue(runtime.config().isLocal("signaling"));
+        assertEquals(1, ServiceHandlers.httpRaCalls());
+        assertTrue(runtime.config().isLocal("http-ra"));
     }
 
     @Test
-    void clusterAppNodeCallsRemoteSignaling() throws Exception {
-        clusterManager = new ClusterManager(MicroSleeConfiguration.defaults(), "node-app");
+    void microServicesSbbNodeCallsRemoteHttpRa() throws Exception {
+        clusterManager = new ClusterManager(MicroSleeConfiguration.defaults(), "node-sbb");
         clusterManager.start();
 
-        // Pretend signaling is hosted elsewhere on the same cache manager
-        remoteSignaling = new IspnQueueServer(
-                "signaling",
+        remoteHttpRa = new IspnQueueServer(
+                "http-ra",
                 new com.microjainslee.ms.ispn.IspnTransportManager(clusterManager),
                 ServiceHandlers.forDescriptor(
-                        SleeServiceDescriptor.fromAnnotation(SignalingService.class)));
-        remoteSignaling.start();
+                        SleeServiceDescriptor.fromAnnotation(HttpRaService.class)));
+        remoteHttpRa.start();
         new com.microjainslee.ms.ispn.IspnTransportManager(clusterManager)
-                .publishState("signaling", ServiceState.READY);
+                .publishState("http-ra", ServiceState.READY);
 
         DeploymentConfig cfg = DeploymentConfig.builder()
-                .mode(DeploymentConfig.Mode.CLUSTER)
-                .myNodeId("node-app")
-                .node("node-signaling", "127.0.0.1", 9000)
-                .node("node-app", "127.0.0.1", 9000)
-                .service("signaling", "node-signaling")
-                .service("app", "node-app")
+                .mode(DeploymentConfig.Mode.MICROSERVICES)
+                .myNodeId("node-sbb")
+                .node("node-ra", "127.0.0.1", 9000)
+                .node("node-sbb", "127.0.0.1", 9000)
+                .service("http-ra", "node-ra")
+                .service("http-sbb", "node-sbb")
                 .build();
 
         runtime = MicrosleeMsSupport.start(
@@ -118,14 +117,14 @@ class MsBootstrapLogicTest {
                 clusterManager,
                 cfg,
                 List.of(
-                        SleeServiceDescriptor.fromAnnotation(SignalingService.class),
-                        SleeServiceDescriptor.fromAnnotation(AppService.class)),
+                        SleeServiceDescriptor.fromAnnotation(HttpRaService.class),
+                        SleeServiceDescriptor.fromAnnotation(HttpSbbService.class)),
                 ServiceHandlers::forDescriptor);
 
-        assertFalse(cfg.isLocal("signaling"));
-        assertTrue(cfg.isLocal("app"));
+        assertFalse(cfg.isLocal("http-ra"));
+        assertTrue(cfg.isLocal("http-sbb"));
 
-        SleeResponse resp = runtime.bootstrap().client("signaling")
+        SleeResponse resp = runtime.bootstrap().client("http-ra")
                 .call(new SleeRequest("echo", "x".getBytes(StandardCharsets.UTF_8)));
         assertTrue(resp.success());
         assertEquals("echo:x", new String(resp.payload(), StandardCharsets.UTF_8));

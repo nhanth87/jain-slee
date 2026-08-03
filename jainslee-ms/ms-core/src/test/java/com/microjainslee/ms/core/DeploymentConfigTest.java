@@ -20,23 +20,38 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DeploymentConfigTest {
 
     @Test
-    void parseClusterYaml() {
+    void parseMicroServicesYaml() {
         String yaml = """
-                mode: cluster
+                mode: micro-services
 
                 nodes:
                   node-1: { host: "10.0.0.1", base-port: 9000 }
                   node-2: { host: "10.0.0.2", base-port: 9000 }
 
                 services:
-                  signaling: { node: node-1, transport: INFINISPAN_QUEUE, port: 9001 }
-                  app: { node: node-2, transport: INFINISPAN_QUEUE, port: 9002 }
+                  http-ra: { node: node-1, transport: INFINISPAN_QUEUE, port: 9001 }
+                  http-sbb: { node: node-2, transport: INFINISPAN_QUEUE, port: 9002 }
                 """;
         DeploymentConfig cfg = DeploymentConfig.loadYaml(yaml, "node-2");
-        assertEquals(DeploymentConfig.Mode.CLUSTER, cfg.mode());
-        assertTrue(cfg.isLocal("app"));
-        assertFalse(cfg.isLocal("signaling"));
-        assertEquals("node-1", cfg.getService("signaling").nodeId());
+        assertEquals(DeploymentConfig.Mode.MICROSERVICES, cfg.mode());
+        assertTrue(cfg.isLocal("http-sbb"));
+        assertFalse(cfg.isLocal("http-ra"));
+        assertEquals("node-1", cfg.getService("http-ra").nodeId());
+    }
+
+    @Test
+    void clusterAliasMapsToMicroServices() {
+        String yaml = """
+                mode: cluster
+
+                nodes:
+                  node-1: { host: "10.0.0.1", base-port: 9000 }
+
+                services:
+                  http-ra: { node: node-1, transport: INFINISPAN_QUEUE, port: 9001 }
+                """;
+        DeploymentConfig cfg = DeploymentConfig.loadYaml(yaml, "node-1");
+        assertEquals(DeploymentConfig.Mode.MICROSERVICES, cfg.mode());
     }
 
     @Test

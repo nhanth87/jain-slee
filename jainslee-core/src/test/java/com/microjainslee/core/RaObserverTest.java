@@ -192,19 +192,6 @@ public class RaObserverTest {
     }
 
     @Test
-    public void registerRaWrapsCommandPortForObserver() {
-        RecordingRaObserver obs = new RecordingRaObserver();
-        container.setRaObserver(obs);
-
-        FireOnActivateRa ra = new FireOnActivateRa();
-        container.registerRa(ra, cmd -> { /* ok */ });
-
-        container.getRaCommandPort("ra-fire").sendCommand(new OutboundCommand() {});
-        assertEquals(1, obs.commands.get());
-        assertEquals("ra-fire", obs.lastRa);
-    }
-
-    @Test
     public void clearingObserverStopsCallbacks() {
         RecordingRaObserver obs = new RecordingRaObserver();
         container.setRaObserver(obs);

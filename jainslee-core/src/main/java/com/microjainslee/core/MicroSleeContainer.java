@@ -180,6 +180,8 @@ public final class MicroSleeContainer {
     // true. Stored as java.lang.Object so the kernel stays free of any
     // jainslee-cluster compile-time dependency.
     private volatile Object clusterManager;
+    /** RA observability seam — set once by an embedder, checked on every RA path. */
+    private volatile RaObserver raObserver;
 
     public MicroSleeContainer() {
         this(MicroSleeConfiguration.defaults());
@@ -665,7 +667,7 @@ public final class MicroSleeContainer {
         for (RaEndpointPort endpoint : endpointPorts.values()) {
             String name = endpoint.getRaName();
             SleeEndpointPortImpl sleeEndpoint = new SleeEndpointPortImpl(this, name);
-            RaBootstrapPort bootstrap = new BootstrapPortAdapter(sleeEndpoint);
+            RaBootstrapPort bootstrap = new BootstrapPortAdapter(this, sleeEndpoint);
             try {
                 endpoint.activate(bootstrap);
                 LOG.info("Activated local RA endpoint: {}", name);
@@ -1186,12 +1188,15 @@ public final class MicroSleeContainer {
             throw new IllegalArgumentException("RaEndpointPort.getRaName() must return a non-blank name");
         }
         endpointPorts.put(name, endpoint);
-        raCommandPorts.put(name, command);
+        // Always wrap so RaObserver sees @InjectRa / getRaCommandPort traffic.
+        // Do not put the raw command here — that bypassed ObservingRaCommandPort
+        // and left jainslee_ra_commands_sent_total stuck at 0 for registerRa() RAs.
+        registerRaCommandPort(name, command);
         LOG.info("Registered local RA: {}", name);
         // If the container is already started, activate immediately.
         if (state == State.STARTED) {
             SleeEndpointPortImpl sleeEndpoint = new SleeEndpointPortImpl(this, name);
-            RaBootstrapPort bootstrap = new BootstrapPortAdapter(sleeEndpoint);
+            RaBootstrapPort bootstrap = new BootstrapPortAdapter(this, sleeEndpoint);
             try {
                 endpoint.activate(bootstrap);
                 LOG.info("Activated local RA endpoint (hot-register): {}", name);
@@ -2039,10 +2044,67 @@ public final class MicroSleeContainer {
      * Register a {@link RaCommandPort} for the named RA entity.
      * Called during RA registration so the entity pool can later
      * inject the port into SBB fields annotated with {@code @InjectRa}.
+     * The port is automatically wrapped in an {@link ObservingRaCommandPort}
+     * so the {@link RaObserver} sees every {@code sendCommand} call.
      */
     public void registerRaCommandPort(String name, RaCommandPort port) {
-        raCommandPorts.put(name, port);
+        RaCommandPort wrapped = new ObservingRaCommandPort(name, port, this);
+        raCommandPorts.put(name, wrapped);
         LOG.info("Registered RaCommandPort for RA [{}]", name);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // RaObserver seam — lets jainslee-telemetry count RA activity
+    // without adding a compile-time dependency to the core.
+    // ──────────────────────────────────────────────────────────
+
+    /**
+     * Install (or clear) the {@link RaObserver}. Can be called at any time;
+     * the new value is visible immediately on all RA paths via the
+     * volatile read.
+     *
+     * @param observer the observer to install, or {@code null} to uninstall
+     */
+    public void setRaObserver(RaObserver observer) {
+        this.raObserver = observer;
+    }
+
+    /** Return the currently installed {@link RaObserver}, or {@code null}. */
+    public RaObserver getRaObserver() {
+        return raObserver;
+    }
+
+    /** Notify observer that an RA fired an event. Never throws. */
+    void notifyRaEventFired(String raName) {
+        RaObserver obs = raObserver;
+        if (obs == null) return;
+        try {
+            obs.onEventFired(raName);
+        } catch (Throwable t) {
+            LOG.warn("RaObserver.onEventFired threw for [{}] — observer bug", raName, t);
+        }
+    }
+
+    /** Notify observer that a command was sent to an RA. Never throws. */
+    void notifyRaCommandSent(String raName) {
+        RaObserver obs = raObserver;
+        if (obs == null) return;
+        try {
+            obs.onCommandSent(raName);
+        } catch (Throwable t) {
+            LOG.warn("RaObserver.onCommandSent threw for [{}] — observer bug", raName, t);
+        }
+    }
+
+    /** Notify observer that a command send to an RA failed. Never throws. */
+    void notifyRaFailure(String raName) {
+        RaObserver obs = raObserver;
+        if (obs == null) return;
+        try {
+            obs.onFailure(raName);
+        } catch (Throwable t) {
+            LOG.warn("RaObserver.onFailure threw for [{}] — observer bug", raName, t);
+        }
     }
 
     /**
@@ -2570,11 +2632,16 @@ public final class MicroSleeContainer {
      */
     private static final class BootstrapPortAdapter implements RaBootstrapPort {
         private final SleeEndpointPortImpl endpoint;
+        private final MicroSleeContainer container;
 
-        BootstrapPortAdapter(SleeEndpointPortImpl endpoint) {
+        BootstrapPortAdapter(MicroSleeContainer container, SleeEndpointPortImpl endpoint) {
+            if (container == null) {
+                throw new IllegalArgumentException("container is required");
+            }
             if (endpoint == null) {
                 throw new IllegalArgumentException("endpoint is required");
             }
+            this.container = container;
             this.endpoint = endpoint;
         }
 
@@ -2597,6 +2664,7 @@ public final class MicroSleeContainer {
                     ? (ActivityContextHandle) handle
                     : new SimpleActivityContextHandle(handle.getId());
             endpoint.fireEvent(ach, event);
+            container.notifyRaEventFired(endpoint.getEntityName());
         }
 
         @Override
@@ -2681,6 +2749,34 @@ public final class MicroSleeContainer {
 
         String getRaEntityName() {
             return raEntityName;
+        }
+    }
+
+    /**
+     * Thin decorator that notifies the container's {@link RaObserver} on every
+     * {@code sendCommand} call (and on every thrown exception). The volatile
+     * observer read is the only overhead when no observer is installed.
+     */
+    private static final class ObservingRaCommandPort implements RaCommandPort {
+        private final String raName;
+        private final RaCommandPort delegate;
+        private final MicroSleeContainer container;
+
+        ObservingRaCommandPort(String raName, RaCommandPort delegate, MicroSleeContainer container) {
+            this.raName = raName;
+            this.delegate = delegate;
+            this.container = container;
+        }
+
+        @Override
+        public void sendCommand(OutboundCommand command) {
+            try {
+                delegate.sendCommand(command);
+                container.notifyRaCommandSent(raName);
+            } catch (RuntimeException ex) {
+                container.notifyRaFailure(raName);
+                throw ex;
+            }
         }
     }
 }

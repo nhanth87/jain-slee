@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0
+ * micro-jainslee 1.2.0
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -24,7 +24,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Consumes inbox entries for a local service and writes replies.
+ * Consumes inbox entries for a local service and writes replies via
+ * {@link InboxDelivery} (HANDLER or EVENT).
  */
 @Listener(clustered = true, observation = Listener.Observation.POST)
 public final class IspnQueueServer {
@@ -34,15 +35,31 @@ public final class IspnQueueServer {
     private final String serviceName;
     private final Cache<String, SleeQueueEntry> inbox;
     private final Cache<String, SleeQueueEntry> reply;
-    private final SleeServiceHandler handler;
+    private final InboxDelivery delivery;
     private final ExecutorService vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private volatile boolean started;
 
     public IspnQueueServer(String serviceName, IspnTransportManager transport, SleeServiceHandler handler) {
-        this.serviceName = Objects.requireNonNull(serviceName);
+        this(serviceName, transport, handlerDelivery(Objects.requireNonNull(handler, "handler")));
+    }
+
+    public IspnQueueServer(String serviceName, IspnTransportManager transport, InboxDelivery delivery) {
+        this.serviceName = Objects.requireNonNull(serviceName, "serviceName");
         this.inbox = transport.inboxCache(serviceName);
         this.reply = transport.replyCache();
-        this.handler = Objects.requireNonNull(handler);
+        this.delivery = Objects.requireNonNull(delivery, "delivery");
+    }
+
+    public static InboxDelivery handlerDelivery(SleeServiceHandler handler) {
+        Objects.requireNonNull(handler, "handler");
+        return (entryKey, entry, replyWriter) -> {
+            if (entry.fireAndForget()) {
+                handler.invoke(entry.toSleeRequest());
+                return;
+            }
+            SleeResponse response = handler.invoke(entry.toSleeRequest());
+            replyWriter.write(response);
+        };
     }
 
     public void start() {
@@ -66,7 +83,6 @@ public final class IspnQueueServer {
 
     @CacheEntryCreated
     public void onEntryCreated(CacheEntryCreatedEvent<String, SleeQueueEntry> event) {
-        // Process POST creates including origin-local (same-JVM single/local cache tests).
         if (event.isPre()) {
             return;
         }
@@ -87,18 +103,21 @@ public final class IspnQueueServer {
                 entry.callerNode(),
                 entry.fireAndForget());
         try {
+            ReplyWriter replyWriter = response -> {
+                if (!entry.fireAndForget()) {
+                    reply.put(entry.correlationId(),
+                            SleeQueueEntry.ofResponse(entry.correlationId(), response));
+                }
+            };
+            delivery.deliver(entryKey, entry, replyWriter);
+            inbox.remove(entryKey);
             if (entry.fireAndForget()) {
-                handler.invoke(entry.toSleeRequest());
-                inbox.remove(entryKey);
                 LOG.info("[IspnQueueServer:{}] notify done op={} corr={}",
                         serviceName, entry.operation(), entry.correlationId());
-                return;
+            } else {
+                LOG.info("[IspnQueueServer:{}] reply sent op={} corr={}",
+                        serviceName, entry.operation(), entry.correlationId());
             }
-            SleeResponse response = handler.invoke(entry.toSleeRequest());
-            reply.put(entry.correlationId(), SleeQueueEntry.ofResponse(entry.correlationId(), response));
-            inbox.remove(entryKey);
-            LOG.info("[IspnQueueServer:{}] reply sent op={} corr={} success={}",
-                    serviceName, entry.operation(), entry.correlationId(), response.success());
         } catch (Exception e) {
             LOG.error("Error processing queue entry {} for '{}'", entryKey, serviceName, e);
             if (!entry.fireAndForget()) {

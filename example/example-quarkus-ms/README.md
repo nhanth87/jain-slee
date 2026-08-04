@@ -11,7 +11,7 @@ Quarkus 3 **CDI host** for the micro-jainslee microservice layer (`ms-api` / `ms
 
 Ingress is **only** on `node-ra` (`http.ra.port=8081`). `node-sbb` (`:8082`) serves leaf `/health` and runs `http-sbb`; it is **not** the demo HTTP ingress.
 
-SBBs must not call `MicrosleeBootstrap.client()` / ISPN APIs directly (ADR 0002): gateway uses child `IspnMsClientSbb` → `ispn-queue-ra`.
+SBBs must not call `MicrosleeBootstrap.client()` / ISPN APIs directly ([ADR 0002](../../docs/adr/0002-ms-ispn-via-ra.md)): gateway uses child `IspnMsClientSbb` → `ispn-queue-ra` (full MS command surface; inbound HANDLER by default).
 
 ```mermaid
 sequenceDiagram

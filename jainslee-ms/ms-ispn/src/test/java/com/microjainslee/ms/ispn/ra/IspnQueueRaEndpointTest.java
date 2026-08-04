@@ -10,6 +10,10 @@
 
 package com.microjainslee.ms.ispn.ra;
 
+import com.microjainslee.api.ActivityHandle;
+import com.microjainslee.api.Address;
+import com.microjainslee.api.RaBootstrapPort;
+import com.microjainslee.api.SleeEvent;
 import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
@@ -22,9 +26,12 @@ import com.microjainslee.ms.api.TransportType;
 import com.microjainslee.ms.api.annotation.SleeService;
 import com.microjainslee.ms.core.MicrosleeBootstrap;
 import com.microjainslee.ms.core.config.DeploymentConfig;
+import com.microjainslee.ms.ispn.IspnQueueServer;
 import com.microjainslee.ms.ispn.IspnRemoteClientFactory;
 import com.microjainslee.ms.ispn.IspnServiceLifecycleHooks;
 import com.microjainslee.ms.ispn.IspnTransportManager;
+import com.microjainslee.ms.ispn.ServiceStateRecord;
+import com.microjainslee.ms.ispn.SleeQueueEntry;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,8 +41,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class IspnQueueRaEndpointTest {
@@ -134,6 +143,100 @@ class IspnQueueRaEndpointTest {
                 .sendCommand(new IspnQueueCommand.NotifyService(
                         "ping", new SleeRequest("event", new byte[0]), done));
         done.get(5, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void publishStateAndQueryRecord() throws Exception {
+        CompletableFuture<Void> done = new CompletableFuture<>();
+        container.getRaCommandPort(IspnQueueRaEndpoint.RA_NAME)
+                .sendCommand(new IspnQueueCommand.PublishServiceState(
+                        "ping", ServiceState.DEGRADED, done));
+        done.get(5, TimeUnit.SECONDS);
+
+        CompletableFuture<ServiceStateRecord> rec = new CompletableFuture<>();
+        container.getRaCommandPort(IspnQueueRaEndpoint.RA_NAME)
+                .sendCommand(new IspnQueueCommand.QueryServiceStateRecord("ping", rec));
+        ServiceStateRecord record = rec.get(5, TimeUnit.SECONDS);
+        assertNotNull(record);
+        assertEquals(ServiceState.DEGRADED, record.state());
+        assertEquals("ra-ispn-test", record.nodeId());
+    }
+
+    @Test
+    void ensureCachesAndNodeId() throws Exception {
+        CompletableFuture<Void> done = new CompletableFuture<>();
+        container.getRaCommandPort(IspnQueueRaEndpoint.RA_NAME)
+                .sendCommand(new IspnQueueCommand.EnsureServiceCaches(List.of("ping", "extra"), done));
+        done.get(5, TimeUnit.SECONDS);
+        assertTrue(transport.clusterManager().getCacheManager()
+                .cacheExists(IspnTransportManager.inboxCacheName("extra")));
+
+        CompletableFuture<String> node = new CompletableFuture<>();
+        container.getRaCommandPort(IspnQueueRaEndpoint.RA_NAME)
+                .sendCommand(new IspnQueueCommand.QueryNodeId(node));
+        assertEquals("ra-ispn-test", node.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void replyRemoteRequestWritesReplyCache() throws Exception {
+        CompletableFuture<Void> done = new CompletableFuture<>();
+        container.getRaCommandPort(IspnQueueRaEndpoint.RA_NAME)
+                .sendCommand(new IspnQueueCommand.ReplyRemoteRequest(
+                        "corr-1",
+                        SleeResponse.ok("ok".getBytes(StandardCharsets.UTF_8)),
+                        done));
+        done.get(5, TimeUnit.SECONDS);
+        SleeQueueEntry entry = transport.replyCache().get("corr-1");
+        assertNotNull(entry);
+        assertEquals(SleeQueueEntry.EntryType.RESPONSE, entry.type());
+    }
+
+    @Test
+    void eventInboundDeliveryCompletesViaEventFuture() throws Exception {
+        AtomicReference<MsRemoteRequestEvent> fired = new AtomicReference<>();
+        RaBootstrapPort mockBoot = new RaBootstrapPort() {
+            @Override
+            public ActivityHandle createActivityHandle(String id) {
+                return () -> id;
+            }
+
+            @Override
+            public void fireEvent(SleeEvent event, ActivityHandle handle, Address address) {
+                if (event instanceof MsRemoteRequestEvent ms) {
+                    fired.set(ms);
+                    ms.response().complete(
+                            SleeResponse.ok("from-event".getBytes(StandardCharsets.UTF_8)));
+                }
+            }
+        };
+
+        IspnQueueResourceAdaptor adaptor = new IspnQueueResourceAdaptor(
+                bootstrap, transport, DeploymentConfig.singleNode(), InboundMode.EVENT);
+        adaptor.activate(mockBoot);
+
+        IspnQueueServer server = new IspnQueueServer(
+                "ping-event", transport, adaptor.eventDelivery("ping-event"));
+        server.start();
+        try {
+            SleeQueueEntry req = SleeQueueEntry.ofRequest(
+                    new SleeRequest("echo", new byte[0]), "caller", false);
+            transport.inboxCache("ping-event").put(req.correlationId(), req);
+
+            SleeQueueEntry reply = null;
+            for (int i = 0; i < 50; i++) {
+                reply = transport.replyCache().get(req.correlationId());
+                if (reply != null) {
+                    break;
+                }
+                Thread.sleep(50);
+            }
+            assertNotNull(fired.get());
+            assertNotNull(reply);
+            assertEquals("from-event", new String(reply.toSleeResponse().payload(), StandardCharsets.UTF_8));
+        } finally {
+            server.stop();
+            adaptor.deactivate();
+        }
     }
 
     @SleeService(name = "ping", transport = TransportType.INFINISPAN_QUEUE)

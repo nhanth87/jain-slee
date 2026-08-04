@@ -22,7 +22,9 @@ import com.microjainslee.ra.sipservlet.events.SipInviteEvent;
 import com.microjainslee.ra.sipservlet.events.SipRegisterEvent;
 import com.microjainslee.ra.sipservlet.events.SipResponseEvent;
 import com.microjainslee.telemetry.MicrometerTelemetryPort;
+import com.microjainslee.telemetry.TelemetryDispatchObserver;
 import com.microjainslee.telemetry.TelemetryPort;
+import com.microjainslee.telemetry.TelemetryRaObserver;
 
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -119,8 +121,12 @@ public final class SipGatewayBootstrap {
 
     private void wireTelemetry() {
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
-        telemetryPort = new MicrometerTelemetryPort(registry, container);
-        ((MicrometerTelemetryPort) telemetryPort).start();
+        MicrometerTelemetryPort micrometer = new MicrometerTelemetryPort(registry, container);
+        micrometer.start();
+        telemetryPort = micrometer;
+        container.getEventRouter().setDispatchObserver(
+                new TelemetryDispatchObserver(micrometer));
+        container.setRaObserver(new TelemetryRaObserver(micrometer));
         LOG.info("[telemetry] MicrometerTelemetryPort armed (zero-CPU passive collection)");
     }
 

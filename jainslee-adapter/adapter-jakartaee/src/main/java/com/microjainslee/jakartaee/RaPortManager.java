@@ -59,14 +59,13 @@ public class RaPortManager {
     private static final Logger LOG = LogManager.getLogger(RaPortManager.class);
 
     /**
-     * Direct CDI injection of {@link MicroSleeContainer}. This field
-     * will be {@code null} unless a CDI producer for
-     * {@code MicroSleeContainer} is registered. In the standard
-     * Jakarta EE adapter path the container reference is passed
-     * through {@link #registerAll(MicroSleeContainer)}.
+     * Container set by {@link #registerAll(MicroSleeContainer)}.
+     * Not {@code @Inject}'d — {@link MicroSleeContainerStartup} creates the
+     * container and would form a CDI cycle if this field were a required
+     * injection point. Apps that need {@code @Inject MicroSleeContainer}
+     * should use {@link MicroSleeContainerProducer} (JNDI after startup).
      */
-    @Inject
-    MicroSleeContainer container;
+    private MicroSleeContainer container;
 
     /** All {@link RaEndpointPort} beans discovered via CDI (qualifier: {@code @Any}). */
     @Inject

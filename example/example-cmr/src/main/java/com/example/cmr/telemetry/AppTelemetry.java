@@ -4,7 +4,9 @@ import com.microjainslee.core.MicroSleeContainer;
 import com.microjainslee.ra.prometheus.PrometheusRaEndpoint;
 import com.microjainslee.ra.prometheus.PrometheusResourceAdaptor;
 import com.microjainslee.telemetry.MicrometerTelemetryPort;
+import com.microjainslee.telemetry.TelemetryDispatchObserver;
 import com.microjainslee.telemetry.TelemetryPort;
+import com.microjainslee.telemetry.TelemetryRaObserver;
 
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -55,7 +57,8 @@ public final class AppTelemetry implements AutoCloseable {
         //     onEvent delivery reports throughput/latency/errors/heartbeats.
         //     Cost when telemetry is absent: one volatile read per event.
         container.getEventRouter().setDispatchObserver(
-                new com.microjainslee.telemetry.TelemetryDispatchObserver(telemetry));
+                new TelemetryDispatchObserver(telemetry));
+        container.setRaObserver(new TelemetryRaObserver(telemetry));
 
         // 2. Durable batched log sink (complements Prometheus, survives restart).
         logSink = new TelemetryLogSink(telemetry);

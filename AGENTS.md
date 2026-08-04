@@ -176,6 +176,38 @@ Quarkus/GraalVM-native is the priority target; Spring/JakartaEE are low priority
 
 **Consumer app (OTA SMSC-GW):** [`worktrees/ota-service/ota-sim-push/AGENTS.md`](../../worktrees/ota-service/ota-sim-push/AGENTS.md) — `OtaLinkStatusService`, `ss7.live` / `smpp.live`.
 
+## DIST / DEPLOY LAYOUT (non-negotiable — Digicom-ET standard)
+
+**Ship a directory tree under `dist/`. Never package UI into a WAR (or EAR) for Digicom lab/prod deploy.**
+
+Canonical shape (same family as OTA SMSC-GW `./dist/`):
+
+```
+dist/<app>/
+  run.sh                 ← only supported start entry
+  <app>.jar              ← app classes (thin) or quarkus-run + app jar
+  lib/                   ← runtime jars
+  html/                  ← UI ONLY: *.html *.js *.css (and assets)
+                           NEVER jars under html/ (or app/html/)
+  configs/               ← application.properties, log4j2.xml, …
+  logs/                  ← Log4j2 output (empty at package time)
+```
+
+| Rule | Detail |
+|------|--------|
+| **Deploy unit** | `dist/` only — `scp -r dist/ …` then `./run.sh` |
+| **UI** | Source in repo `html/` (or `app/html/`) → copy into `dist/.../html/` as **files**, not classpath WAR |
+| **No WAR** | Do not invent `maven-war-plugin` / `*.war` for micro-jainslee examples or Digicom hosts |
+| **Log4j2 ONLY** | `log4j-api` + `log4j-core` (pinned BOM) + `configs/log4j2.xml` → `logs/`; never SLF4J/logback dual |
+| **JDK 25** | `run.sh` / package scripts reject non-25 `JAVA_HOME` |
+
+- Reference implementations:
+- OTA: `worktrees/ota-service/ota-sim-push` → `./build/package-dist.sh` → `dist/app/html/`
+- Jakarta host example: `example/example-jakartaee-helloworld-web` → `./build/package-dist.sh` → `dist/*/html/`
+- Spring helloworld: `example/example-spring-helloworld-web` → `html/` + `HtmlDirWebConfig` + `./build/package-dist.sh` → `dist/*/html/`
+
+Adapter `adapter-jakartaee` remains available for real EE servers, but **Digicom deploy still prefers directory `dist/` + `html/` files**, not a WAR blob.
+
 ## PERSIST / PEER CONFIG XML (cross-cutting — never break Start)
 
 When agents touch jSS7 simulator or RA persist files (`*sccp*.xml`, M3UA/SCTP XML under `simulator-ss7/data/` or OTA `dist/ota-ss7-sccp_*.xml`):

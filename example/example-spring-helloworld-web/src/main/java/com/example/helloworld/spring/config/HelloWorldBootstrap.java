@@ -24,7 +24,9 @@ import com.microjainslee.ra.httpserver.events.HttpWebRequestEvent;
 import com.microjainslee.ra.prometheus.PrometheusRaEndpoint;
 import com.microjainslee.ra.prometheus.PrometheusResourceAdaptor;
 import com.microjainslee.telemetry.MicrometerTelemetryPort;
+import com.microjainslee.telemetry.TelemetryDispatchObserver;
 import com.microjainslee.telemetry.TelemetryPort;
+import com.microjainslee.telemetry.TelemetryRaObserver;
 
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -93,8 +95,13 @@ public class HelloWorldBootstrap {
 
                 // ── Telemetry Engine (zero-CPU, passive collection) ──
                 PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
-                telemetryPort = new MicrometerTelemetryPort(registry, container);
-                ((MicrometerTelemetryPort) telemetryPort).start();
+                MicrometerTelemetryPort micrometer =
+                        new MicrometerTelemetryPort(registry, container);
+                micrometer.start();
+                telemetryPort = micrometer;
+                container.getEventRouter().setDispatchObserver(
+                        new TelemetryDispatchObserver(micrometer));
+                container.setRaObserver(new TelemetryRaObserver(micrometer));
 
                 // Expose telemetry port to the REST controller
                 helloContext.setTelemetryPort(telemetryPort);

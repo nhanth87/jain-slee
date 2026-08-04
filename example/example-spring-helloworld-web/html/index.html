@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hello World — JAIN SLEE + Spring Boot</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main>
+    <h1>Hello World</h1>
+    <p class="lede">UI from <code>dist/.../html/</code> (Digicom directory deploy — not classpath-only).</p>
+    <section>
+      <h2>ra-http-server</h2>
+      <p>POST begin on the SLEE HTTP RA (default <code>:8081</code>).</p>
+      <button type="button" id="btn-ping">POST /api/ussd/begin</button>
+      <pre id="out">Click to send…</pre>
+    </section>
+    <section>
+      <h2>Spring health</h2>
+      <p><a href="/health">GET /health</a> on <code>:8080</code></p>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

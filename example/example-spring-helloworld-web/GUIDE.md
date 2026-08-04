@@ -8,7 +8,7 @@
 
 ## 1. Ví dụ này làm gì
 
-Đây là một web app "Hello World" tối giản chạy trên Spring Boot 3 + micro-jainslee. Nó có 2 port: Spring MVC port 8080 phục vụ static HTML UI (từ `src/main/resources/static/`) và REST endpoint, và `ra-http-server` port 8081 là HTTP ingress cho JAIN SLEE event pipeline. Khi browser gửi request đến port 8081, RA tạo `HttpWebRequestEvent` (từ `com.microjainslee.ra.httpserver.events`), route đến `HelloWorldSbb`, SBB log "Hello World". Khác với bản Quarkus, bản Spring dùng `adapter-springboot` và `SmartLifecycle` để quản lý lifecycle.
+Đây là một web app "Hello World" tối giản chạy trên Spring Boot 3 + micro-jainslee. Nó có 2 port: Spring MVC port 8080 phục vụ UI từ **directory** `html/` (deploy: `dist/.../html/` — Digicom chuẩn, không WAR), và `ra-http-server` port 8081 là HTTP ingress cho JAIN SLEE event pipeline. Khi browser gửi request đến port 8081, RA tạo `HttpWebRequestEvent` (từ `com.microjainslee.ra.httpserver.events`), route đến `HelloWorldSbb`, SBB log "Hello World". Khác với bản Quarkus, bản Spring dùng `adapter-springboot` và `SmartLifecycle` để quản lý lifecycle.
 
 ---
 
@@ -16,24 +16,28 @@
 
 ```
 example/example-spring-helloworld-web/
-├── pom.xml                                              ← Maven project, Spring Boot 3.3.0 + micro-jainslee + ra-http-server
+├── pom.xml
+├── html/                                                ← UI source → dist/.../html/ (*.html *.js *.css)
+│   ├── index.html
+│   ├── app.css
+│   └── app.js
+├── build/package-dist.sh                                ← directory dist (never WAR)
 ├── src/main/resources/
-│   ├── application.properties                          ← Spring server.port=8080, microjainslee tuning, http.ra.port=8081
-│   └── static/
-│       └── index.html                                  ← Static HTML UI (served by Spring MVC)
+│   └── application.properties
 ├── src/main/java/com/example/helloworld/spring/
-│   ├── HelloWorldSpringApplication.java                ← @SpringBootApplication entry point
-│   ├── HelloWorldContext.java                          ← @Component singleton: static container + session tracking
+│   ├── HelloWorldSpringApplication.java
+│   ├── HelloWorldContext.java
 │   ├── config/
-│   │   └── HelloWorldBootstrap.java                    ← @Configuration: define RA beans + SmartLifecycle wiring
+│   │   ├── HelloWorldBootstrap.java
+│   │   └── HtmlDirWebConfig.java                        ← serves hello.html.dir / ./html
 │   ├── sbbs/
-│   │   └── HelloWorldSbb.java                          ← SBB: nhận HttpWebRequestEvent, log "Hello World"
+│   │   └── HelloWorldSbb.java
 │   ├── events/
-│   │   └── HttpWebRequestEvent.java                    ← App-defined event (@EventType "HttpWebRequest")
+│   │   └── HttpWebRequestEvent.java
 │   ├── command/
-│   │   └── HelloWorldCommand.java                      ← Sealed outbound command hierarchy
+│   │   └── HelloWorldCommand.java
 │   └── rest/
-│       └── HelloController.java                        ← @RestController: GET / → forward:/index.html, GET /health
+│       └── HelloController.java
 ```
 
 

@@ -17,6 +17,7 @@ import com.microjainslee.core.EventRouter;
 import com.microjainslee.core.InMemoryActivityContextNamingFacility;
 import com.microjainslee.core.MicroSleeConfiguration;
 import com.microjainslee.core.MicroSleeContainer;
+import com.microjainslee.telemetry.TelemetryPort;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -24,6 +25,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 
 import java.util.List;
+import java.util.Optional;
 
 @AutoConfiguration
 @EnableConfigurationProperties(MicroJainsleeProperties.class)
@@ -74,10 +76,13 @@ public class MicroJainsleeAutoConfiguration {
     public MicroJainsleeLifecycle microJainsleeLifecycle(MicroSleeContainer container,
                                                           MicroJainsleeProperties props,
                                                           List<RaEndpointPort> raEndpoints,
-                                                          List<RaCommandPort> raCommands) {
-        LOG.info("Creating MicroJainsleeLifecycle bean (raEndpoints={}, raCommands={})",
+                                                          List<RaCommandPort> raCommands,
+                                                          Optional<TelemetryPort> telemetryPort) {
+        LOG.info("Creating MicroJainsleeLifecycle bean (raEndpoints={}, raCommands={}, telemetry={})",
                 raEndpoints != null ? raEndpoints.size() : 0,
-                raCommands != null ? raCommands.size() : 0);
-        return new MicroJainsleeLifecycle(container, props, raEndpoints, raCommands);
+                raCommands != null ? raCommands.size() : 0,
+                telemetryPort.isPresent());
+        return new MicroJainsleeLifecycle(container, props, raEndpoints, raCommands,
+                telemetryPort.orElse(null));
     }
 }

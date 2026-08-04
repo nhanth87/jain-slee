@@ -29,7 +29,7 @@
         <maven.compiler.release>25</maven.compiler.release>
         <jakarta.ejb.api.version>4.0.0</jakarta.ejb.api.version>
         <jakarta.annotation.api.version>2.1.1</jakarta.annotation.api.version>
-        <log4j.version>2.26.0</log4j.version>
+        <log4j.version>2.24.3</log4j.version>
     </properties>
 
     <dependencies>
@@ -37,6 +37,11 @@
         <dependency>
             <groupId>com.microjainslee</groupId>
             <artifactId>jainslee-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-telemetry</artifactId>
             <version>${project.version}</version>
         </dependency>
 
@@ -66,7 +71,8 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Log4j2 API only — the application server provides the SLF4J/log4j core -->
+        <!-- Log4j2 ONLY (api for compile). Apps must ship matching log4j-core
+             — never SLF4J/logback/jboss-logmanager dual stacks. -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>

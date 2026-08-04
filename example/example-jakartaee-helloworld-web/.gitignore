@@ -1,0 +1,4 @@
+dist/*/lib/
+dist/*/*.jar
+dist/*/logs/
+target/

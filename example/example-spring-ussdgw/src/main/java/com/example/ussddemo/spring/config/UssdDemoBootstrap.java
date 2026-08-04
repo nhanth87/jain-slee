@@ -43,7 +43,8 @@ import com.microjainslee.ra.httpserver.HttpServerResourceAdaptor;
 import com.microjainslee.ra.prometheus.PrometheusResourceAdaptor;
 import com.microjainslee.ra.prometheus.PrometheusRaEndpoint;
 import com.microjainslee.telemetry.MicrometerTelemetryPort;
-import com.microjainslee.telemetry.TelemetryPort;
+import com.microjainslee.telemetry.TelemetryDispatchObserver;
+import com.microjainslee.telemetry.TelemetryRaObserver;
 
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -180,8 +181,11 @@ public class UssdDemoBootstrap {
 
                 // ── Telemetry Engine (zero-CPU, passive collection) ──
                 PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
-                TelemetryPort telemetryPort = new MicrometerTelemetryPort(registry, container);
-                ((MicrometerTelemetryPort) telemetryPort).start();
+                MicrometerTelemetryPort micrometer = new MicrometerTelemetryPort(registry, container);
+                micrometer.start();
+                container.getEventRouter().setDispatchObserver(
+                        new TelemetryDispatchObserver(micrometer));
+                container.setRaObserver(new TelemetryRaObserver(micrometer));
                 LOG.info("[telemetry] MicrometerTelemetryPort armed (zero-CPU passive collection)");
 
                 seedProfiles();

@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Build a directory distribution for Spring Boot:
+# Digicom-ET directory dist — NEVER a WAR.
+# Layout: dist/<app>/{run.sh,*.jar,lib/,configs/,logs/} (+ html/ when UI exists).
 #
-#   dist/<app>-jainslee/
-#     run.sh
-#     <app>-jainslee.jar          # Spring Boot executable (fat) jar
-#     lib/                        # runtime deps for ops visibility (jainslee-*, ra-*, …)
-#
-# The fat jar is self-contained; lib/ mirrors Maven runtime deps for inspection/patching.
+# This USSD demo has no browser UI today; when adding UI, put files in repo html/
+# and copy to dist/.../html/ (UI ONLY — no jars). See root AGENTS.md § DIST.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -30,6 +30,13 @@ import com.microjainslee.ra.httpserver.HttpServerRaEndpoint;
 import com.microjainslee.ra.httpserver.HttpServerResourceAdaptor;
 import com.microjainslee.ra.prometheus.PrometheusResourceAdaptor;
 import com.microjainslee.ra.prometheus.PrometheusRaEndpoint;
+import com.microjainslee.telemetry.MicrometerTelemetryPort;
+import com.microjainslee.telemetry.TelemetryDispatchObserver;
+import com.microjainslee.telemetry.TelemetryPort;
+import com.microjainslee.telemetry.TelemetryRaObserver;
+
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 
 import io.quarkus.runtime.StartupEvent;
 
@@ -80,6 +87,7 @@ public final class UssdDemoBootstrap implements UssdDemoContext {
     private volatile AutonomousGuardian guardian;
     private volatile HttpServerRaEndpoint httpEndpoint;
     private volatile GrpcMenuRaEndpoint grpcEndpoint;
+    private volatile TelemetryPort telemetryPort;
     private volatile boolean started;
 
     /** Actual HTTP RA endpoint (bound port via {@code httpEndpoint().port()}). */
@@ -101,6 +109,7 @@ public final class UssdDemoBootstrap implements UssdDemoContext {
         if (container.getState() != MicroSleeContainer.State.STARTED) {
             container.start();
         }
+        wireTelemetry();
         seedProfiles();
         registerSbbTypes();
         bindInitialEventSelector();
@@ -112,6 +121,9 @@ public final class UssdDemoBootstrap implements UssdDemoContext {
 
     @PreDestroy
     void shutdown() {
+        if (telemetryPort instanceof MicrometerTelemetryPort mtp) {
+            mtp.stop();
+        }
         if (guardian != null) {
             guardian.stop();
         }
@@ -173,6 +185,17 @@ public final class UssdDemoBootstrap implements UssdDemoContext {
     }
 
     // ── wiring ──
+
+    private void wireTelemetry() {
+        PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+        MicrometerTelemetryPort micrometer = new MicrometerTelemetryPort(registry, container);
+        micrometer.start();
+        telemetryPort = micrometer;
+        container.getEventRouter().setDispatchObserver(
+                new TelemetryDispatchObserver(micrometer));
+        container.setRaObserver(new TelemetryRaObserver(micrometer));
+        LOG.info("[telemetry] MicrometerTelemetryPort armed (zero-CPU passive collection)");
+    }
 
     private void wireRas() {
         wireHttpRa(httpPort);

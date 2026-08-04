@@ -14,6 +14,9 @@ import com.microjainslee.api.RaCommandPort;
 import com.microjainslee.api.RaEndpointPort;
 import com.microjainslee.api.SleeEvent;
 import com.microjainslee.core.MicroSleeContainer;
+import com.microjainslee.telemetry.TelemetryDispatchObserver;
+import com.microjainslee.telemetry.TelemetryPort;
+import com.microjainslee.telemetry.TelemetryRaObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.context.SmartLifecycle;
@@ -31,6 +34,7 @@ public class MicroJainsleeLifecycle implements SmartLifecycle {
     private final MicroJainsleeProperties props;
     private final List<RaEndpointPort> raEndpoints;
     private final List<RaCommandPort> raCommands;
+    private final TelemetryPort telemetryPort;
     private volatile boolean running = false;
 
     /**
@@ -38,21 +42,34 @@ public class MicroJainsleeLifecycle implements SmartLifecycle {
      * Used by tests and embedders that wire the lifecycle by hand.
      */
     public MicroJainsleeLifecycle(MicroSleeContainer container) {
-        this(container, null, Collections.emptyList(), Collections.emptyList());
+        this(container, null, Collections.emptyList(), Collections.emptyList(), null);
     }
 
     /**
-     * Full constructor accepting properties and RA port lists.
-     * Called by {@link MicroJainsleeAutoConfiguration}.
+     * Backward-compatible constructor (no telemetry port).
      */
     public MicroJainsleeLifecycle(MicroSleeContainer container,
                                    MicroJainsleeProperties props,
                                    List<RaEndpointPort> raEndpoints,
                                    List<RaCommandPort> raCommands) {
+        this(container, props, raEndpoints, raCommands, null);
+    }
+
+    /**
+     * Full constructor accepting properties, RA port lists, and an optional
+     * {@link TelemetryPort} bean. When present, dispatch and RA observers are
+     * wired so {@code jainslee_* / jainslee_ra_*} counters stay live.
+     */
+    public MicroJainsleeLifecycle(MicroSleeContainer container,
+                                   MicroJainsleeProperties props,
+                                   List<RaEndpointPort> raEndpoints,
+                                   List<RaCommandPort> raCommands,
+                                   TelemetryPort telemetryPort) {
         this.container = container;
         this.props = props;
         this.raEndpoints = raEndpoints != null ? raEndpoints : Collections.emptyList();
         this.raCommands = raCommands != null ? raCommands : Collections.emptyList();
+        this.telemetryPort = telemetryPort;
         LOG.debug("MicroJainsleeLifecycle created (phase={}, container={}, raEndpoints={}, raCommands={})",
                 Integer.MIN_VALUE + 100,
                 container != null ? container.getState() : "null",
@@ -70,6 +87,7 @@ public class MicroJainsleeLifecycle implements SmartLifecycle {
         LOG.info("SmartLifecycle.start() - starting MicroSleeContainer (current state={})", container.getState());
         container.start();
         running = true;
+        wireTelemetryObservers();
         LOG.info("MicroSleeContainer started via SmartLifecycle (phase={})", getPhase());
 
         // GOAL 2 — register any RA endpoint+command pairs from the application context.
@@ -99,6 +117,17 @@ public class MicroJainsleeLifecycle implements SmartLifecycle {
 
     @Override public boolean isRunning() { return running; }
     @Override public int getPhase() { return Integer.MIN_VALUE + 100; }
+
+    private void wireTelemetryObservers() {
+        if (telemetryPort == null) {
+            LOG.debug("No TelemetryPort bean — skipping dispatch/RA observer wiring");
+            return;
+        }
+        container.getEventRouter().setDispatchObserver(
+                new TelemetryDispatchObserver(telemetryPort));
+        container.setRaObserver(new TelemetryRaObserver(telemetryPort));
+        LOG.info("Telemetry dispatch + RA observers wired from TelemetryPort bean");
+    }
 
     // ──────────────────────────────────────────────────────────
     // GOAL 2 — register RA endpoint+command pairs

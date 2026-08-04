@@ -1,0 +1,25 @@
+<div class="admin-panel">
+  <p class="text-xs uppercase tracking-[0.25em] text-signal">Config</p>
+  <h2 class="mt-1 text-xl font-semibold text-slate-50">SS7 · ra-jss7</h2>
+  <p class="mt-2 text-sm text-ink-mute">
+    Tab green iff <code class="font-mono text-slate-300">routeReady</code>
+    (<code class="font-mono text-slate-300">isM3uaRouteReady()</code>).
+    Local LISTEN / <code class="font-mono text-slate-300">active</code> alone is amber — never green.
+  </p>
+  <textarea class="ra-cfg mt-4" id="ss7-cfg" spellcheck="false" placeholder="{ Ss7Config JSON }"></textarea>
+  <div class="ra-toolbar">
+    <button class="btn-hub" type="button" id="ss7-validate">Validate</button>
+    <button class="btn-hub btn-hub-primary" type="button" id="ss7-apply">Save &amp; Apply</button>
+    <button class="btn-hub" type="button" id="ss7-start">Start</button>
+    <button class="btn-hub" type="button" id="ss7-stop">Stop</button>
+    <button class="btn-hub" type="button" id="ss7-refresh"
+            hx-get="/api/ra/ra-jss7/status.html"
+            hx-target="#ss7-status"
+            hx-swap="innerHTML">Refresh Status</button>
+  </div>
+  <div class="ra-status" id="ss7-status"
+       hx-get="/api/ra/ra-jss7/status.html"
+       hx-trigger="load, every 4s"
+       hx-swap="innerHTML">Loading…</div>
+  <div class="ra-msg" id="ss7-msg"></div>
+</div>

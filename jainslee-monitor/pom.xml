@@ -10,13 +10,14 @@
     </parent>
     <artifactId>jainslee-monitor</artifactId>
     <packaging>jar</packaging>
-    <name>micro-jainslee :: Monitor (Vert.x GUI + REST server)</name>
+    <name>micro-jainslee :: Monitor (hub GUI + REST)</name>
     <description>
-        The Monitoring Window: steampunk dashboard (3 tabs — Telemetry /
-        Autonomous / AI Agent; single index.html + monitoring.js, zero build
-        step, zero npm) served via Vert.x StaticHandler, plus
-        TelemetryVertxServer — a reusable standalone Vert.x HTTP server
-        exposing /metrics, snapshot, alarm and health endpoints.
+        The Monitoring Window hub: steampunk dashboard (Telemetry /
+        Autonomous / AI Agent + dynamic RA admin tabs from jainslee-admin-spi
+        packs; single index.html + monitoring.js, zero build step, zero npm).
+        MonitorHandler serves /telemetry, /api/telemetry, /api/admin/dashboards,
+        /admin/ra/*, /api/ra/* without requiring ra-http-server at compile time.
+        Optional Vert.x helpers remain for standalone telemetry servers.
     </description>
 
     <properties>
@@ -33,6 +34,16 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-admin-spi</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.18.2</version>
+        </dependency>
+        <dependency>
             <groupId>io.vertx</groupId>
             <artifactId>vertx-core</artifactId>
             <version>${vertx.version}</version>
@@ -45,6 +56,12 @@
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

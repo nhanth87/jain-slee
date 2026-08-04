@@ -86,6 +86,16 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
         this.host = host;
     }
 
+    /** Configured listen host (may differ from peer reachability). */
+    public String host() {
+        return host;
+    }
+
+    /** Configured port before bind (0 = ephemeral). */
+    public int configuredPort() {
+        return port;
+    }
+
     /** 0 = Vert.x default. Tune down for tiny containers. */
     public void setEventLoopThreads(int n) {
         this.eventLoopThreads = n;
@@ -94,6 +104,24 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
     /** Actual bound port (after ephemeral bind when configured port is 0). */
     public int port() {
         return server != null ? server.actualPort() : port;
+    }
+
+    /**
+     * Local listen lifecycle — <em>not</em> peer UP. Admin tabs may show amber
+     * when this is true; never treat it as traffic-ready to a remote peer.
+     */
+    public boolean isActive() {
+        return server != null;
+    }
+
+    /**
+     * Stop and re-listen with current host/port config. Used by admin rebind.
+     */
+    public void rebind() {
+        if (isActive()) {
+            raInactive();
+        }
+        raActive();
     }
 
     // ── lifecycle ────────────────────────────────────────────────────

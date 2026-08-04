@@ -114,7 +114,70 @@ public final class CamelResourceAdaptor {
 
     public CamelRaConfig config() { return config; }
     public CamelContext camelContext() { return camelContext; }
+
+    /**
+     * Local RA lifecycle flag — routes may still be down. Prefer
+     * {@link #isBrokerReady()} for traffic / status “link UP”.
+     */
     public boolean isActive() { return active.get(); }
+
+    /**
+     * Honest Camel peer/broker readiness: RA active, CamelContext started, and
+     * every configured consumer route started. Local {@link #isActive()} alone
+     * (e.g. mid-failure after compareAndSet) must never be treated as link UP.
+     */
+    public boolean isBrokerReady() {
+        if (!active.get()) {
+            return false;
+        }
+        CamelContext ctx = camelContext;
+        if (ctx == null || !ctx.getStatus().isStarted()) {
+            return false;
+        }
+        for (CamelConsumerSpec spec : config.consumers()) {
+            String routeId = routeIdFor(spec);
+            try {
+                var status = ctx.getRouteController().getRouteStatus(routeId);
+                if (status == null || !status.isStarted()) {
+                    return false;
+                }
+            } catch (RuntimeException ex) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Alias of {@link #isBrokerReady()} for cross-RA status APIs. */
+    public boolean isPeerReady() {
+        return isBrokerReady();
+    }
+
+    public String brokerDetail() {
+        if (!active.get()) {
+            return "camel:inactive";
+        }
+        CamelContext ctx = camelContext;
+        if (ctx == null) {
+            return "camel:no-context";
+        }
+        if (!ctx.getStatus().isStarted()) {
+            return "camel:context-" + ctx.getStatus().name().toLowerCase();
+        }
+        for (CamelConsumerSpec spec : config.consumers()) {
+            String routeId = routeIdFor(spec);
+            try {
+                var status = ctx.getRouteController().getRouteStatus(routeId);
+                if (status == null || !status.isStarted()) {
+                    return "camel:route-down:" + routeId;
+                }
+            } catch (RuntimeException ex) {
+                return "camel:route-error:" + routeId;
+            }
+        }
+        return "camel:ready;routes=" + config.consumers().size();
+    }
+
     public int activeActivityCount() { return activities.size(); }
     public int pendingReplyCount() { return pendingReplies.size(); }
     public CamelActivityRegistry activityRegistry() { return activities; }
@@ -163,7 +226,7 @@ public final class CamelResourceAdaptor {
             });
             sweeper.scheduleAtFixedRate(this::sweepIdleActivities, sweep, sweep, TimeUnit.SECONDS);
         }
-        LOG.info("[ra-camel:{}] ACTIVE routes={} contextOwned={}",
+        LOG.info("[ra-camel:{}] ACTIVE routes={} contextOwned={} (isActive≠broker; use isBrokerReady())",
                 config.name(), config.consumers().size(), ownsContext);
     }
 

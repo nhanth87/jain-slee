@@ -42,6 +42,16 @@ public final class Ss7RaEndpoint implements RaEndpointPort, RaCommandPort {
 
     public Ss7ResourceAdaptor delegate() { return delegate; }
 
+    /** RA lifecycle active — not peer route-ready; use {@link #isM3uaRouteReady()}. */
+    public boolean isActive() {
+        return delegate.isActive();
+    }
+
+    /** Honest SS7 link UP: SCTP assoc up + M3UA AS ACTIVE. */
+    public boolean isM3uaRouteReady() {
+        return delegate.isM3uaRouteReady();
+    }
+
     @Override public String getRaName() { return raName; }
 
     @Override

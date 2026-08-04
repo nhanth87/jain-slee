@@ -65,6 +65,25 @@ public final class CamelRaEndpoint implements RaEndpointPort, RaCommandPort {
         return delegate;
     }
 
+    /** RA lifecycle — not broker UP; use {@link #isBrokerReady()}. */
+    public boolean isActive() {
+        return delegate.isActive();
+    }
+
+    /** Honest Camel traffic-ready (context + consumer routes started). */
+    public boolean isBrokerReady() {
+        return delegate.isBrokerReady();
+    }
+
+    /** Alias of {@link #isBrokerReady()}. */
+    public boolean isPeerReady() {
+        return delegate.isPeerReady();
+    }
+
+    public String brokerDetail() {
+        return delegate.brokerDetail();
+    }
+
     // ── RaEndpointPort ─────────────────────────────────────────────
 
     @Override

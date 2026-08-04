@@ -118,10 +118,14 @@ GET /api/ai/report?audience=dev    → 🛠 metrics, anomalies, root causes, nex
 GET /api/ai/report?audience=boss   → 💼 ten lines: availability, risk, business impact
 ```
 
-### 🖥 Monitoring Window — one GUI, three tabs
+### 🖥 Monitoring Window — hub + RA admin packs
 
 `jainslee-monitor` serves a zero-build steampunk dashboard at
-`/telemetry`: **📡 Telemetry** (live gauges, SBB/RA tables, alarms),
+`/telemetry`: **📡 Telemetry**, **🧠 Autonomous**, **🤖 AI Agent**, plus
+**dynamic RA tabs** discovered via `jainslee-admin-spi` ServiceLoader packs
+(`GET /api/admin/dashboards`, fragments under `/admin/ra/{raName}/`).
+Link-status panels must never treat `isActive()` / LISTEN as peer UP — see
+[ADR 0003](docs/adr/0003-ra-admin-dashboard-packs.md).
 **🧠 Autonomous** (GREEN/AMBER/RED traffic light, guardian escalation ladder),
 **🤖 AI Agent** (enable toggle, trust-mode selector, live analysis, one-click
 User/Dev/Boss reports). Tabs whose module isn't installed show an install hint

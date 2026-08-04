@@ -18,6 +18,47 @@
   var $ = function (sel) { return document.querySelector(sel); };
   var $$ = function (sel) { return document.querySelectorAll(sel); };
 
+  /**
+   * Lab shortcut: propagate ?key= from the hub URL onto same-origin admin/RA
+   * fetches (OTA accepts X-OTA-Admin-Key OR ?key=). Session cookies still work
+   * without this. Does not leak the key to third-party origins.
+   */
+  (function installAuthKeyFetch() {
+    var key = null;
+    try {
+      key = new URLSearchParams(window.location.search).get('key');
+    } catch (e) { /* ignore */ }
+    if (!key) return;
+    var nativeFetch = window.fetch.bind(window);
+    function withKey(url) {
+      if (typeof url !== 'string') return url;
+      if (!url.startsWith('/') && url.indexOf(window.location.origin) !== 0) return url;
+      var path = url.startsWith('http') ? url.slice(window.location.origin.length) : url;
+      if (path.indexOf('/api/admin') !== 0
+          && path.indexOf('/admin/ra/') !== 0
+          && path.indexOf('/api/ra/') !== 0
+          && path.indexOf('/api/telemetry') !== 0
+          && path.indexOf('/telemetry') !== 0) {
+        return url;
+      }
+      var join = path.indexOf('?') >= 0 ? '&' : '?';
+      if (/[?&]key=/.test(path)) return url;
+      return url + join + 'key=' + encodeURIComponent(key);
+    }
+    window.fetch = function (input, init) {
+      if (typeof input === 'string') {
+        return nativeFetch(withKey(input), init);
+      }
+      if (input && typeof Request !== 'undefined' && input instanceof Request) {
+        var next = withKey(input.url);
+        if (next !== input.url) {
+          return nativeFetch(new Request(next, input), init);
+        }
+      }
+      return nativeFetch(input, init);
+    };
+  })();
+
   var sparklineData = [];
   var startedAt = Date.now();
   var autonomousMissing = false;
@@ -65,17 +106,29 @@
       p.classList.toggle('active', p.id === 'tab-' + name);
     });
     try { localStorage.setItem('mw-tab', name); } catch (e) { /* private mode */ }
+    if (window.__mwOnTabActivate) {
+      try { window.__mwOnTabActivate(name); } catch (e) { /* ignore */ }
+    }
   }
 
-  $$('.tab-btn').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      activateTab(btn.getAttribute('data-tab'));
+  function bindTabButtons(root) {
+    (root || document).querySelectorAll('.tab-btn').forEach(function (btn) {
+      if (btn.__mwBound) return;
+      btn.__mwBound = true;
+      btn.addEventListener('click', function () {
+        activateTab(btn.getAttribute('data-tab'));
+      });
     });
-  });
-  try {
-    var saved = localStorage.getItem('mw-tab');
-    if (saved) activateTab(saved);
-  } catch (e) { /* ignore */ }
+  }
+  bindTabButtons(document);
+
+  function tabFromQuery() {
+    try {
+      var q = new URLSearchParams(window.location.search).get('tab');
+      if (q) return q;
+    } catch (e) { /* ignore */ }
+    try { return localStorage.getItem('mw-tab'); } catch (e2) { return null; }
+  }
 
   // ── clock / uptime / online dot ──────────────────────────────
 
@@ -446,10 +499,124 @@
     });
   });
 
+  // ═══ Dynamic RA admin tabs (AdminTabLoader) ═══════════════════
+
+  var AdminTabLoader = {
+    loaded: {},
+    dashboards: [],
+
+    init: function () {
+      var self = this;
+      fetch('/api/admin/dashboards')
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        })
+        .then(function (list) {
+          self.dashboards = Array.isArray(list) ? list : [];
+          self.dashboards.forEach(function (d) { self.ensureTab(d); });
+          var want = tabFromQuery();
+          if (want) activateTab(want);
+          else {
+            try {
+              var saved = localStorage.getItem('mw-tab');
+              if (saved) activateTab(saved);
+            } catch (e) { /* ignore */ }
+          }
+        })
+        .catch(function (err) {
+          console.warn('admin dashboards unavailable:', err.message);
+          var want = tabFromQuery();
+          if (want) activateTab(want);
+        });
+    },
+
+    ensureTab: function (d) {
+      if (!d || !d.tabId || !d.raName) return;
+      var tabbar = $('#tabbar');
+      var panels = $('#ra-admin-panels');
+      if (!tabbar || !panels) return;
+      if (document.querySelector('.tab-btn[data-tab="' + d.tabId + '"]')) return;
+
+      var btn = document.createElement('button');
+      btn.className = 'tab-btn';
+      btn.setAttribute('data-tab', d.tabId);
+      btn.innerHTML = esc(d.title || d.raName)
+        + ' <span class="tab-dot ' + esc(d.statusDotHint || '') + '" id="dot-'
+        + esc(d.tabId) + '"></span>';
+      tabbar.appendChild(btn);
+      bindTabButtons(tabbar);
+
+      var panel = document.createElement('div');
+      panel.className = 'tab-panel';
+      panel.id = 'tab-' + d.tabId;
+      panel.innerHTML = '<div class="ra-admin-wrap" data-ra-name="'
+        + esc(d.raName) + '" data-api-base="' + esc(d.apiBase || '')
+        + '"><div class="missing-note">Loading ' + esc(d.title || d.raName)
+        + '…</div></div>';
+      panels.appendChild(panel);
+    },
+
+    loadPanel: function (tabId) {
+      var self = this;
+      var d = this.dashboards.find(function (x) { return x.tabId === tabId; });
+      if (!d || self.loaded[tabId]) return;
+      var panel = $('#tab-' + tabId);
+      if (!panel) return;
+      var wrap = panel.querySelector('.ra-admin-wrap');
+      if (!wrap) return;
+      var fragUrl = d.fragmentUrl || ('/admin/ra/' + d.raName + '/panel.html');
+      fetch(fragUrl)
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.text();
+        })
+        .then(function (html) {
+          wrap.innerHTML = html;
+          wrap.setAttribute('data-api-base', d.apiBase || ('/api/ra/' + d.raName));
+          wrap.setAttribute('data-ra-name', d.raName);
+          if (d.styleUrl) {
+            var link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = d.styleUrl;
+            document.head.appendChild(link);
+          }
+          return self.loadScript(d);
+        })
+        .then(function () { self.loaded[tabId] = true; })
+        .catch(function (err) {
+          wrap.innerHTML = '<div class="missing-note">Failed to load RA admin pack: '
+            + esc(err.message) + '</div>';
+        });
+    },
+
+    loadScript: function (d) {
+      return new Promise(function (resolve, reject) {
+        var src = d.scriptUrl || ('/admin/ra/' + d.raName + '/panel.js');
+        var existing = document.querySelector('script[data-ra-admin="' + d.raName + '"]');
+        if (existing) { resolve(); return; }
+        var s = document.createElement('script');
+        s.src = src;
+        s.async = false;
+        s.setAttribute('data-ra-admin', d.raName);
+        s.setAttribute('data-api-base', d.apiBase || ('/api/ra/' + d.raName));
+        s.onload = function () { resolve(); };
+        s.onerror = function () { reject(new Error('script ' + src)); };
+        document.body.appendChild(s);
+      });
+    }
+  };
+
+  window.__mwOnTabActivate = function (name) {
+    if (name === 'telemetry' || name === 'autonomous' || name === 'ai') return;
+    AdminTabLoader.loadPanel(name);
+  };
+
   // ── init ─────────────────────────────────────────────────────
 
   updateClock();
   setInterval(updateClock, 1000);
+  AdminTabLoader.init();
   pollTelemetry();
   pollAutonomous();
   pollAi();

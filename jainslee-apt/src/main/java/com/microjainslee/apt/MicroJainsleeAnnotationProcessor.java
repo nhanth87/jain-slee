@@ -12,6 +12,7 @@ package com.microjainslee.apt;
 
 import com.microjainslee.api.annotations.DeployableUnit;
 import com.microjainslee.api.annotations.EventType;
+import com.microjainslee.api.annotations.OffHeap;
 import com.microjainslee.api.annotations.SbbAnnotation;
 
 import javax.annotation.processing.AbstractProcessor;
@@ -68,9 +69,10 @@ import java.util.Set;
 @SupportedAnnotationTypes({
         "com.microjainslee.api.annotations.SbbAnnotation",
         "com.microjainslee.api.annotations.DeployableUnit",
-        "com.microjainslee.api.annotations.EventType"
+        "com.microjainslee.api.annotations.EventType",
+        "com.microjainslee.api.annotations.OffHeap"
 })
-@SupportedSourceVersion(SourceVersion.RELEASE_8)
+@SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class MicroJainsleeAnnotationProcessor extends AbstractProcessor {
 
     // Diagnostics go through javac's own Messager — an annotation processor
@@ -84,6 +86,8 @@ public class MicroJainsleeAnnotationProcessor extends AbstractProcessor {
     private final List<SbbInfo> sbbs = new ArrayList<SbbInfo>();
     private final List<EventTypeInfo> events = new ArrayList<EventTypeInfo>();
     private final List<DuInfo> dus = new ArrayList<DuInfo>();
+    private final List<TypeElement> offHeapSbbs = new ArrayList<TypeElement>();
+    private final Set<String> offHeapSeen = new java.util.HashSet<String>();
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
@@ -96,11 +100,23 @@ public class MicroJainsleeAnnotationProcessor extends AbstractProcessor {
                 continue;
             }
             SbbAnnotation a = e.getAnnotation(SbbAnnotation.class);
-            sbbs.add(new SbbInfo(((TypeElement) e).getQualifiedName().toString(),
-                    a.name(), a.vendor(), a.version()));
-            note("Discovered @SbbAnnotation " + ((TypeElement) e).getQualifiedName()
+            TypeElement te = (TypeElement) e;
+            OffHeap oh = e.getAnnotation(OffHeap.class);
+            sbbs.add(new SbbInfo(te.getQualifiedName().toString(),
+                    a.name(), a.vendor(), a.version(), oh));
+            note("Discovered @SbbAnnotation " + te.getQualifiedName()
                     + " (name='" + a.name() + "', vendor='" + a.vendor()
-                    + "', version='" + a.version() + "')");
+                    + "', version='" + a.version() + "'"
+                    + (oh != null ? ", offHeap=true" : "") + ")");
+            if (oh != null) {
+                rememberOffHeap(te);
+            }
+        }
+
+        for (Element e : roundEnv.getElementsAnnotatedWith(OffHeap.class)) {
+            if (e instanceof TypeElement te) {
+                rememberOffHeap(te);
+            }
         }
 
         for (Element e : roundEnv.getElementsAnnotatedWith(EventType.class)) {
@@ -139,6 +155,10 @@ public class MicroJainsleeAnnotationProcessor extends AbstractProcessor {
             try {
                 writeIndexFile(sbbs, events, dus);
                 writeGeneratedEventTypes(events);
+                for (TypeElement oh : offHeapSbbs) {
+                    OffHeapConcreteEmitter.emit(oh, processingEnv.getFiler(),
+                            processingEnv.getMessager());
+                }
             } catch (IOException ioe) {
                 processingEnv.getMessager().printMessage(javax.tools.Diagnostic.Kind.ERROR,
                         "Failed to write micro-jainslee generated metadata: " + ioe.getMessage());
@@ -147,6 +167,14 @@ public class MicroJainsleeAnnotationProcessor extends AbstractProcessor {
         }
         // Don't claim — let other processors process these annotations too.
         return false;
+    }
+
+    private void rememberOffHeap(TypeElement te) {
+        String fqn = te.getQualifiedName().toString();
+        if (offHeapSeen.add(fqn)) {
+            offHeapSbbs.add(te);
+            note("Discovered @OffHeap " + fqn);
+        }
     }
 
     private void writeIndexFile(List<SbbInfo> sbbs,
@@ -177,6 +205,12 @@ public class MicroJainsleeAnnotationProcessor extends AbstractProcessor {
             props.setProperty("sbb." + n + ".name", s.name);
             props.setProperty("sbb." + n + ".vendor", s.vendor);
             props.setProperty("sbb." + n + ".version", s.version);
+            if (s.offHeap) {
+                props.setProperty("sbb." + n + ".offheap", "true");
+                props.setProperty("sbb." + n + ".offheap.storage", s.offHeapStorage);
+                props.setProperty("sbb." + n + ".offheap.maxSlots", Integer.toString(s.offHeapMaxSlots));
+                props.setProperty("sbb." + n + ".offheap.concrete", s.fqn + "$OffHeapConcrete");
+            }
         }
         for (int i = 0; i < events.size(); i++) {
             EventTypeInfo ev = events.get(i);
@@ -359,8 +393,18 @@ public class MicroJainsleeAnnotationProcessor extends AbstractProcessor {
 
     private static final class SbbInfo {
         final String fqn, name, vendor, version;
-        SbbInfo(String fqn, String name, String vendor, String version) {
-            this.fqn = fqn; this.name = name; this.vendor = vendor; this.version = version;
+        final boolean offHeap;
+        final String offHeapStorage;
+        final int offHeapMaxSlots;
+
+        SbbInfo(String fqn, String name, String vendor, String version, OffHeap oh) {
+            this.fqn = fqn;
+            this.name = name;
+            this.vendor = vendor;
+            this.version = version;
+            this.offHeap = oh != null;
+            this.offHeapStorage = oh != null ? oh.storage().name() : "";
+            this.offHeapMaxSlots = oh != null ? oh.maxSlots() : 0;
         }
     }
 

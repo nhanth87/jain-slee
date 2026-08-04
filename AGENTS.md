@@ -47,17 +47,22 @@ local/internal RA and SBB development pattern defined in docs/junior-dev-guide.m
 Do NOT start coding until you have read all 3 files.
 
 ## CURRENT STATE (runtime modules)
+
+**Milestone:** Production-1 **shipped**. Production-2 = Runtime OffHeap gate + separate SS7 HA lab
+(see [`docs/gap-analysis.md`](docs/gap-analysis.md)). Do not claim multi-ASP production HA yet.
+
 ```
-jainslee-api        ← Pure Java 25 API (JSR-240)
+jainslee-api        ← Pure Java 25 API (JSR-240) + @OffHeap / OffHeapBindable
 jainslee-core       ← Engine: MicroSleeContainer, EventRouter,
-                       VirtualThreadSbbEntityPool, SleeTimerSchedulerBridge,
-                       SbbIndexLoader, ServiceRegistry, SbbTransactionContext,
-                       DefaultInitialEventSelector, DefaultErrorHandlingPolicy
-jainslee-scheduler  ← Netty HashedWheelTimer (10ms), TimerType.SLEE_TIMER
-jainslee-apt        ← APT codegen, GeneratedEventTypes, SbbIndexLoader
-adapter-quarkus     ← Quarkus/CDI/GraalVM adapter
-adapter-spring      ← Spring Boot adapter
-ra-connectors       ← vendor RA stubs
+                       VirtualThreadSbbEntityPool (+ OffHeap arenas),
+                       SleeTimerSchedulerBridge, SbbIndexLoader, …
+jainslee-scheduler  ← Agrona timer wheel default; Netty HashedWheel = compat
+jainslee-codegen    ← ConcreteSbbGenerator (Javassist) — @OffHeap $Concrete path
+jainslee-apt        ← APT index (@SbbAnnotation / @OffHeap meta), GeneratedEventTypes
+adapter-quarkus     ← Quarkus/CDI/GraalVM adapter (OTA host stays here)
+adapter-springboot  ← Spring Boot adapter
+adapter-jakartaee   ← Jakarta EE adapter (directory dist, no WAR)
+vendor-ras/         ← ra-jss7 (sticky P1 + TCAP failover P2 wire), ra-http-server, …
 ```
 
 ## TARGET STATE — what needs to change in the RUNTIME

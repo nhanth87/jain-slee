@@ -16,6 +16,7 @@ import com.microjainslee.ra.jss7.cluster.Jss7TcapDialogFailoverPort;
 import com.microjainslee.ra.jss7.cluster.Ss7DialogOwnershipTracker;
 import com.microjainslee.ra.jss7.cluster.StickyRaCommandRouter;
 import com.microjainslee.ra.jss7.cluster.TcapDialogFailoverPort;
+import com.microjainslee.ra.jss7.cluster.TcapFailoverMetrics;
 import com.microjainslee.ra.jss7.collab.CapProtocolAdapter;
 import com.microjainslee.ra.jss7.collab.MapProtocolAdapter;
 import com.microjainslee.ra.jss7.collab.Ss7EventPublisher;
@@ -76,6 +77,7 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     private volatile StickyRaCommandRouter stickyRouter;
     private volatile IspnStickyCommandBus stickyBus;
     private volatile TcapDialogFailoverPort failoverPort;
+    private final TcapFailoverMetrics failoverMetrics = new TcapFailoverMetrics();
 
     // ── configuration ────────────────────────────────────────
     public void setBootstrapPort(RaBootstrapPort bp) { this.bootstrap = bp; }
@@ -123,6 +125,11 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     public TcapDialogFailoverPort failoverPort() {
         TcapDialogFailoverPort p = failoverPort;
         return p != null ? p : TcapDialogFailoverPort.unsupported();
+    }
+
+    /** Lab / scrape: ADR 0001 P2 counters (export, import fail, sticky miss, …). */
+    public TcapFailoverMetrics failoverMetrics() {
+        return failoverMetrics;
     }
 
     /** RA lifecycle active — **not** peer route-ready; use {@link #isM3uaRouteReady()}. */
@@ -238,7 +245,8 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                             : null;
                 },
                 ownershipTracker,
-                caches);
+                caches,
+                failoverMetrics);
         failoverPort = wired;
         try {
             if (s.tcapProvider() != null) {
@@ -384,11 +392,18 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         }
         StickyRaCommandRouter.Decision decision = router.decide(cmd, isM3uaRouteReady());
         switch (decision.action()) {
-            case REJECT -> LOG.warn("[ra-jss7] sticky REJECT {}: {}",
-                    cmd.getClass().getSimpleName(), decision.reason());
+            case REJECT -> {
+                failoverMetrics.stickyReject();
+                if (decision.reason() != null && decision.reason().startsWith("no dialog owner")) {
+                    failoverMetrics.stickyMiss();
+                }
+                LOG.warn("[ra-jss7] sticky REJECT {}: {}",
+                        cmd.getClass().getSimpleName(), decision.reason());
+            }
             case FORWARD_REMOTE -> {
                 IspnStickyCommandBus bus = stickyBus;
                 if (bus == null || decision.owner() == null) {
+                    failoverMetrics.stickyReject();
                     LOG.warn("[ra-jss7] sticky FORWARD unavailable (no bus/owner): {}",
                             decision.reason());
                     return;

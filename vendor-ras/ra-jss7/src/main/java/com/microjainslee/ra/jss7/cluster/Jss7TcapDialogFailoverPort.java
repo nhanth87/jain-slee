@@ -41,22 +41,38 @@ public final class Jss7TcapDialogFailoverPort
     private final Supplier<ParameterFactory> parameterFactory;
     private final Ss7DialogOwnershipTracker tracker;
     private final Ss7DialogClusterCaches clusterCaches; // nullable
+    private final TcapFailoverMetrics metrics;
 
     public Jss7TcapDialogFailoverPort(
             Supplier<TCAPProvider> tcapProvider,
             Supplier<ParameterFactory> parameterFactory,
             Ss7DialogOwnershipTracker tracker,
             Ss7DialogClusterCaches clusterCaches) {
+        this(tcapProvider, parameterFactory, tracker, clusterCaches, new TcapFailoverMetrics());
+    }
+
+    public Jss7TcapDialogFailoverPort(
+            Supplier<TCAPProvider> tcapProvider,
+            Supplier<ParameterFactory> parameterFactory,
+            Ss7DialogOwnershipTracker tracker,
+            Ss7DialogClusterCaches clusterCaches,
+            TcapFailoverMetrics metrics) {
         this.tcapProvider = Objects.requireNonNull(tcapProvider, "tcapProvider");
         this.parameterFactory = Objects.requireNonNull(parameterFactory, "parameterFactory");
         this.tracker = Objects.requireNonNull(tracker, "tracker");
         this.clusterCaches = clusterCaches;
+        this.metrics = Objects.requireNonNull(metrics, "metrics");
+    }
+
+    public TcapFailoverMetrics metrics() {
+        return metrics;
     }
 
     @Override
     public Optional<TcapDialogSnapshotPayload> exportAndStore(long localOtid) {
         TCAPProvider provider = tcapProvider.get();
         if (provider == null) {
+            metrics.exportFail();
             return Optional.empty();
         }
         TcapDialogSnapshot snap;
@@ -64,35 +80,42 @@ public final class Jss7TcapDialogFailoverPort
             snap = provider.exportDialog(localOtid);
         } catch (RuntimeException e) {
             LOG.warn("[ra-jss7] exportDialog({}) failed: {}", localOtid, e.toString());
+            metrics.exportFail();
             return Optional.empty();
         }
         if (snap == null) {
+            metrics.exportFail();
             return Optional.empty();
         }
         TcapDialogSnapshotPayload payload = toPayload(String.valueOf(localOtid), snap);
         if (clusterCaches != null) {
             clusterCaches.putSnapshot(payload);
         }
+        metrics.exportOk();
         return Optional.of(payload);
     }
 
     @Override
     public boolean importPayload(TcapDialogSnapshotPayload payload) {
         if (payload == null) {
+            metrics.importFail();
             return false;
         }
         TCAPProvider provider = tcapProvider.get();
         ParameterFactory pf = parameterFactory.get();
         if (provider == null || pf == null) {
+            metrics.importFail();
             return false;
         }
         try {
             TcapDialogSnapshot snap = toJss7Snapshot(payload, pf);
             provider.importDialog(snap);
             claimOwnershipAfterImport(payload.dialogKey(), payload.localOtid());
+            metrics.importOk();
             return true;
         } catch (Exception e) {
             LOG.warn("[ra-jss7] importDialog({}) failed: {}", payload.localOtid(), e.toString());
+            metrics.importFail();
             return false;
         }
     }
@@ -101,10 +124,12 @@ public final class Jss7TcapDialogFailoverPort
     public boolean tryTakeover(long localOtid) {
         TCAPProvider provider = tcapProvider.get();
         if (provider == null) {
+            metrics.takeoverFail();
             return false;
         }
         // Already present locally — success without CAS churn.
         if (provider.exportDialog(localOtid) != null) {
+            metrics.takeoverOk();
             return true;
         }
         TcapDialogSnapshotPayload payload = null;
@@ -117,9 +142,16 @@ public final class Jss7TcapDialogFailoverPort
         }
         if (payload == null) {
             LOG.debug("[ra-jss7] tryTakeover({}): no snapshot in cache", localOtid);
+            metrics.takeoverFail();
             return false;
         }
-        return importPayload(payload);
+        boolean ok = importPayload(payload);
+        if (ok) {
+            metrics.takeoverOk();
+        } else {
+            metrics.takeoverFail();
+        }
+        return ok;
     }
 
     /**
@@ -128,15 +160,19 @@ public final class Jss7TcapDialogFailoverPort
      */
     @Override
     public TcapDialogSnapshot resolve(long localOtid) {
+        metrics.continueMiss();
         if (clusterCaches == null) {
+            metrics.continueResolveFail();
             return null;
         }
         TcapDialogSnapshotPayload payload = clusterCaches.getSnapshot(String.valueOf(localOtid));
         if (payload == null) {
+            metrics.continueResolveFail();
             return null;
         }
         ParameterFactory pf = parameterFactory.get();
         if (pf == null) {
+            metrics.continueResolveFail();
             return null;
         }
         try {
@@ -145,6 +181,7 @@ public final class Jss7TcapDialogFailoverPort
             return snap;
         } catch (RuntimeException e) {
             LOG.warn("[ra-jss7] CONTINUE miss resolve({}) failed: {}", localOtid, e.toString());
+            metrics.continueResolveFail();
             return null;
         }
     }

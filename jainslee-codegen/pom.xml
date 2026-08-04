@@ -81,6 +81,13 @@
             <version>2.23.1</version>
         </dependency>
 
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-apt</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- Tests -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -106,6 +113,21 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>25</release>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>com.microjainslee</groupId>
+                            <artifactId>jainslee-apt</artifactId>
+                            <version>${project.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
                 <configuration>
@@ -115,7 +137,8 @@
                       occasionally synchronises on its loader — see
                       production-roadmap §5.1.
                     -->
-                    <argLine>-Xss1m</argLine>
+                    <!-- 100k OffHeap soak needs ~heap for entity holders + arena (~slotSize*N) -->
+                    <argLine>-Xss1m -Xmx2g</argLine>
                 </configuration>
             </plugin>
         </plugins>

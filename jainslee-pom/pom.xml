@@ -11,11 +11,12 @@
 
     <name>micro-jainslee :: BOM</name>
     <description>
-        Bill of Materials for micro-jainslee 1.2.0-P1 (Production 1).
+        Bill of Materials for micro-jainslee 1.2.0-SNAPSHOT (Production 1 shipped;
+        targeting 1.2.0-P2 — opt-in OffHeap CMP + separate SS7 multi-ASP HA lab).
         Pins every third-party version used by jainslee-core / jainslee-tx /
         jainslee-tck-harness / adapters so downstream USSD 7.3 builds only
         have to import this BOM once to get a consistent classpath.
-        R&amp;D only — never for production packaging.
+        R&amp;D only — never for production packaging until P2 soak gates pass.
     </description>
 
     <!-- ============================================================ -->

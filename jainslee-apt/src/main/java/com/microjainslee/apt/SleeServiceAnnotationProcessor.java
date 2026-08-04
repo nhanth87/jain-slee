@@ -45,7 +45,7 @@ import java.util.Set;
  * {@code ms-api}.</p>
  */
 @SupportedAnnotationTypes("com.microjainslee.ms.api.annotation.SleeService")
-@SupportedSourceVersion(SourceVersion.RELEASE_8)
+@SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class SleeServiceAnnotationProcessor extends AbstractProcessor {
 
     static final String OUTPUT_RESOURCE = "META-INF/jainslee/slee-services";

@@ -1,6 +1,6 @@
 # Off-Heap SBB State — Design
 
-> **Status:** Draft · **Target:** micro-jainslee 1.2.0-P2  
+> **Status:** Partial (runtime + Javassist `$Concrete` landed; APT index + example + 100k soak = P2 gate) · **Target:** micro-jainslee 1.2.0-P2  
 > **Audience:** Contributors & advanced users planning 1M+ SBB entity deployments
 
 ---

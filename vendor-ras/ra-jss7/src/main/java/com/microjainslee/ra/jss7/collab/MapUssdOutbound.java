@@ -94,6 +94,10 @@ final class MapUssdOutbound {
         }
     }
 
+    void clearAll() {
+        localToCorrelation.clear();
+    }
+
     private void replyMo(Ss7Command.MapProcessUnstructuredSsResponse cmd) {
         Long localId = parseLocalId(cmd.dialogId());
         if (localId == null) {

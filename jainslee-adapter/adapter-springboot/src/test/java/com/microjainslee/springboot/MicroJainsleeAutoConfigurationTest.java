@@ -259,14 +259,19 @@ public class MicroJainsleeAutoConfigurationTest {
             @Override public String getRaName() { return "testRa"; }
         };
 
-        // Mock RaCommandPort that records delivered commands.
+        // Mock RaCommandPort that records delivered commands — dual-port so
+        // getRaName() pairs with the endpoint (not list order).
         java.util.List<OutboundCommand> delivered =
                 java.util.Collections.synchronizedList(new java.util.ArrayList<>());
-        RaCommandPort mockCommand = new RaCommandPort() {
+        class DualPort implements RaEndpointPort, RaCommandPort {
+            @Override public void activate(RaBootstrapPort b) { }
+            @Override public void deactivate() { }
+            @Override public String getRaName() { return "testRa"; }
             @Override public void sendCommand(OutboundCommand command) {
                 delivered.add(command);
             }
-        };
+        }
+        RaCommandPort mockCommand = new DualPort();
 
         List<RaEndpointPort> endpoints = Collections.singletonList(mockEndpoint);
         List<RaCommandPort> commands = Collections.singletonList(mockCommand);
@@ -298,6 +303,79 @@ public class MicroJainsleeAutoConfigurationTest {
         // Clean up.
         LIFECYCLE.getMethod("stop").invoke(lifecycle);
         assertEquals(MicroSleeContainer.State.STOPPED, container.getState());
+    }
+
+    /**
+     * RA pairing must use getRaName() — not list order — when multiple endpoints
+     * and command ports are present in mismatched order.
+     */
+    @Test
+    public void lifecyclePairsResourceAdaptorsByRaNameNotListOrder() throws Exception {
+        com.microjainslee.core.MicroSleeConfiguration cfg =
+                com.microjainslee.core.MicroSleeConfiguration.builder()
+                        .eventRouterBufferSize(64)
+                        .build();
+        MicroSleeContainer container = new MicroSleeContainer(cfg);
+
+        java.util.List<OutboundCommand> httpDelivered =
+                java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        java.util.List<OutboundCommand> ss7Delivered =
+                java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
+        RaEndpointPort httpEp = new RaEndpointPort() {
+            @Override public void activate(RaBootstrapPort b) { }
+            @Override public void deactivate() { }
+            @Override public String getRaName() { return "ra-http"; }
+        };
+        RaEndpointPort ss7Ep = new RaEndpointPort() {
+            @Override public void activate(RaBootstrapPort b) { }
+            @Override public void deactivate() { }
+            @Override public String getRaName() { return "ra-jss7"; }
+        };
+        // Dual-port commands: name comes from RaEndpointPort.getRaName().
+        class NamedCommand implements RaEndpointPort, RaCommandPort {
+            private final String name;
+            private final java.util.List<OutboundCommand> sink;
+            NamedCommand(String name, java.util.List<OutboundCommand> sink) {
+                this.name = name;
+                this.sink = sink;
+            }
+            @Override public void activate(RaBootstrapPort b) { }
+            @Override public void deactivate() { }
+            @Override public String getRaName() { return name; }
+            @Override public void sendCommand(OutboundCommand command) { sink.add(command); }
+        }
+        RaCommandPort httpCmd = new NamedCommand("ra-http", httpDelivered);
+        RaCommandPort ss7Cmd = new NamedCommand("ra-jss7", ss7Delivered);
+
+        // Deliberately reverse command list order vs endpoint list.
+        List<RaEndpointPort> endpoints = java.util.Arrays.asList(httpEp, ss7Ep);
+        List<RaCommandPort> commands = java.util.Arrays.asList(ss7Cmd, httpCmd);
+
+        Constructor<?> fullCtor = LIFECYCLE.getDeclaredConstructor(
+                MicroSleeContainer.class,
+                MicroJainsleeProperties.class,
+                List.class,
+                List.class);
+        Object lifecycle = fullCtor.newInstance(container, null, endpoints, commands);
+        LIFECYCLE.getMethod("start").invoke(lifecycle);
+
+        RaCommandPort registeredHttp = container.getRaCommandPort("ra-http");
+        RaCommandPort registeredSs7 = container.getRaCommandPort("ra-jss7");
+        assertNotNull(registeredHttp);
+        assertNotNull(registeredSs7);
+
+        OutboundCommand httpProbe = new OutboundCommand() { };
+        OutboundCommand ss7Probe = new OutboundCommand() { };
+        registeredHttp.sendCommand(httpProbe);
+        registeredSs7.sendCommand(ss7Probe);
+
+        assertEquals(1, httpDelivered.size());
+        assertTrue(httpDelivered.get(0) == httpProbe);
+        assertEquals(1, ss7Delivered.size());
+        assertTrue(ss7Delivered.get(0) == ss7Probe);
+
+        LIFECYCLE.getMethod("stop").invoke(lifecycle);
     }
 
     /**

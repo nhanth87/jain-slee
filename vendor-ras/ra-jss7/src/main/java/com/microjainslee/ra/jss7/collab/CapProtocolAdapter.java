@@ -47,7 +47,42 @@ public final class CapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     }
 
     @Override
-    public void detach() { LOG.info("[ra-jss7] CAP adapter detached"); }
+    public void detach() {
+        CAPProvider p = provider;
+        if (p != null) {
+            try {
+                p.removeCAPDialogListener(this);
+            } catch (RuntimeException e) {
+                LOG.warn("[ra-jss7] removeCAPDialogListener failed: {}", e.toString());
+            }
+            deactivateCapService(() -> {
+                var s = p.getCAPServiceCircuitSwitchedCall();
+                s.removeCAPServiceListener(this);
+                s.deactivate();
+            }, "CircuitSwitchedCall");
+            deactivateCapService(() -> {
+                var s = p.getCAPServiceGprs();
+                s.removeCAPServiceListener(this);
+                s.deactivate();
+            }, "Gprs");
+            deactivateCapService(() -> {
+                var s = p.getCAPServiceSms();
+                s.removeCAPServiceListener(this);
+                s.deactivate();
+            }, "Sms");
+        }
+        publisher = null;
+        provider = null;
+        LOG.info("[ra-jss7] CAP adapter detached");
+    }
+
+    private static void deactivateCapService(Runnable action, String label) {
+        try {
+            action.run();
+        } catch (Exception e) {
+            LOG.warn("[ra-jss7] CAP service {} detach failed: {}", label, e.toString());
+        }
+    }
 
     // ── helpers ──────────────────────────────────────────────
     private void service(CAPMessage m) {

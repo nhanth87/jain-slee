@@ -31,9 +31,9 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * CDI producers that re-expose the build-time-constructed {@link MicroSleeContainer} and its
@@ -155,7 +155,6 @@ public class MicroJainsleeProducer {
             Instance<RaEndpointPort> endpoints,
             Instance<RaCommandPort> commands) {
 
-        // Collect into mutable sorted lists.
         List<RaEndpointPort> epList = new ArrayList<RaEndpointPort>();
         for (RaEndpointPort ep : endpoints) {
             epList.add(ep);
@@ -164,48 +163,77 @@ public class MicroJainsleeProducer {
             LOG.debugf("No RaEndpointPort beans discovered; skipping CDI RA registration");
             return;
         }
-        Collections.sort(epList, new Comparator<RaEndpointPort>() {
-            @Override
-            public int compare(RaEndpointPort a, RaEndpointPort b) {
-                String na = a.getRaName() != null ? a.getRaName() : "";
-                String nb = b.getRaName() != null ? b.getRaName() : "";
-                return na.compareTo(nb);
-            }
-        });
 
-        List<RaCommandPort> cmdList = new ArrayList<RaCommandPort>();
+        Map<String, RaCommandPort> commandsByName = new LinkedHashMap<>();
         for (RaCommandPort cmd : commands) {
-            cmdList.add(cmd);
-        }
-        Collections.sort(cmdList, new Comparator<RaCommandPort>() {
-            @Override
-            public int compare(RaCommandPort a, RaCommandPort b) {
-                return a.getClass().getSimpleName().compareTo(b.getClass().getSimpleName());
+            String name = resolveCommandRaName(cmd);
+            if (name == null || name.isBlank()) {
+                LOG.warnf("RaCommandPort %s has no getRaName()/@RaEntity — cannot pair by name",
+                        cmd.getClass().getName());
+                continue;
             }
-        });
-
-        int count = Math.min(epList.size(), cmdList.size());
-        if (epList.size() != cmdList.size()) {
-            LOG.warnf("Mismatch between RaEndpointPort count (%s) and RaCommandPort count (%s); "
-                    + "only %s pair(s) will be registered",
-                    epList.size(), cmdList.size(), count);
+            RaCommandPort prev = commandsByName.putIfAbsent(name, cmd);
+            if (prev != null && prev != cmd) {
+                LOG.warnf("Duplicate RaCommandPort name '%s': keeping %s discarding %s",
+                        name, prev.getClass().getSimpleName(), cmd.getClass().getSimpleName());
+            }
         }
 
-        for (int i = 0; i < count; i++) {
-            RaEndpointPort endpoint = epList.get(i);
-            RaCommandPort command = cmdList.get(i);
+        int registered = 0;
+        for (RaEndpointPort endpoint : epList) {
+            String name = endpoint.getRaName();
+            if (name == null || name.isBlank()) {
+                LOG.warnf("Skipping RaEndpointPort with blank getRaName(): %s",
+                        endpoint.getClass().getName());
+                continue;
+            }
+            RaCommandPort command = commandsByName.remove(name);
+            if (command == null && endpoint instanceof RaCommandPort dual) {
+                command = dual;
+            }
+            if (command == null) {
+                LOG.warnf("No RaCommandPort paired by getRaName()/@RaEntity for endpoint '%s' — skipping",
+                        name);
+                continue;
+            }
             try {
                 container.registerRa(endpoint, command);
+                registered++;
                 LOG.infof("Registered RA via CDI: %s (endpoint=%s, command=%s)",
-                        endpoint.getRaName(),
+                        name,
                         endpoint.getClass().getSimpleName(),
                         command.getClass().getSimpleName());
             } catch (RuntimeException re) {
-                LOG.errorf(re, "Failed to register RA [%s]: %s",
-                        endpoint.getRaName(), re.getMessage());
+                LOG.errorf(re, "Failed to register RA [%s]: %s", name, re.getMessage());
             }
         }
-        LOG.infof("CDI RA registration complete: %s pair(s) registered", count);
+        if (!commandsByName.isEmpty()) {
+            LOG.warnf("Unpaired RaCommandPort(s) after name matching: %s", commandsByName.keySet());
+        }
+        LOG.infof("CDI RA registration complete: %s pair(s) registered", registered);
+    }
+
+    private static String resolveCommandRaName(RaCommandPort cmd) {
+        if (cmd instanceof RaEndpointPort ep) {
+            String n = ep.getRaName();
+            if (n != null && !n.isBlank()) {
+                return n;
+            }
+        }
+        for (java.lang.annotation.Annotation a : cmd.getClass().getAnnotations()) {
+            if (!"RaEntity".equals(a.annotationType().getSimpleName())) {
+                continue;
+            }
+            try {
+                Object v = a.annotationType().getMethod("value").invoke(a);
+                if (v instanceof String s && !s.isBlank()) {
+                    return s;
+                }
+            } catch (ReflectiveOperationException ignored) {
+                // fall through
+            }
+        }
+        return null;
     }
 
     private static Object resolveMeterRegistry() {

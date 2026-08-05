@@ -174,7 +174,8 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     ownershipTracker != null && ownershipTracker.isClustered());
         } catch (Exception e) {
             active.set(false);
-            teardownOwnership();
+            // Mirror raInactive for partial start: detach, clear resolver, stop stack.
+            rollbackPartialActivation();
             LOG.error("jSS7 RA activation failed", e);
             throw new IllegalStateException("jSS7 RA activation failed", e);
         }
@@ -183,12 +184,9 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     public void raInactive() {
         if (!active.compareAndSet(true, false)) return;
         sweeper.stop();
-        for (Ss7ProtocolAdapter a : adapters) {
-            try { a.detach(); } catch (RuntimeException e) { LOG.warn("detach {} failed", a.protocol(), e); }
-        }
-        adapters.clear();
+        detachAdapters();
         clearMissingDialogResolver();
-        if (stack != null) { stack.stop(); stack = null; }
+        stopAndClearStack();
         sessions.values().forEach(this::endActivity);
         sessions.clear();
         if (ownershipTracker != null) {
@@ -196,6 +194,42 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         }
         teardownOwnership();
         LOG.info("jSS7 RA deactivated");
+    }
+
+    /**
+     * Undo a mid-{@link #raActive()} failure after {@code active} has been cleared.
+     * Same detach / resolver / stack / ownership cleanup as {@link #raInactive()},
+     * without session end (sessions were never published).
+     */
+    void rollbackPartialActivation() {
+        sweeper.stop();
+        detachAdapters();
+        clearMissingDialogResolver();
+        stopAndClearStack();
+        teardownOwnership();
+    }
+
+    private void detachAdapters() {
+        for (Ss7ProtocolAdapter a : adapters) {
+            try {
+                a.detach();
+            } catch (RuntimeException e) {
+                LOG.warn("detach {} failed", a.protocol(), e);
+            }
+        }
+        adapters.clear();
+    }
+
+    private void stopAndClearStack() {
+        Ss7Stack s = stack;
+        stack = null;
+        if (s != null) {
+            try {
+                s.stop();
+            } catch (RuntimeException e) {
+                LOG.warn("stack stop failed during RA teardown: {}", e.toString());
+            }
+        }
     }
 
     private void initOwnershipAndStickyBus() {

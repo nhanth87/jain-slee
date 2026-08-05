@@ -155,8 +155,10 @@ public final class Jss7TcapDialogFailoverPort
     }
 
     /**
-     * jSS7 CONTINUE-miss hook — load cache snapshot for import.
-     * Ownership CAS happens inside {@link #importPayload}.
+     * jSS7 CONTINUE-miss hook — load cache snapshot for {@code importDialog}.
+     * jSS7 calls {@code resolve} then {@code importDialog} in the same stack;
+     * claim ownership here (same path as {@link #importPayload}/{@link #tryTakeover})
+     * so sticky outbound becomes {@code SEND_LOCAL} on the survivor.
      */
     @Override
     public TcapDialogSnapshot resolve(long localOtid) {
@@ -177,7 +179,11 @@ public final class Jss7TcapDialogFailoverPort
         }
         try {
             TcapDialogSnapshot snap = toJss7Snapshot(payload, pf);
-            LOG.info("[ra-jss7] CONTINUE miss: resolving snapshot for otid={}", localOtid);
+            // Ownership must land on the survivor before CONTINUE processing continues;
+            // otherwise sticky router still sees the dead owner and REJECT/FORWARD.
+            claimOwnershipAfterImport(payload.dialogKey(), payload.localOtid());
+            LOG.info("[ra-jss7] CONTINUE miss: resolving snapshot for otid={} (ownership claimed)",
+                    localOtid);
             return snap;
         } catch (RuntimeException e) {
             LOG.warn("[ra-jss7] CONTINUE miss resolve({}) failed: {}", localOtid, e.toString());

@@ -105,6 +105,10 @@ final class MapSmsOutbound {
         }
     }
 
+    void clearAll() {
+        localToCorrelation.clear();
+    }
+
     private void sendSri(Ss7Command.MapSendRoutingInfoForSm cmd) {
         MAPDialogSms dialog = null;
         boolean sent = false;

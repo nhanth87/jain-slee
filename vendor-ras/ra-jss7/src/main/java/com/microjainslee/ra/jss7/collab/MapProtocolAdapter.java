@@ -56,9 +56,70 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
 
     @Override
     public void detach() {
+        MAPProvider p = provider;
+        if (p != null) {
+            try {
+                p.removeMAPDialogListener(this);
+            } catch (RuntimeException e) {
+                LOG.warn("[ra-jss7] removeMAPDialogListener failed: {}", e.toString());
+            }
+            deactivateMapService(() -> {
+                var s = p.getMAPServiceMobility();
+                s.removeMAPServiceListener(this);
+                s.deactivate();
+            }, "Mobility");
+            deactivateMapService(() -> {
+                var s = p.getMAPServiceSms();
+                s.removeMAPServiceListener(this);
+                s.deactivate();
+            }, "Sms");
+            deactivateMapService(() -> {
+                var s = p.getMAPServiceSupplementary();
+                s.removeMAPServiceListener(this);
+                s.deactivate();
+            }, "Supplementary");
+            deactivateMapService(() -> {
+                var s = p.getMAPServiceCallHandling();
+                s.removeMAPServiceListener(this);
+                s.deactivate();
+            }, "CallHandling");
+            deactivateMapService(() -> {
+                var s = p.getMAPServiceLsm();
+                s.removeMAPServiceListener(this);
+                s.deactivate();
+            }, "Lsm");
+            deactivateMapService(() -> {
+                var s = p.getMAPServiceOam();
+                s.removeMAPServiceListener(this);
+                s.deactivate();
+            }, "Oam");
+            deactivateMapService(() -> {
+                var s = p.getMAPServicePdpContextActivation();
+                s.removeMAPServiceListener(this);
+                s.deactivate();
+            }, "PdpContextActivation");
+        }
+        MapSmsOutbound sms = outbound;
+        if (sms != null) {
+            sms.clearAll();
+        }
+        MapUssdOutbound ussd = ussdOutbound;
+        if (ussd != null) {
+            ussd.clearAll();
+        }
         outbound = null;
         ussdOutbound = null;
+        publisher = null;
+        provider = null;
         LOG.info("[ra-jss7] MAP adapter detached");
+    }
+
+    private static void deactivateMapService(Runnable action, String label) {
+        try {
+            action.run();
+        } catch (Exception e) {
+            LOG.warn("[ra-jss7] MAP service {} detach failed: {}", label, e.toString());
+        }
     }
 
     @Override
@@ -84,7 +145,8 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
         publisher.publish(did, new Ss7MapEvent.Dialog(did, kind, detail));
         if (kind == Ss7MapEvent.Kind.RELEASE || kind == Ss7MapEvent.Kind.CLOSE
                 || kind == Ss7MapEvent.Kind.TIMEOUT || kind == Ss7MapEvent.Kind.USER_ABORT
-                || kind == Ss7MapEvent.Kind.PROVIDER_ABORT) {
+                || kind == Ss7MapEvent.Kind.PROVIDER_ABORT
+                || kind == Ss7MapEvent.Kind.REJECT) {
             if (d != null) {
                 Long lid = d.getLocalDialogId();
                 MapSmsOutbound sms = this.outbound;

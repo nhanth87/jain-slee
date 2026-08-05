@@ -22,7 +22,6 @@ import org.apache.logging.log4j.Logger;
 import org.springframework.context.SmartLifecycle;
 
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -138,24 +137,104 @@ public class MicroJainsleeLifecycle implements SmartLifecycle {
             LOG.debug("No RaEndpointPort beans found in context; skipping RA registration");
             return;
         }
-        Iterator<RaEndpointPort> epIter = raEndpoints.iterator();
-        Iterator<RaCommandPort> cmdIter = raCommands.iterator();
-        while (epIter.hasNext()) {
-            RaEndpointPort endpoint = epIter.next();
-            RaCommandPort command = cmdIter.hasNext() ? cmdIter.next() : null;
+        Map<String, RaCommandPort> commandsByName = indexCommandsByRaName(raCommands);
+        List<RaCommandPort> unnamedCommands = new java.util.ArrayList<>();
+        for (RaCommandPort cmd : raCommands) {
+            if (cmd == null) {
+                continue;
+            }
+            String n = resolveCommandRaName(cmd);
+            if (n == null || n.isBlank()) {
+                unnamedCommands.add(cmd);
+            }
+        }
+        for (RaEndpointPort endpoint : raEndpoints) {
+            String name = endpoint.getRaName();
+            if (name == null || name.isBlank()) {
+                LOG.warn("Skipping RaEndpointPort with blank getRaName(): {}",
+                        endpoint.getClass().getName());
+                continue;
+            }
+            RaCommandPort command = commandsByName.remove(name);
+            if (command == null && endpoint instanceof RaCommandPort dual) {
+                // Same bean implements both ports (common WRAPPER pattern).
+                command = dual;
+            }
+            if (command == null && unnamedCommands.size() == 1 && raEndpoints.size() == 1) {
+                // Single-RA lab / legacy: one anonymous command port pairs with the only endpoint.
+                command = unnamedCommands.remove(0);
+                LOG.warn("Paired endpoint '{}' with unnamed RaCommandPort {} (single-RA fallback)",
+                        name, command.getClass().getName());
+            }
             if (command == null) {
-                LOG.warn("No RaCommandPort available for endpoint '{}' — skipping registration",
-                        endpoint.getRaName());
+                LOG.warn("No RaCommandPort paired by getRaName()/@RaEntity for endpoint '{}' — skipping",
+                        name);
                 continue;
             }
             try {
                 container.registerRa(endpoint, command);
                 LOG.info("Registered RA via lifecycle: {} (command={})",
-                        endpoint.getRaName(), command.getClass().getSimpleName());
+                        name, command.getClass().getSimpleName());
             } catch (RuntimeException re) {
-                LOG.error("Failed to register RA [{}]: {}", endpoint.getRaName(), re.getMessage(), re);
+                LOG.error("Failed to register RA [{}]: {}", name, re.getMessage(), re);
             }
         }
+        if (!commandsByName.isEmpty()) {
+            LOG.warn("Unpaired RaCommandPort(s) after name matching: {}", commandsByName.keySet());
+        }
+    }
+
+    /**
+     * Index command ports by RA name: dual {@link RaEndpointPort#getRaName()},
+     * else reflective {@code @RaEntity("name")} (jakartaee or spring-local).
+     * Never pair by list order.
+     */
+    static Map<String, RaCommandPort> indexCommandsByRaName(List<RaCommandPort> commands) {
+        Map<String, RaCommandPort> byName = new java.util.LinkedHashMap<>();
+        if (commands == null) {
+            return byName;
+        }
+        for (RaCommandPort cmd : commands) {
+            if (cmd == null) {
+                continue;
+            }
+            String name = resolveCommandRaName(cmd);
+            if (name == null || name.isBlank()) {
+                LOG.warn("RaCommandPort {} has no getRaName()/@RaEntity — cannot pair by name",
+                        cmd.getClass().getName());
+                continue;
+            }
+            RaCommandPort prev = byName.putIfAbsent(name, cmd);
+            if (prev != null && prev != cmd) {
+                LOG.warn("Duplicate RaCommandPort name '{}': keeping {} discarding {}",
+                        name, prev.getClass().getSimpleName(), cmd.getClass().getSimpleName());
+            }
+        }
+        return byName;
+    }
+
+    static String resolveCommandRaName(RaCommandPort cmd) {
+        if (cmd instanceof RaEndpointPort ep) {
+            String n = ep.getRaName();
+            if (n != null && !n.isBlank()) {
+                return n;
+            }
+        }
+        for (java.lang.annotation.Annotation a : cmd.getClass().getAnnotations()) {
+            if (!"RaEntity".equals(a.annotationType().getSimpleName())) {
+                continue;
+            }
+            try {
+                Object v = a.annotationType().getMethod("value").invoke(a);
+                if (v instanceof String s && !s.isBlank()) {
+                    return s;
+                }
+            } catch (ReflectiveOperationException e) {
+                LOG.debug("RaEntity value() unreadable on {}: {}",
+                        cmd.getClass().getName(), e.toString());
+            }
+        }
+        return null;
     }
 
     // ──────────────────────────────────────────────────────────

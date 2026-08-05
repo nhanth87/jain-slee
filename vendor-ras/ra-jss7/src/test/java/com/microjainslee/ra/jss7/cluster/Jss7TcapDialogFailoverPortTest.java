@@ -13,6 +13,7 @@ import com.microjainslee.cluster.Ss7DialogClusterCaches;
 import com.microjainslee.cluster.TcapDialogSnapshotPayload;
 import com.microjainslee.cluster.TcapDialogSnapshotPayload.PortableSccpAddress;
 import com.microjainslee.core.MicroSleeConfiguration;
+import com.microjainslee.ra.jss7.command.Ss7Command;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -164,6 +165,36 @@ public class Jss7TcapDialogFailoverPortTest {
         assertNotNull(resolved);
         assertEquals(77L, resolved.getLocalOtid());
         assertEquals(TRPseudoState.Active, resolved.getState());
+    }
+
+    @Test
+    public void continueMissResolveClaimsOwnershipForStickySendLocal() {
+        // Owner A published snapshot; A is "dead". Survivor B resolves CONTINUE-miss
+        // and must claim ownership so sticky CONTINUE is SEND_LOCAL (not REJECT).
+        TcapDialogSnapshotPayload payload = samplePayload(88L);
+        caches.putSnapshot(payload);
+
+        Ss7DialogOwnershipTracker trackerA = new Ss7DialogOwnershipTracker(
+                "node-a", "ra-jss7", 1, 8, caches);
+        trackerA.onDialogOpened("88", 88L, new byte[] {1, 2, 3, 4}, 2, 8, "Active", null);
+        assertEquals("node-a", caches.getOwner("88").ownerNodeId());
+
+        Ss7DialogOwnershipTracker trackerB = new Ss7DialogOwnershipTracker(
+                "node-b", "ra-jss7", 1, 8, caches);
+        Jss7TcapDialogFailoverPort portB = new Jss7TcapDialogFailoverPort(
+                () -> proxyProvider(otid -> null, snap -> null),
+                () -> parameterFactory,
+                trackerB,
+                caches);
+
+        assertNotNull(portB.resolve(88L));
+        assertEquals("node-b", trackerB.lookupOwner("88").get().ownerNodeId());
+
+        StickyRaCommandRouter router = new StickyRaCommandRouter(trackerB);
+        Ss7Command.TcapContinue continueCmd = new Ss7Command.TcapContinue(
+                "88", null, java.util.List.of(), 0);
+        StickyRaCommandRouter.Decision decision = router.decide(continueCmd, true);
+        assertEquals(StickyRaCommandRouter.Action.SEND_LOCAL, decision.action());
     }
 
     @Test

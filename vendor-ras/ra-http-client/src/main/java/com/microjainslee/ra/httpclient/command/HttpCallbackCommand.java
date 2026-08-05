@@ -13,24 +13,42 @@ package com.microjainslee.ra.httpclient.command;
 import com.microjainslee.api.OutboundCommand;
 
 /**
- * Sealed outbound command hierarchy for the HTTP callback RA.
+ * Sealed outbound command hierarchy for the HTTP client RA
+ * ({@code http-callback-ra}).
  *
  * <p>Sent from an SBB via
  * {@link com.microjainslee.api.RaCommandPort#sendCommand(OutboundCommand)}.
  * The RA endpoint pattern-matches the concrete permitted subtype to
- * dispatch to the correct handler.
+ * dispatch to the correct handler. Completion is always
+ * {@link com.microjainslee.ra.httpclient.events.HttpCallbackCompletedEvent}.
  */
 public sealed interface HttpCallbackCommand extends OutboundCommand
-        permits HttpCallbackCommand.CallbackRequest {
+        permits HttpCallbackCommand.CallbackRequest,
+                HttpCallbackCommand.JsonPostRequest {
 
     /**
-     * Request an asynchronous HTTP POST callback to an external system.
+     * Fire-and-forget callback delivery: POST an <em>envelope</em>
+     * {@code {"sessionId","status":"OK","payload":"..."}} to
+     * {@code callbackUrl}. Use for outbound status callbacks, not AS pull.
      *
-     * @param sessionId   the SLEE session identifier
+     * @param sessionId   the SLEE session / correlation identifier
      * @param callbackUrl the absolute URL to POST to
-     * @param payload     the JSON payload to deliver
+     * @param payload     application payload nested inside the envelope
      */
     record CallbackRequest(String sessionId, String callbackUrl, String payload)
+            implements HttpCallbackCommand, OutboundCommand {
+    }
+
+    /**
+     * HTTP request/response exchange: POST {@code body} as the raw JSON
+     * request entity and complete with the response status/body
+     * (classic HttpClientActivity-shaped pull).
+     *
+     * @param sessionId  correlation / session id for the completion event
+     * @param url        absolute URL to POST to
+     * @param body       raw JSON request body (not wrapped)
+     */
+    record JsonPostRequest(String sessionId, String url, String body)
             implements HttpCallbackCommand, OutboundCommand {
     }
 }

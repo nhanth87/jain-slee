@@ -133,34 +133,48 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
 
     /**
      * Fire-and-forget JSON callback delivery with bounded retries.
+     * Wraps {@code payload} in {@code {"sessionId","status","payload"}}.
      * Non-blocking — safe to call from SBB entity threads.
      */
     public void sendCallback(String sessionId, String callbackUrl, String payload) {
-        if (callbackUrl == null || callbackUrl.isBlank()) {
-            LOG.debug(() -> "HTTP callback client RA: no callback URL for session " + sessionId);
+        String json = "{\"sessionId\":\"" + escapeJson(sessionId)
+                + "\",\"status\":\"OK\",\"payload\":\"" + escapeJson(payload) + "\"}";
+        postJson(sessionId, callbackUrl, json);
+    }
+
+    /**
+     * HTTP request/response: POST raw JSON {@code body} and complete with
+     * status + response body ({@link HttpCallbackCompletedEvent}).
+     * Use for AS pull — do not wrap in a callback envelope.
+     */
+    public void sendJsonPost(String sessionId, String url, String body) {
+        postJson(sessionId, url, body == null ? "" : body);
+    }
+
+    private void postJson(String sessionId, String url, String json) {
+        if (url == null || url.isBlank()) {
+            LOG.debug(() -> "HTTP client RA: no URL for session " + sessionId);
             return;
         }
         if (!active.get()) {
-            LOG.warn("HTTP callback RA not active — callback for session {} dropped", sessionId);
+            LOG.warn("HTTP client RA not active — request for session {} dropped", sessionId);
             return;
         }
         WebClient client = this.webClient;
         if (client == null) {
-            LOG.warn("HTTP callback RA not configured — callback for session {} dropped", sessionId);
+            LOG.warn("HTTP client RA not configured — request for session {} dropped", sessionId);
             return;
         }
         try {
-            URI.create(callbackUrl); // fail fast on malformed URL
+            URI.create(url); // fail fast on malformed URL
         } catch (IllegalArgumentException e) {
-            LOG.warn("HTTP callback RA: invalid URL '{}' for session {}", callbackUrl, sessionId, e);
+            LOG.warn("HTTP client RA: invalid URL '{}' for session {}", url, sessionId, e);
             completeWithError(sessionId, 0, "Invalid URL: " + e.getMessage());
             return;
         }
 
-        sessionStore.track(sessionId, callbackUrl);
-        String json = "{\"sessionId\":\"" + escapeJson(sessionId)
-                + "\",\"status\":\"OK\",\"payload\":\"" + escapeJson(payload) + "\"}";
-        attemptSend(client, sessionId, callbackUrl, json, 0);
+        sessionStore.track(sessionId, url);
+        attemptSend(client, sessionId, url, json, 0);
     }
 
     private void attemptSend(WebClient client, String sessionId, String callbackUrl,
@@ -174,11 +188,11 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
                     String body = res.bodyAsString();
                     if (status < 500) {
                         if (status >= 400) {
-                            LOG.warn("HTTP callback RA: POST {} -> {} for session {} "
+                            LOG.warn("HTTP client RA: POST {} -> {} for session {} "
                                     + "(receiver error, not retried)",
                                     callbackUrl, status, sessionId);
                         } else {
-                            LOG.info("HTTP callback RA: POST {} -> {} for session {}",
+                            LOG.info("HTTP client RA: POST {} -> {} for session {}",
                                     callbackUrl, status, sessionId);
                         }
                         completeWithSuccess(sessionId, status, body);
@@ -195,14 +209,14 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     private void retryOrGiveUp(WebClient client, String sessionId, String callbackUrl,
                                String json, int attempt, String reason, int lastStatus) {
         if (attempt >= maxRetries || !active.get()) {
-            LOG.warn("HTTP callback RA: giving up after {} attempt(s) for session {} to {} ({})",
+            LOG.warn("HTTP client RA: giving up after {} attempt(s) for session {} to {} ({})",
                     attempt + 1, sessionId, callbackUrl, reason);
             completeWithError(sessionId, lastStatus,
                     "Gave up after " + (attempt + 1) + " attempt(s): " + reason);
             return;
         }
         long delay = retryBackoffMs * (1L << attempt); // 500, 1000, 2000, ...
-        LOG.info("HTTP callback RA: retry {}/{} in {}ms for session {} ({})",
+        LOG.info("HTTP client RA: retry {}/{} in {}ms for session {} ({})",
                 attempt + 1, maxRetries, delay, sessionId, reason);
         Vertx v = this.vertx;
         if (v != null && active.get()) {

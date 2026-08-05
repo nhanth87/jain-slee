@@ -29,6 +29,7 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     private MAPProvider provider;
     private Ss7EventPublisher publisher;
     private MapSmsOutbound outbound;
+    private MapUssdOutbound ussdOutbound;
 
     @Override public String protocol() { return "MAP"; }
 
@@ -41,6 +42,7 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
             return;
         }
         this.outbound = new MapSmsOutbound(provider, stack);
+        this.ussdOutbound = new MapUssdOutbound(provider, stack);
         provider.addMAPDialogListener(this);
         try { var s = provider.getMAPServiceMobility(); s.addMAPServiceListener(this); s.activate(); } catch (Exception e) { LOG.warn("[ra-jss7] MAP service getMAPServiceMobility activate failed: {}", e.toString()); }
         try { var s = provider.getMAPServiceSms(); s.addMAPServiceListener(this); s.activate(); } catch (Exception e) { LOG.warn("[ra-jss7] MAP service getMAPServiceSms activate failed: {}", e.toString()); }
@@ -55,13 +57,18 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     @Override
     public void detach() {
         outbound = null;
+        ussdOutbound = null;
         LOG.info("[ra-jss7] MAP adapter detached");
     }
 
     @Override
     public boolean sendOutbound(com.microjainslee.api.OutboundCommand command) {
-        MapSmsOutbound out = this.outbound;
-        return out != null && out.send(command);
+        MapSmsOutbound sms = this.outbound;
+        if (sms != null && sms.send(command)) {
+            return true;
+        }
+        MapUssdOutbound ussd = this.ussdOutbound;
+        return ussd != null && ussd.send(command);
     }
 
     // ── helpers ──────────────────────────────────────────────
@@ -78,9 +85,16 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
         if (kind == Ss7MapEvent.Kind.RELEASE || kind == Ss7MapEvent.Kind.CLOSE
                 || kind == Ss7MapEvent.Kind.TIMEOUT || kind == Ss7MapEvent.Kind.USER_ABORT
                 || kind == Ss7MapEvent.Kind.PROVIDER_ABORT) {
-            MapSmsOutbound out = this.outbound;
-            if (out != null && d != null) {
-                out.forget(d.getLocalDialogId());
+            if (d != null) {
+                Long lid = d.getLocalDialogId();
+                MapSmsOutbound sms = this.outbound;
+                if (sms != null) {
+                    sms.forget(lid);
+                }
+                MapUssdOutbound ussd = this.ussdOutbound;
+                if (ussd != null) {
+                    ussd.forget(lid);
+                }
             }
         }
     }
@@ -90,8 +104,21 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
             return "?";
         }
         String fallback = String.valueOf(d.getLocalDialogId());
-        MapSmsOutbound out = this.outbound;
-        return out == null ? fallback : out.correlate(d.getLocalDialogId(), fallback);
+        MapSmsOutbound sms = this.outbound;
+        if (sms != null) {
+            String viaSms = sms.correlate(d.getLocalDialogId(), null);
+            if (viaSms != null) {
+                return viaSms;
+            }
+        }
+        MapUssdOutbound ussd = this.ussdOutbound;
+        if (ussd != null) {
+            String viaUssd = ussd.correlate(d.getLocalDialogId(), null);
+            if (viaUssd != null) {
+                return viaUssd;
+            }
+        }
+        return fallback;
     }
 
     // ── generated MAP listener coverage ──────────────────

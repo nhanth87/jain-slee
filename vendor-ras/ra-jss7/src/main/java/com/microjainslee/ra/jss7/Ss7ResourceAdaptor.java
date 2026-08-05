@@ -446,6 +446,12 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     LOG.warn("MAP SRI not handled by any adapter: {}", sri.dialogId());
             case Ss7Command.MapMtForwardSm mt ->
                     LOG.warn("MAP MT not handled by any adapter: {}", mt.dialogId());
+            case Ss7Command.MapProcessUnstructuredSsResponse ussdRsp ->
+                    LOG.warn("MAP USSD MO reply not handled by any adapter: {}", ussdRsp.dialogId());
+            case Ss7Command.MapUnstructuredSsRequest ussdNi ->
+                    LOG.warn("MAP USSD NI not handled by any adapter: {}", ussdNi.dialogId());
+            case Ss7Command.MapDialogAbort abort ->
+                    LOG.warn("MAP dialog abort not handled by any adapter: {}", abort.dialogId());
         }
         touch(cmd.dialogId());
     }

@@ -1,0 +1,37 @@
+<link rel="stylesheet" href="/jainslee-admin/sbi-http3-ra/panel.css"/>
+<div class="oa-panel oa-panel--h3" data-ra="openapi-http3">
+  <header class="oa-panel__mast">
+    <p class="oa-panel__eyebrow">ra-openapi</p>
+    <h2 class="oa-panel__title">HTTP/3 plane</h2>
+    <p class="oa-panel__lede">
+      Experimental Quic (Vert.x 5.1 isolated). Not mandatory in TS 29.500.
+      Lab path uses Vert.x 4 TCP HTTP/2 — badge <strong>TCP_FALLBACK</strong> until Quic is honestly ready.
+    </p>
+  </header>
+  <div class="oa-toolbar">
+    <button class="oa-btn oa-btn--primary" type="button"
+            hx-post="/api/ra/sbi-http3-ra/rebind" hx-swap="none">Rebind</button>
+    <button class="oa-btn" type="button"
+            hx-get="/api/ra/sbi-http3-ra/status.html"
+            hx-target="#oa-h3-status" hx-swap="innerHTML">Refresh</button>
+  </div>
+  <div class="oa-status-slot" id="oa-h3-status"
+       hx-get="/api/ra/sbi-http3-ra/status.html"
+       hx-trigger="load, every 4s"
+       hx-swap="innerHTML">Loading…</div>
+  <section class="oa-section">
+    <h3 class="oa-section__label">Catalog · resilience · sagas</h3>
+    <pre class="oa-telemetry"
+         hx-get="/api/ra/sbi-http3-ra/catalog"
+         hx-trigger="load, every 30s"
+         hx-swap="innerHTML"></pre>
+    <pre class="oa-telemetry"
+         hx-get="/api/ra/sbi-http3-ra/resilience"
+         hx-trigger="load, every 8s"
+         hx-swap="innerHTML"></pre>
+    <pre class="oa-telemetry"
+         hx-get="/api/ra/sbi-http3-ra/sagas"
+         hx-trigger="load, every 8s"
+         hx-swap="innerHTML"></pre>
+  </section>
+</div>

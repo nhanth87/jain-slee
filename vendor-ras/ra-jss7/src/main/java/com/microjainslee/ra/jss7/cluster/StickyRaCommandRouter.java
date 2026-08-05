@@ -90,6 +90,7 @@ public final class StickyRaCommandRouter {
         return command instanceof Ss7Command.TcapBegin
                 || command instanceof Ss7Command.TcapUni
                 || command instanceof Ss7Command.MapSendRoutingInfoForSm
-                || command instanceof Ss7Command.MapMtForwardSm;
+                || command instanceof Ss7Command.MapMtForwardSm
+                || command instanceof Ss7Command.MapUnstructuredSsRequest;
     }
 }

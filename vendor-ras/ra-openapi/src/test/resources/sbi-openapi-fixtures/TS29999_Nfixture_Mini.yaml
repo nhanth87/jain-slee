@@ -1,0 +1,58 @@
+openapi: 3.0.0
+info:
+  title: Fixture Mini API
+  version: '1.0.0'
+servers:
+  - url: '{apiRoot}/nfixture/v1'
+paths:
+  /items:
+    get:
+      operationId: ListItems
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      operationId: CreateItem
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+  /items/{itemId}:
+    get:
+      operationId: GetItem
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      operationId: DeleteItem
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: No Content

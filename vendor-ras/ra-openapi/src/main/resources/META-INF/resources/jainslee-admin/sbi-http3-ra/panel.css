@@ -1,0 +1,14 @@
+/* ra-openapi · HTTP/3 admin — copper edge marks the experimental plane */
+@import url("/jainslee-admin/sbi-http2-ra/panel.css");
+
+.oa-panel--h3 {
+  --oa-phosphor: #e8a87c;
+  background:
+    radial-gradient(120% 80% at 100% 0%, #3a2418 0%, transparent 50%),
+    linear-gradient(165deg, #120e0a 0%, #0a1614 100%);
+}
+.oa-panel--h3 .oa-btn--primary {
+  color: #e8a87c;
+  border-color: #e8a87c;
+  background: rgba(232, 168, 124, 0.12);
+}

@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.microjainslee</groupId>
+        <artifactId>vendor-ras</artifactId>
+        <version>1.2.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>ra-openapi</artifactId>
+    <packaging>jar</packaging>
+    <name>micro-jainslee :: RA OpenAPI (5GC SBI)</name>
+    <description>
+        Consolidated 5GC SBI OpenAPI RA (formerly ra-sbi-openapi + ra-sbi-http2 + ra-sbi-http3):
+        catalog / ProblemDetails / 3gpp-Sbi headers, HTTP/2 Vert.x 4.5 server+client with
+        resilience/saga, and experimental HTTP/3 (TCP lab path on Vert.x 4; Vert.x 5.1 QUIC
+        via isolated ClassLoader — see Vertx5QuicSupport). Micro-RA: register
+        SbiHttp2ResourceAdaptor and/or SbiHttp3ResourceAdaptor independently.
+    </description>
+
+    <properties>
+        <vertx5.version>5.1.0</vertx5.version>
+        <!-- Rel-18 OpenAPI → catalog.json (profile generate-sbi-catalog) -->
+        <sbi.catalog.input>${project.basedir}/tools/sbi-openapi-cache/Rel-18</sbi.catalog.input>
+        <sbi.catalog.output>${project.basedir}/src/main/resources/sbi-openapi/catalog.json</sbi.catalog.output>
+        <sbi.catalog.continueOnError>false</sbi.catalog.continueOnError>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-ra-spi</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-admin-spi</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>2.18.2</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.18.2</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+            <version>2.18.2</version>
+        </dependency>
+        <!-- Vert.x 4.5 only on the default classpath (same line as ra-http-server). -->
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-core</artifactId>
+            <version>${vertx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-web</artifactId>
+            <version>${vertx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-web-client</artifactId>
+            <version>${vertx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>${log4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-core</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              Embed Vert.x 5.1 jars under META-INF/ra-openapi/vertx5/ so
+              Vertx5QuicSupport can open a child URLClassLoader without putting
+              Vert.x 5 on the shared compile/runtime classpath (avoids clash with
+              Vert.x 4 used by HTTP/2 and ra-http-server).
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <execution>
+                        <id>embed-vertx5-isolated</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>io.vertx</groupId>
+                                    <artifactId>vertx-core</artifactId>
+                                    <version>${vertx5.version}</version>
+                                    <destFileName>vertx-core-5.jar</destFileName>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>io.vertx</groupId>
+                                    <artifactId>vertx-web</artifactId>
+                                    <version>${vertx5.version}</version>
+                                    <destFileName>vertx-web-5.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>
+                                ${project.build.outputDirectory}/META-INF/ra-openapi/vertx5
+                            </outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <archive>
+                        <manifestEntries>
+                            <Implementation-Title>ra-openapi</Implementation-Title>
+                            <Automatic-Module-Name>com.microjainslee.ra.openapi</Automatic-Module-Name>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <!--
+      Generate Rel-18 catalog.json from fetched OpenAPI packages:
+        ./tools/fetch-rel18-openapi.sh
+        mvn -pl vendor-ras/ra-openapi -am -Pgenerate-sbi-catalog exec:java
+      Override paths: -Dsbi.catalog.input=… -Dsbi.catalog.output=…
+    -->
+    <profiles>
+        <profile>
+            <id>generate-sbi-catalog</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <configuration>
+                            <mainClass>com.microjainslee.ra.sbi.openapi.gen.SbiCatalogGeneratorMain</mainClass>
+                            <arguments>
+                                <argument>--input</argument>
+                                <argument>${sbi.catalog.input}</argument>
+                                <argument>--output</argument>
+                                <argument>${sbi.catalog.output}</argument>
+                                <argument>--title</argument>
+                                <argument>Digicom-ET 5GC SBI OpenAPI catalog (Rel-18 RA dispatch surface)</argument>
+                                <argument>--spec-base</argument>
+                                <argument>3GPP Rel-18 OpenAPI (Forge REL-18 / jdegre mirror) / TS 29.500</argument>
+                            </arguments>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

@@ -120,4 +120,78 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                     dataCoding, protocolId, udhi, networkId, null);
         }
     }
+
+    // ── MAP USSD (supplementary) ─────────────────────────────
+
+    /**
+     * Reply to an in-flight MO ProcessUnstructuredSS on an existing MAP dialog.
+     * {@code dialogId} is the jSS7 local dialog id (decimal string) as published
+     * on {@code Ss7MapEvent}.
+     *
+     * @param endDialog if true, send ProcessUnstructuredSS-Response and close;
+     *                  if false, send UnstructuredSS-Request (CONTINUE menu)
+     */
+    record MapProcessUnstructuredSsResponse(
+            String dialogId,
+            Ss7Address targetAddress,
+            long invokeId,
+            String text,
+            boolean endDialog,
+            int networkId,
+            int dataCoding
+    ) implements Ss7Command {
+        public MapProcessUnstructuredSsResponse(
+                String dialogId, long invokeId, String text, boolean endDialog) {
+            this(dialogId, Ss7Address.of("0", 8), invokeId, text, endDialog, 0, 0x0F);
+        }
+
+        public MapProcessUnstructuredSsResponse(
+                String dialogId, long invokeId, String text, boolean endDialog, int dataCoding) {
+            this(dialogId, Ss7Address.of("0", 8), invokeId, text, endDialog, 0, dataCoding);
+        }
+    }
+
+    /**
+     * Network-initiated UnstructuredSS-Request (or Notify) toward the MSC/VLR.
+     * Uses {@code networkUnstructuredSsContext} v2.
+     */
+    record MapUnstructuredSsRequest(
+            String dialogId,
+            Ss7Address targetAddress,
+            Ss7Address localAddress,
+            String text,
+            int networkId,
+            boolean notifyOnly,
+            int dataCoding
+    ) implements Ss7Command {
+        public MapUnstructuredSsRequest(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String text,
+                int networkId) {
+            this(dialogId, targetAddress, localAddress, text, networkId, false, 0x0F);
+        }
+
+        public MapUnstructuredSsRequest(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String text,
+                int networkId,
+                boolean notifyOnly) {
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, 0x0F);
+        }
+    }
+
+    /** Abort an existing MAP dialog by local dialog id. */
+    record MapDialogAbort(
+            String dialogId,
+            Ss7Address targetAddress,
+            int networkId
+    ) implements Ss7Command {
+        public MapDialogAbort(String dialogId) {
+            this(dialogId, Ss7Address.of("0", 8), 0);
+        }
+    }
 }

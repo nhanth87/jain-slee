@@ -62,7 +62,7 @@ jainslee-apt        ← APT index (@SbbAnnotation / @OffHeap meta), GeneratedEve
 adapter-quarkus     ← Quarkus/CDI/GraalVM adapter (OTA host stays here)
 adapter-springboot  ← Spring Boot adapter
 adapter-jakartaee   ← Jakarta EE adapter (directory dist, no WAR)
-vendor-ras/         ← ra-jss7 (sticky P1 + TCAP failover P2 wire), ra-http-server, …
+vendor-ras/         ← ra-jss7, ra-http-server, ra-openapi (5GC SBI H2/H3), …
 ```
 
 ## TARGET STATE — what needs to change in the RUNTIME
@@ -162,7 +162,8 @@ If a module has broken uncommitted WIP, its jar overwrites the good one in
 ### ARCHITECTURE RULE (do not regress)
 App / example / template code MUST NOT create Vert.x, Netty channels, or any
 transport directly. Transport lives ONLY inside RAs. HTTP → `ra-http-server` /
-`ra-http-client` + a gateway SBB; gRPC channel → RA via `setTarget()`/`channel()`.
+`ra-http-client` + a gateway SBB; 5GC SBI → `ra-openapi` (HTTP/2 + experimental HTTP/3)
+([docs/agents/ra-sbi-http.md](docs/agents/ra-sbi-http.md)); gRPC channel → RA via `setTarget()`/`channel()`.
 Quarkus/GraalVM-native is the priority target; Spring/JakartaEE are low priority.
 
 ## LINK STATUS TRUTH (non-negotiable)

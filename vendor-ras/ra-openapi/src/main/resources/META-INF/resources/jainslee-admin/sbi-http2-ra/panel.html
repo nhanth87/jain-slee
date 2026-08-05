@@ -1,0 +1,40 @@
+<link rel="stylesheet" href="/jainslee-admin/sbi-http2-ra/panel.css"/>
+<div class="oa-panel" data-ra="openapi-http2">
+  <header class="oa-panel__mast">
+    <p class="oa-panel__eyebrow">ra-openapi</p>
+    <h2 class="oa-panel__title">HTTP/2 plane</h2>
+    <p class="oa-panel__lede">
+      3GPP TS 29.500 transport. Catalog dispatches OpenAPI ops; SBBs own NF logic.
+      <strong>LISTEN</strong> is local only — <strong>PEER_SEEN</strong> needs an exchange.
+    </p>
+  </header>
+  <div class="oa-toolbar">
+    <button class="oa-btn oa-btn--primary" type="button"
+            hx-post="/api/ra/sbi-http2-ra/rebind" hx-swap="none">Rebind</button>
+    <button class="oa-btn" type="button"
+            hx-get="/api/ra/sbi-http2-ra/status.html"
+            hx-target="#oa-h2-status" hx-swap="innerHTML">Refresh</button>
+  </div>
+  <div class="oa-status-slot" id="oa-h2-status"
+       hx-get="/api/ra/sbi-http2-ra/status.html"
+       hx-trigger="load, every 4s"
+       hx-swap="innerHTML">Loading…</div>
+  <section class="oa-section">
+    <h3 class="oa-section__label">Catalog</h3>
+    <pre class="oa-telemetry"
+         hx-get="/api/ra/sbi-http2-ra/catalog"
+         hx-trigger="load, every 30s"
+         hx-swap="innerHTML"></pre>
+  </section>
+  <section class="oa-section">
+    <h3 class="oa-section__label">Resilience · sagas</h3>
+    <pre class="oa-telemetry"
+         hx-get="/api/ra/sbi-http2-ra/resilience"
+         hx-trigger="load, every 8s"
+         hx-swap="innerHTML"></pre>
+    <pre class="oa-telemetry"
+         hx-get="/api/ra/sbi-http2-ra/sagas"
+         hx-trigger="load, every 8s"
+         hx-swap="innerHTML"></pre>
+  </section>
+</div>

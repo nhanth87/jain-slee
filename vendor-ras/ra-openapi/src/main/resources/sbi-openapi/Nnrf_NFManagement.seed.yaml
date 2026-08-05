@@ -1,0 +1,57 @@
+openapi: 3.0.0
+info:
+  title: Nnrf_NFManagement (seed)
+  version: 1.0.0
+servers:
+  - url: '{apiRoot}/nnrf-nfm/v1'
+paths:
+  /nf-instances:
+    get:
+      operationId: GetNFInstancesYaml
+      responses:
+        '200':
+          description: OK
+    options:
+      operationId: OptionsNFInstancesYaml
+      responses:
+        '200':
+          description: OK
+  /nf-instances/{nfInstanceID}:
+    get:
+      operationId: GetNFInstanceYaml
+      parameters:
+        - name: nfInstanceID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    put:
+      operationId: CreateNFInstanceYaml
+      parameters:
+        - name: nfInstanceID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Created
+    delete:
+      operationId: DeleteNFInstanceYaml
+      parameters:
+        - name: nfInstanceID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: No Content

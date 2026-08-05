@@ -47,6 +47,8 @@
         <module>ra-http-server</module>
         <module>ra-prometheus-exporter</module>
         <module>ra-http-client</module>
+        <!-- Consolidated 5GC SBI OpenAPI RA (was ra-sbi-openapi + ra-sbi-http2 + ra-sbi-http3) -->
+        <module>ra-openapi</module>
         <module>ra-grpc-server</module>
         <module>ra-sip-servlet</module>
         <module>ra-diameter</module>

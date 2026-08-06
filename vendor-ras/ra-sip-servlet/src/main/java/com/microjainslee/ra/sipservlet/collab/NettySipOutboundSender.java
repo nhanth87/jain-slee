@@ -11,6 +11,7 @@ import com.microjainslee.ra.sipservlet.command.SendAck;
 import com.microjainslee.ra.sipservlet.command.SendBye;
 import com.microjainslee.ra.sipservlet.command.SendCancel;
 import com.microjainslee.ra.sipservlet.command.SendInvite;
+import com.microjainslee.ra.sipservlet.command.SendMessage;
 import com.microjainslee.ra.sipservlet.command.SendResponse;
 import com.microjainslee.ra.sipservlet.command.SendSdpUpdate;
 import com.microjainslee.ra.sipservlet.command.SipOutboundCommand;
@@ -101,6 +102,7 @@ public final class NettySipOutboundSender implements SipOutboundSender {
                 case SendAck c       -> sendAck(c.callId());
                 case SendCancel c    -> sendCancel(c.callId());
                 case SendInvite c    -> sendInvite(c);
+                case SendMessage c   -> sendMessage(c);
                 default -> LOG.warn("[sip-out] unsupported command {} — ignored",
                         cmd.getClass().getSimpleName());
             }
@@ -226,6 +228,54 @@ public final class NettySipOutboundSender implements SipOutboundSender {
         }
         SIPRequest cancel = dialog.lastRequest().createCancelRequest();
         transmit(cancel, dialog.transport(), dialog.peer());
+    }
+
+    // ── out-of-dialog MESSAGE ──────────────────────────────────────
+
+    private void sendMessage(SendMessage cmd) throws Exception {
+        URI requestUri = addressFactory.createURI(cmd.toUri());
+        if (!(requestUri instanceof SipURI target)) {
+            LOG.warn("[sip-out] SendMessage target is not a SIP URI: {}", cmd.toUri());
+            return;
+        }
+        String transport = target.getTransportParam() != null
+                ? target.getTransportParam().toUpperCase(Locale.ROOT) : "UDP";
+
+        Address toAddress = addressFactory.createAddress(requestUri);
+        Address fromAddress = addressFactory.createAddress(
+                addressFactory.createURI(cmd.fromUri()));
+
+        CallIdHeader callIdHeader = headerFactory.createCallIdHeader(cmd.callId());
+        CSeqHeader cseq = headerFactory.createCSeqHeader(1L, Request.MESSAGE);
+        FromHeader from = headerFactory.createFromHeader(fromAddress, newTag());
+        ToHeader to = headerFactory.createToHeader(toAddress, null);
+        MaxForwardsHeader maxForwards = headerFactory.createMaxForwardsHeader(70);
+        List<ViaHeader> vias = new ArrayList<>(1);
+        vias.add(localVia(transport));
+
+        SIPRequest message;
+        String body = cmd.body() == null ? "" : cmd.body();
+        String ctRaw = cmd.contentType() == null || cmd.contentType().isBlank()
+                ? "text/plain" : cmd.contentType();
+        String[] ctParts = ctRaw.split("/", 2);
+        String ctType = ctParts[0];
+        String ctSub = ctParts.length > 1 ? ctParts[1] : "plain";
+        // subtype may carry +suffix (e.g. vnd.3gpp.ussd+xml)
+        ContentTypeHeader ct = headerFactory.createContentTypeHeader(ctType, ctSub);
+        if (!body.isEmpty()) {
+            message = (SIPRequest) messageFactory.createRequest(requestUri, Request.MESSAGE,
+                    callIdHeader, cseq, from, to, vias, maxForwards, ct,
+                    body.getBytes(StandardCharsets.UTF_8));
+        } else {
+            message = (SIPRequest) messageFactory.createRequest(requestUri, Request.MESSAGE,
+                    callIdHeader, cseq, from, to, vias, maxForwards);
+        }
+        message.setHeader(localContact(transport));
+
+        int port = target.getPort() > 0 ? target.getPort() : 5060;
+        InetSocketAddress peer =
+                new InetSocketAddress(InetAddress.getByName(target.getHost()), port);
+        transmit(message, transport, peer);
     }
 
     // ── out-of-dialog INVITE ───────────────────────────────────────

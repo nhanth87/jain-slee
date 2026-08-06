@@ -18,7 +18,8 @@ import com.microjainslee.api.OutboundCommand;
  */
 public sealed interface SipOutboundCommand extends OutboundCommand
         permits SendInvite, SendBye, SendResponse, SendAck, SendCancel,
-                StartIce, SelectIceCandidate, SendSdpUpdate, SendMediaKeepAlive {
+                StartIce, SelectIceCandidate, SendSdpUpdate, SendMediaKeepAlive,
+                SendMessage {
 
     /** Call-ID identifying the target dialog. */
     String callId();

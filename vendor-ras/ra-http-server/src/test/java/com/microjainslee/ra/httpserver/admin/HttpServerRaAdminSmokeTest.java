@@ -27,6 +27,7 @@ public class HttpServerRaAdminSmokeTest {
     @After
     public void tearDown() {
         HttpServerAdminBindings.clear();
+        HttpServerAdminBindings.clearAppPanels();
     }
 
     @Test
@@ -132,5 +133,37 @@ public class HttpServerRaAdminSmokeTest {
         } finally {
             com.microjainslee.admin.HttpEndpointCatalog.shared().clear("xss-test");
         }
+    }
+
+    @Test
+    public void ussdPanelUnboundReturnsStub() {
+        AdminDashboardRegistry reg =
+                AdminDashboardRegistry.of(new HttpServerRaAdminContributor());
+        Optional<RaAdminHttpResponse> hit = reg.dispatch(
+                RaAdminHttpRequest.of("GET", "/api/ra/http-server-ra/ussd/sync.html", null));
+        assertTrue(hit.isPresent());
+        assertEquals(200, hit.get().status());
+        assertTrue(hit.get().bodyAsString().contains("No app panel bound"));
+    }
+
+    @Test
+    public void ussdPanelBoundHookReturnsFragment() {
+        HttpServerAdminBindings.bindAppPanels(
+                (panel, req) -> RaAdminHttpResponse.text(200, "text/html; charset=utf-8",
+                        "<div class=\"sync-panel\">hook-" + panel + "</div>"),
+                (panel, req) -> RaAdminHttpResponse.text(200, "text/html; charset=utf-8",
+                        "<div class=\"sync-panel\">posted-" + panel + "</div>"));
+        AdminDashboardRegistry reg =
+                AdminDashboardRegistry.of(new HttpServerRaAdminContributor());
+        Optional<RaAdminHttpResponse> get = reg.dispatch(
+                RaAdminHttpRequest.of("GET", "/api/ra/http-server-ra/ussd/async.html", null));
+        assertTrue(get.isPresent());
+        assertTrue(get.get().bodyAsString().contains("hook-async"));
+
+        Optional<RaAdminHttpResponse> post = reg.dispatch(
+                RaAdminHttpRequest.of("POST", "/api/ra/http-server-ra/ussd/callback.html",
+                        "action=lab"));
+        assertTrue(post.isPresent());
+        assertTrue(post.get().bodyAsString().contains("posted-callback"));
     }
 }

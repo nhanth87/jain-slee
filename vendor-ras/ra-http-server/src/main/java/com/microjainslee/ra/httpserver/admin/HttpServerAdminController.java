@@ -178,6 +178,49 @@ public final class HttpServerAdminController {
                 .withHeader("Cache-Control", "no-store");
     }
 
+    /** App-bound Sync / Async / Callback HTMX panel (GET). */
+    public RaAdminHttpResponse appPanelGet(String panel, RaAdminHttpRequest req) {
+        return dispatchAppPanel(panel, req, true);
+    }
+
+    /** App-bound Sync / Async / Callback HTMX panel (POST). */
+    public RaAdminHttpResponse appPanelPost(String panel, RaAdminHttpRequest req) {
+        return dispatchAppPanel(panel, req, false);
+    }
+
+    private static RaAdminHttpResponse dispatchAppPanel(String panel, RaAdminHttpRequest req,
+                                                        boolean get) {
+        String p = panel == null ? "" : panel.trim().toLowerCase();
+        if (!p.equals("sync") && !p.equals("async") && !p.equals("callback")) {
+            return RaAdminHttpResponse.text(404, "text/html; charset=utf-8",
+                    "<p class=\"hint\">Unknown panel</p>")
+                    .withHeader("Vary", "HX-Request");
+        }
+        var hook = get
+                ? HttpServerAdminBindings.appPanelGet()
+                : HttpServerAdminBindings.appPanelPost();
+        if (hook == null) {
+            return RaAdminHttpResponse.text(200, "text/html; charset=utf-8",
+                            "<div class=\"hint\">No app panel bound for <code>"
+                                    + RaAdminJson.escHtml(p)
+                                    + "</code>. Wire HttpServerAdminBindings.bindAppPanels"
+                                    + " from the application.</div>")
+                    .withHeader("Vary", "HX-Request");
+        }
+        try {
+            RaAdminHttpResponse r = hook.apply(p, req);
+            return r != null ? r : RaAdminHttpResponse.text(500, "text/plain", "null panel");
+        } catch (RuntimeException ex) {
+            LOG.warn("[http-admin] app panel {} failed: {}", p, ex.toString());
+            return RaAdminHttpResponse.text(500, "text/html; charset=utf-8",
+                            "<pre>error: " + RaAdminJson.escHtml(
+                                    ex.getMessage() == null ? ex.getClass().getSimpleName()
+                                            : ex.getMessage())
+                                    + "</pre>")
+                    .withHeader("Vary", "HX-Request");
+        }
+    }
+
     private static List<HttpEndpointInfo> collectEndpoints() {
         HttpEndpointCatalog.shared().replace(
                 HttpEndpointCatalog.SOURCE_HTTP_SERVER_RA, raOwnedEndpoints());

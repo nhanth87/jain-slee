@@ -32,5 +32,11 @@ public final class HttpServerRaAdminContributor implements RaAdminDashboardContr
         registrar.get("/config", controller::getConfig);
         registrar.post("/config", controller::putConfig);
         registrar.post("/rebind", controller::rebind);
+        registrar.get("/ussd/sync.html", req -> controller.appPanelGet("sync", req));
+        registrar.post("/ussd/sync.html", req -> controller.appPanelPost("sync", req));
+        registrar.get("/ussd/async.html", req -> controller.appPanelGet("async", req));
+        registrar.post("/ussd/async.html", req -> controller.appPanelPost("async", req));
+        registrar.get("/ussd/callback.html", req -> controller.appPanelGet("callback", req));
+        registrar.post("/ussd/callback.html", req -> controller.appPanelPost("callback", req));
     }
 }

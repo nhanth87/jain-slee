@@ -36,6 +36,14 @@ public final class SipRaConfig {
     private boolean iceEnabled = false;
     private long iceKeepAliveSecs = 30;
 
+    // ---- TURN / rtp_redirect (signaling hints; RA does not relay RTP) ----
+    private String turnServer;
+    private int turnPort;           // 0 = default 3478
+    private String turnUsername;
+    private String turnCredential;
+    /** Prefer relay candidates when gathering (firewall path / rtp_redirect). */
+    private boolean preferRelayCandidate = false;
+
     // ---- legacy (kept for backward compat, no longer drives Disruptor) ----
     private int ringBufferSize = 4096;
     private int virtualThreads = 0;
@@ -106,6 +114,25 @@ public final class SipRaConfig {
 
     public long iceKeepAliveSecs() { return iceKeepAliveSecs; }
     public void setIceKeepAliveSecs(long v) { this.iceKeepAliveSecs = v; }
+
+    public String turnServer() { return turnServer; }
+    public void setTurnServer(String v) { this.turnServer = v; }
+
+    public int turnPort() { return turnPort; }
+    public void setTurnPort(int v) { this.turnPort = v; }
+
+    public String turnUsername() { return turnUsername; }
+    public void setTurnUsername(String v) { this.turnUsername = v; }
+
+    public String turnCredential() { return turnCredential; }
+    public void setTurnCredential(String v) { this.turnCredential = v; }
+
+    public boolean preferRelayCandidate() { return preferRelayCandidate; }
+    public void setPreferRelayCandidate(boolean v) { this.preferRelayCandidate = v; }
+
+    /** Alias: rtp_redirect ⇒ prefer TURN relay path for ICE ordering. */
+    public void setRtpRedirect(boolean v) { this.preferRelayCandidate = v; }
+    public boolean rtpRedirect() { return preferRelayCandidate; }
 
     public int ringBufferSize() { return ringBufferSize; }
     public void setRingBufferSize(int v) { this.ringBufferSize = v; }

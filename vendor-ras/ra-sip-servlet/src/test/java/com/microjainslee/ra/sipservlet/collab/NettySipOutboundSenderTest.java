@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -139,6 +140,25 @@ public class NettySipOutboundSenderTest {
         assertTrue("From must carry a tag", wire.matches("(?s).*From:[^\r\n]*tag=.*"));
         assertNotNull(transport.targets.get(0));
         assertEquals(5062, transport.targets.get(0).getPort());
+    }
+
+    @Test
+    public void sendInviteForwardsWhitelistedImsHeaders() {
+        sender.send(new SendInvite(
+                "ims-call-1",
+                "sip:pbx@127.0.0.1:5062",
+                "sip:gw@127.0.0.1",
+                "v=0\r\n",
+                Map.of(
+                        "P-Asserted-Identity", List.of("<sip:alice@ims.example>"),
+                        "P-Charging-Vector", List.of("icid-value=abc"),
+                        "X-Evil", List.of("drop-me")
+                )));
+
+        String wire = transport.sentMessages.get(0);
+        assertTrue(wire.contains("P-Asserted-Identity: <sip:alice@ims.example>"));
+        assertTrue(wire.contains("P-Charging-Vector: icid-value=abc"));
+        assertFalse("non-whitelist must be dropped", wire.contains("X-Evil"));
     }
 
     @Test

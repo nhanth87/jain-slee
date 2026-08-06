@@ -1,14 +1,17 @@
 package com.microjainslee.ra.sipservlet.collab;
 
 import com.microjainslee.ra.sipservlet.events.*;
+import com.microjainslee.ra.sipservlet.ims.ImsSipHeaderNames;
 import javax.sip.header.*;
 import javax.sip.message.Message;
 import javax.sip.message.Request;
 import javax.sip.message.Response;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.ListIterator;
+import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -44,7 +47,8 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
                     extractFrom(req), extractTo(req),
                     extractContact(req), extractViaHeaders(req),
                     extractRecordRoute(req), extractRoute(req),
-                    extractBody(req), extractContentType(req));
+                    extractBody(req), extractContentType(req),
+                    extractImsHeaders(req));
             case "BYE"    -> new SipByeEvent(callId);
             case "ACK"    -> new SipAckEvent(callId);
             case "CANCEL" -> new SipCancelEvent(callId);
@@ -203,5 +207,46 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
     private String extractRackMethod(Message msg) {
         RAckHeader h = (RAckHeader) msg.getHeader(RAckHeader.NAME);
         return h != null ? h.getMethod() : "INVITE";
+    }
+
+    /**
+     * Extract whitelist 3GPP/IMS headers (TS 24.229). Values are header-body
+     * only (no {@code Name:} prefix) for safe re-injection on {@code SendInvite}.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, List<String>> extractImsHeaders(Message msg) {
+        LinkedHashMap<String, List<String>> out = new LinkedHashMap<>();
+        for (String name : ImsSipHeaderNames.INVITE_PRESERVE) {
+            ListIterator it = msg.getHeaders(name);
+            if (it == null) {
+                continue;
+            }
+            List<String> values = new ArrayList<>();
+            while (it.hasNext()) {
+                Object h = it.next();
+                String raw = h != null ? h.toString() : "";
+                String value = stripHeaderName(raw, name);
+                if (!value.isEmpty()) {
+                    values.add(value);
+                }
+            }
+            if (!values.isEmpty()) {
+                out.put(name, List.copyOf(values));
+            }
+        }
+        return out.isEmpty() ? Map.of() : Map.copyOf(out);
+    }
+
+    private static String stripHeaderName(String raw, String name) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String trimmed = raw.trim();
+        String prefix = name + ":";
+        if (trimmed.regionMatches(true, 0, prefix, 0, prefix.length())) {
+            return trimmed.substring(prefix.length()).trim();
+        }
+        // Some JAIN toString() forms omit the name
+        return trimmed;
     }
 }

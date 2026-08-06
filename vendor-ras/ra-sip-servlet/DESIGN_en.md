@@ -244,15 +244,21 @@ Three mandatory rules from [ra-guide.md](../../docs/ra-guide.md):
 
 ## IMS / 4G / 5G Support
 
-- All 16 SIP methods covered (INVITE through PUBLISH) — full RFC 3261 compliance
-  plus extensions for VoLTE (4G) and VoNR (5G)
-- `SipInviteEvent` includes Via, Route, Record-Route headers for proxy chain support
+- Signaling-only RA — **not an SBC**; no RTP hairpin (media via UA TURN / media server).
+- All 16 SIP methods covered (INVITE through PUBLISH) — RFC 3261 + VoLTE/VoNR option tags
+- `SipInviteEvent.imsHeaders()` extracts whitelist P-* / Feature-Caps / Require / Supported
+  (`ImsSipHeaderNames.INVITE_PRESERVE`, TS 24.229)
+- `SendInvite(..., extensionHeaders)` forwards only that whitelist (anti-spoof)
 - `SipRegisterEvent` includes Contact + expires for IMS-AKA via 401/407 challenge
-- IMS-specific headers (P-Access-Network-Info, P-Asserted-Identity,
-  P-Charging-Vector) extractable via SipInviteEvent fields
-- `SipSubscribeEvent` / `SipNotifyEvent` support reg-event package (RFC 3680)
-  for third-party registration in IMS
-- Diameter interworking: companion `ra-diameter` handles Cx/Sh/Gx/Ro interfaces
+- `SipRaConfig` TURN + `preferRelayCandidate` / `rtpRedirect` for ICE ordering (firewall path)
+- `SipSubscribeEvent` / `SipNotifyEvent` support reg-event (RFC 3680)
+- Diameter interworking: companion `ra-diameter` handles Cx/Sh/Gx/Ro elsewhere
+
+## Lessons from sip-freeswitch / Elisa
+
+- Never end dialog on inbound BYE before SBB can send 200 BYE (RFC 3261 §15.1.2)
+- Hot-path: DEBUG first-line only — no INFO full SIP body dumps
+- rtp_redirect = prefer TURN relay path; RA does not relay RTP
 
 ## Key Design Decisions
 

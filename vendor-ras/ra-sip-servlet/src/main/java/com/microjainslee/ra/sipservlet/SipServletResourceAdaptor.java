@@ -11,6 +11,7 @@ import com.microjainslee.api.RaBootstrapPort;
 import com.microjainslee.ra.sipservlet.collab.*;
 import com.microjainslee.ra.sipservlet.command.SelectIceCandidate;
 import com.microjainslee.ra.sipservlet.command.SendMediaKeepAlive;
+import com.microjainslee.ra.sipservlet.command.SendResponse;
 import com.microjainslee.ra.sipservlet.command.SipOutboundCommand;
 import com.microjainslee.ra.sipservlet.command.StartIce;
 import com.microjainslee.ra.sipservlet.dns.DnsResolver;
@@ -51,11 +52,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * by default a {@link NettySipOutboundSender} wired over the same
  * transports, so the RA answers out of the box.</p>
  *
- * <p>Dialog lifecycle: dialogs end on BYE, on a final non-2xx response to
- * the initial INVITE, or after {@link SipRaConfig#dialogIdleSecs()} of
- * inactivity (periodic sweep). Ending a dialog releases the registry entry
- * and calls {@link RaBootstrapPort#endActivity} so attached SBB entities
- * are notified and the activity context is reclaimed — no leaks.</p>
+ * <p>Dialog lifecycle: inbound BYE defers teardown until the SBB sends a
+ * final response to BYE (RFC 3261 §15.1.2), or idle sweep expires the dialog.
+ * Final non-2xx to INVITE ends immediately. Ending a dialog releases the
+ * registry entry and calls {@link RaBootstrapPort#endActivity}.</p>
  */
 public final class SipServletResourceAdaptor {
 
@@ -134,15 +134,21 @@ public final class SipServletResourceAdaptor {
         if (config.dnsEnabled()) {
             dnsResolver = new DnsResolver(true, config.dnsCacheTtlSecs());
         }
-        // STUN client + ICE collector
-        if (config.iceEnabled() && config.stunServer() != null
-                && !config.stunServer().isBlank()) {
-            stunClient = new StunClient(config.stunServer(), config.stunPort());
-            iceCollector = new IceCandidateCollector(stunClient);
+        // STUN client + ICE collector (signaling-only; TURN config for rtp_redirect prefer-relay)
+        if (config.iceEnabled()) {
+            if (config.stunServer() != null && !config.stunServer().isBlank()) {
+                stunClient = new StunClient(config.stunServer(), config.stunPort());
+                stunClient.startKeepAlive(config.iceKeepAliveSecs());
+                LOG.info("[ra-sip-servlet] STUN client started server={}", config.stunServer());
+            }
+            iceCollector = new IceCandidateCollector(
+                    stunClient,
+                    config.turnServer(),
+                    config.turnPort(),
+                    config.preferRelayCandidate());
             iceCollector.setBootstrapPort(bootstrapPort);
-            stunClient.startKeepAlive(config.iceKeepAliveSecs());
-            LOG.info("[ra-sip-servlet] STUN client started server={}",
-                    config.stunServer());
+            LOG.info("[ra-sip-servlet] ICE collector turn={} preferRelay={}",
+                    config.turnServer(), config.preferRelayCandidate());
         }
 
         // Idle-dialog sweeper — dialogs abandoned without BYE must not leak.
@@ -194,6 +200,14 @@ public final class SipServletResourceAdaptor {
             case SendMediaKeepAlive c ->
                     LOG.info("[ra-sip-servlet] media keep-alive {} for callId={}",
                             c.enable() ? "ON" : "OFF", c.callId());
+            case SendResponse c -> {
+                if (outboundSender != null) {
+                    outboundSender.send(c);
+                    maybeEndDialogAfterByeAck(c.callId(), c.statusCode());
+                } else {
+                    LOG.warn("[ra-sip-servlet] Outbound sender not configured, dropping: SendResponse");
+                }
+            }
             default -> {
                 if (outboundSender != null) {
                     outboundSender.send(cmd);
@@ -202,6 +216,24 @@ public final class SipServletResourceAdaptor {
                             cmd.getClass().getSimpleName());
                 }
             }
+        }
+    }
+
+    /**
+     * After SBB answers inbound BYE with a final response, tear down dialog
+     * (transaction complete). Idle sweeper is the safety net if no 200 is sent.
+     */
+    private void maybeEndDialogAfterByeAck(String callId, int statusCode) {
+        if (statusCode < 200 || callId == null) {
+            return;
+        }
+        DialogRegistry.Dialog dialog = dialogRegistry.find(callId);
+        if (dialog == null) {
+            return;
+        }
+        SIPRequest last = dialog.lastRequest();
+        if (last != null && Request.BYE.equals(last.getMethod())) {
+            endDialog(callId);
         }
     }
 
@@ -249,9 +281,10 @@ public final class SipServletResourceAdaptor {
         }
 
         if (isDialogTerminating(msg)) {
-            // Give the SBB one event-loop turn to react to the BYE/final
-            // response before the activity ends; endDialog fires the
-            // ActivityEndedEvent through the same ordered path.
+            // Inbound BYE: keep dialog until SBB sends final response (see sendOutbound).
+            if (msg instanceof SIPRequest req && Request.BYE.equals(req.getMethod())) {
+                return;
+            }
             endDialog(callId);
         }
     }

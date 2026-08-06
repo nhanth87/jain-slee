@@ -74,7 +74,7 @@ public class ProxySbb implements Sbb, SleeEventHandler {
         String domain = extractDomain(e.toUri());
         String nextHop = ROUTING_TABLE.getOrDefault(domain, e.toUri());
         LOG.info("[ProxySbb] Routing INVITE domain={} -> {}", domain, nextHop);
-        send(new SendInvite(e.callId(), nextHop, e.fromUri(), e.sdpBody()));
+        send(new SendInvite(e.callId(), nextHop, e.fromUri(), e.sdpBody(), e.imsHeaders()));
     }
 
     void onBye(SipByeEvent e)       { LOG.info("[ProxySbb] BYE callId={}", e.callId()); send(new SendBye(e.callId())); }

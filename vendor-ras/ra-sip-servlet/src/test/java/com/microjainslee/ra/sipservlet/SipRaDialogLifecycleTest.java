@@ -96,13 +96,18 @@ public class SipRaDialogLifecycleTest {
     }
 
     @Test
-    public void byeFiresEventThenEndsDialogAndActivity() {
+    public void byeKeepsDialogUntilFinalResponseThenEnds() {
         ra.onRawMessage(invite(), PEER, "UDP");
         ra.onRawMessage(bye(), PEER, "UDP");
 
         assertEquals(2, bootstrap.firedEvents.size());
         assertTrue(bootstrap.firedEvents.get(1) instanceof SipByeEvent);
-        assertNull("dialog state must be released", ra.dialogRegistry().find(CALL_ID));
+        assertNotNull("dialog must stay for 200 BYE", ra.dialogRegistry().find(CALL_ID));
+        assertTrue("activity not ended before 200 BYE", bootstrap.endedActivities.isEmpty());
+
+        ra.sendOutbound(new com.microjainslee.ra.sipservlet.command.SendResponse(CALL_ID, 200, "OK"));
+
+        assertNull("dialog state must be released after 200 BYE", ra.dialogRegistry().find(CALL_ID));
         assertEquals(List.of(CALL_ID), bootstrap.endedActivities);
     }
 

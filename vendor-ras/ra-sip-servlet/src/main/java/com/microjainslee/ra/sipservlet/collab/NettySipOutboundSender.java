@@ -15,6 +15,7 @@ import com.microjainslee.ra.sipservlet.command.SendMessage;
 import com.microjainslee.ra.sipservlet.command.SendResponse;
 import com.microjainslee.ra.sipservlet.command.SendSdpUpdate;
 import com.microjainslee.ra.sipservlet.command.SipOutboundCommand;
+import com.microjainslee.ra.sipservlet.ims.ImsSipHeaderNames;
 import com.microjainslee.ra.sipservlet.transport.SipTransport;
 
 import gov.nist.javax.sip.address.AddressFactoryImpl;
@@ -44,9 +45,11 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -312,11 +315,40 @@ public final class NettySipOutboundSender implements SipOutboundSender {
                     callIdHeader, cseq, from, to, vias, maxForwards);
         }
         invite.setHeader(localContact(transport));
+        applyWhitelistedExtensionHeaders(invite, cmd.extensionHeaders());
 
         int port = target.getPort() > 0 ? target.getPort() : 5060;
         InetSocketAddress peer =
                 new InetSocketAddress(InetAddress.getByName(target.getHost()), port);
         transmit(invite, transport, peer);
+    }
+
+    /**
+     * Copy only {@link ImsSipHeaderNames#INVITE_PRESERVE} onto the outbound INVITE.
+     * Arbitrary headers are dropped (anti-spoof).
+     */
+    private void applyWhitelistedExtensionHeaders(SIPRequest invite,
+                                                  Map<String, List<String>> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return;
+        }
+        Set<String> allow = new HashSet<>(ImsSipHeaderNames.INVITE_PRESERVE);
+        for (var entry : headers.entrySet()) {
+            String name = entry.getKey();
+            if (name == null || !allow.contains(name) || entry.getValue() == null) {
+                continue;
+            }
+            for (String value : entry.getValue()) {
+                if (value == null || value.isBlank()) {
+                    continue;
+                }
+                try {
+                    invite.addHeader(headerFactory.createHeader(name, value.trim()));
+                } catch (Exception e) {
+                    LOG.debug("[sip-out] skip extension header {}: {}", name, e.getMessage());
+                }
+            }
+        }
     }
 
     // ── wire helpers ───────────────────────────────────────────────

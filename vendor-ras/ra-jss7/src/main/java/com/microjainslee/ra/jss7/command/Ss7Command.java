@@ -77,6 +77,35 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
     ) implements Ss7Command {}
 
     /**
+     * Answer an inbound MAP sendRoutingInfoForSM on an existing SMS dialog.
+     * {@code dialogId} is the jSS7 local dialog id (decimal string) from
+     * {@code Ss7MapEvent}; {@code invokeId} is the request invoke id.
+     *
+     * @param imsi   IMSI digits returned to the SMSC
+     * @param mscGt  serving MSC/VLR GT digits in LocationInfoWithLMSI
+     * @param lmsi   optional LMSI octets ({@code null}/empty → omit)
+     */
+    record MapSendRoutingInfoForSmResponse(
+            String dialogId,
+            Ss7Address targetAddress,
+            long invokeId,
+            String imsi,
+            String mscGt,
+            byte[] lmsi,
+            int networkId
+    ) implements Ss7Command {
+        public MapSendRoutingInfoForSmResponse(
+                String dialogId, long invokeId, String imsi, String mscGt) {
+            this(dialogId, Ss7Address.of("0", 6), invokeId, imsi, mscGt, null, 0);
+        }
+
+        public MapSendRoutingInfoForSmResponse(
+                String dialogId, long invokeId, String imsi, String mscGt, byte[] lmsi, int networkId) {
+            this(dialogId, Ss7Address.of("0", 6), invokeId, imsi, mscGt, lmsi, networkId);
+        }
+    }
+
+    /**
      * MAP mt-ForwardSM toward MSC/VLR ({@code targetAddress}).
      *
      * @param dialogId     correlation id

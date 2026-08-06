@@ -20,11 +20,14 @@ import org.restcomm.protocols.ss7.map.api.MAPException;
 import org.restcomm.protocols.ss7.map.api.MAPParameterFactory;
 import org.restcomm.protocols.ss7.map.api.MAPProvider;
 import org.restcomm.protocols.ss7.map.api.MAPSmsTpduParameterFactory;
+import org.restcomm.protocols.ss7.map.api.MAPDialog;
 import org.restcomm.protocols.ss7.map.api.primitives.AddressNature;
 import org.restcomm.protocols.ss7.map.api.primitives.AddressString;
 import org.restcomm.protocols.ss7.map.api.primitives.IMSI;
 import org.restcomm.protocols.ss7.map.api.primitives.ISDNAddressString;
+import org.restcomm.protocols.ss7.map.api.primitives.LMSI;
 import org.restcomm.protocols.ss7.map.api.primitives.NumberingPlan;
+import org.restcomm.protocols.ss7.map.api.service.sms.LocationInfoWithLMSI;
 import org.restcomm.protocols.ss7.map.api.service.sms.MAPDialogSms;
 import org.restcomm.protocols.ss7.map.api.service.sms.SM_RP_DA;
 import org.restcomm.protocols.ss7.map.api.service.sms.SM_RP_OA;
@@ -82,6 +85,10 @@ final class MapSmsOutbound {
                 sendSri(sri);
                 yield true;
             }
+            case Ss7Command.MapSendRoutingInfoForSmResponse sriRsp -> {
+                replySri(sriRsp);
+                yield true;
+            }
             case Ss7Command.MapMtForwardSm mt -> {
                 sendMt(mt);
                 yield true;
@@ -107,6 +114,41 @@ final class MapSmsOutbound {
 
     void clearAll() {
         localToCorrelation.clear();
+    }
+
+    /**
+     * Answer inbound SRI-SM on an existing MAP SMS dialog (HLR face).
+     * {@code dialogId} must be the jSS7 local dialog id decimal string.
+     */
+    private void replySri(Ss7Command.MapSendRoutingInfoForSmResponse cmd) {
+        Long localId = parseLocalId(cmd.dialogId());
+        if (localId == null) {
+            throw new IllegalArgumentException("Invalid MAP dialog id: " + cmd.dialogId());
+        }
+        MAPDialog raw = provider.getMAPDialog(localId);
+        if (!(raw instanceof MAPDialogSms sms)) {
+            throw new IllegalStateException("No SMS MAP dialog for id=" + localId);
+        }
+        try {
+            MAPParameterFactory pf = provider.getMAPParameterFactory();
+            IMSI imsi = pf.createIMSI(digits(cmd.imsi()));
+            ISDNAddressString msc = pf.createISDNAddressString(
+                    AddressNature.international_number, NumberingPlan.ISDN, digits(cmd.mscGt()));
+            byte[] lmsiBytes = cmd.lmsi();
+            LMSI lmsi = (lmsiBytes != null && lmsiBytes.length > 0)
+                    ? pf.createLMSI(lmsiBytes) : null;
+            LocationInfoWithLMSI loc = pf.createLocationInfoWithLMSI(
+                    msc, lmsi, null, false, null,
+                    null, null, null, null, false,
+                    null, null, null, null, false, false);
+            sms.addSendRoutingInfoForSMResponse(cmd.invokeId(), imsi, loc, null, null, null);
+            sms.close(false);
+            LOG.info("[ra-jss7] SRI-SM response localDialog={} invokeId={} imsi={} mscGt={}",
+                    localId, cmd.invokeId(), cmd.imsi(), cmd.mscGt());
+        } catch (MAPException | RuntimeException e) {
+            LOG.error("[ra-jss7] SRI-SM response failed id={}: {}", localId, e.toString());
+            throw new IllegalStateException("MAP SRI-SM response failed: " + e.getMessage(), e);
+        }
     }
 
     private void sendSri(Ss7Command.MapSendRoutingInfoForSm cmd) {
@@ -283,6 +325,17 @@ final class MapSmsOutbound {
         }
         return sccpFactory.createSccpAddress(
                 RoutingIndicator.ROUTING_BASED_ON_GLOBAL_TITLE, gt, 0, a.subSystemNumber());
+    }
+
+    private static Long parseLocalId(String dialogId) {
+        if (dialogId == null || dialogId.isBlank() || "?".equals(dialogId)) {
+            return null;
+        }
+        try {
+            return Long.parseLong(dialogId.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static String digits(String s) {

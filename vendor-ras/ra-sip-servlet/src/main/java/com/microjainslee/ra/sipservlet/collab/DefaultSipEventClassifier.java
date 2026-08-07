@@ -99,19 +99,27 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
     @SuppressWarnings("unchecked")
     private String extractFrom(Message msg) {
         FromHeader h = (FromHeader) msg.getHeader(FromHeader.NAME);
-        return h != null ? h.toString() : "";
+        return headerUri(h != null ? h.getAddress() : null);
     }
 
     @SuppressWarnings("unchecked")
     private String extractTo(Message msg) {
         ToHeader h = (ToHeader) msg.getHeader(ToHeader.NAME);
-        return h != null ? h.toString() : "";
+        return headerUri(h != null ? h.getAddress() : null);
     }
 
     @SuppressWarnings("unchecked")
     private String extractContact(Message msg) {
         ContactHeader h = (ContactHeader) msg.getHeader(ContactHeader.NAME);
-        return h != null ? h.toString() : "";
+        return headerUri(h != null ? h.getAddress() : null);
+    }
+
+    /** URI only (sip:…), never the full {@code From: …} header string. */
+    private static String headerUri(javax.sip.address.Address address) {
+        if (address == null || address.getURI() == null) {
+            return "";
+        }
+        return address.getURI().toString();
     }
 
     @SuppressWarnings("unchecked")

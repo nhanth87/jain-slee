@@ -195,10 +195,10 @@ public final class SipServletResourceAdaptor {
         switch (cmd) {
             case StartIce c -> startIce(c.callId());
             case SelectIceCandidate c ->
-                    LOG.info("[ra-sip-servlet] ICE candidate selected callId={} {}:{} ({})",
+                    LOG.debug("[ra-sip-servlet] ICE candidate selected callId={} {}:{} ({})",
                             c.callId(), c.address(), c.port(), c.type());
             case SendMediaKeepAlive c ->
-                    LOG.info("[ra-sip-servlet] media keep-alive {} for callId={}",
+                    LOG.debug("[ra-sip-servlet] media keep-alive {} for callId={}",
                             c.enable() ? "ON" : "OFF", c.callId());
             case SendResponse c -> {
                 if (outboundSender != null) {

@@ -129,6 +129,14 @@ public class NettySipOutboundSenderTest {
     }
 
     @Test
+    public void normalizeSipUriStripsFromHeaderPrefix() {
+        assertEquals("sip:alice@example.com",
+                NettySipOutboundSender.normalizeSipUri("From: <sip:alice@example.com>;tag=x\r\n"));
+        assertEquals("sip:alice@example.com",
+                NettySipOutboundSender.normalizeSipUri("sip:alice@example.com"));
+    }
+
+    @Test
     public void sendInviteBuildsFreshRequest() {
         sender.send(new SendInvite("new-call-1", "sip:pbx@127.0.0.1:5062",
                 "sip:gw@127.0.0.1", "v=0\r\n"));

@@ -42,6 +42,8 @@ public class DefaultSipEventClassifierImsTest {
         assertEquals("<sip:alice@ims.example>", e.pAssertedIdentity());
         assertTrue(e.imsHeaders().containsKey(ImsSipHeaderNames.P_ACCESS_NETWORK_INFO));
         assertEquals("icid-value=xyz", e.pChargingVector());
+        assertTrue(e.fromUri().startsWith("sip:"));
+        assertTrue("fromUri must not be a full From header", !e.fromUri().contains("From:"));
         assertTrue("non-whitelist must not appear", !e.imsHeaders().containsKey("X-Ignored"));
     }
 }

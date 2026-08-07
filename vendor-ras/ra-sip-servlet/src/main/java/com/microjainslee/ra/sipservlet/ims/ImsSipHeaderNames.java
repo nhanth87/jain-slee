@@ -61,8 +61,8 @@ public final class ImsSipHeaderNames {
             SECURITY_SERVER,
             SECURITY_VERIFY,
             REQUIRE,
-            SUPPORTED,
-            PROXY_REQUIRE
+            SUPPORTED
+            // Proxy-Require intentionally omitted — proxy must 420 if unsatisfied (RFC 3261 §16.3)
     );
 
     private ImsSipHeaderNames() {

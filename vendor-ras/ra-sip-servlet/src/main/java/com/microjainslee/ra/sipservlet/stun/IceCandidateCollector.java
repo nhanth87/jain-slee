@@ -9,16 +9,13 @@ import java.util.concurrent.CompletableFuture;
 
 /**
  * Gathers ICE candidates (host, srflx) for a call. Signaling-only — does not
- * relay RTP. When TURN is configured, a relay placeholder is added so SBBs
- * can prefer the firewall path ({@code rtp_redirect} / prefer-relay); full
- * RFC 5766 ALLOCATE remains a future enhancement (UA/coturn usually supplies
- * real relay candidates in SDP).
+ * relay RTP and does <strong>not</strong> invent fake {@code typ relay}
+ * placeholders (TURN ALLOCATE is UA/coturn responsibility; rtp_redirect is
+ * enforced by the app SDP policy).
  */
 public final class IceCandidateCollector {
 
     private final StunClient stunClient;
-    private final String turnServer;
-    private final int turnPort;
     private final boolean preferRelay;
     private RaBootstrapPort bootstrapPort;
 
@@ -26,22 +23,26 @@ public final class IceCandidateCollector {
     public record Candidate(
         String foundation,
         int componentId,
-        String transport,      // "UDP" or "TCP"
+        String transport,
         long priority,
         String address,
         int port,
-        String type            // "host", "srflx", "relay"
+        String type
     ) {}
 
     public IceCandidateCollector(StunClient stunClient) {
-        this(stunClient, null, 0, false);
+        this(stunClient, false);
     }
 
     public IceCandidateCollector(StunClient stunClient, String turnServer, int turnPort,
                                  boolean preferRelay) {
+        // turnServer/port retained in signature for SipRaConfig wiring; unused until
+        // real RFC 5766 ALLOCATE is implemented (do not advertise fake relay).
+        this(stunClient, preferRelay);
+    }
+
+    public IceCandidateCollector(StunClient stunClient, boolean preferRelay) {
         this.stunClient = stunClient;
-        this.turnServer = turnServer;
-        this.turnPort = turnPort > 0 ? turnPort : 3478;
         this.preferRelay = preferRelay;
     }
 
@@ -49,10 +50,6 @@ public final class IceCandidateCollector {
         this.bootstrapPort = bp;
     }
 
-    /**
-     * Gather candidates: host + srflx (STUN) + optional TURN relay placeholder.
-     * When {@code preferRelay}, relay-type entries are sorted first for SBBs.
-     */
     public CompletableFuture<List<Candidate>> gatherAll() {
         List<Candidate> candidates = new ArrayList<>(gatherHostCandidates());
 
@@ -72,37 +69,20 @@ public final class IceCandidateCollector {
         }
 
         return afterStun.thenApply(list -> {
-            addTurnRelayPlaceholder(list);
             if (preferRelay) {
+                // Prefer srflx over host when relay is required but not yet allocated
+                // by this RA (UA SDP must still carry typ relay for app policy).
                 list.sort(Comparator.comparingInt(IceCandidateCollector::typeRank));
             }
             return list;
         });
     }
 
-    /**
-     * Fire IceCandidateEvent through the SLEE EventRouter.
-     */
     public void fireCandidates(String callId, List<Candidate> candidates) {
         if (bootstrapPort != null) {
             bootstrapPort.fireEvent(
                 new IceCandidateEvent(callId, candidates),
                 bootstrapPort.createActivityHandle(callId), null);
-        }
-    }
-
-    private void addTurnRelayPlaceholder(List<Candidate> candidates) {
-        if (turnServer == null || turnServer.isBlank()) {
-            return;
-        }
-        try {
-            InetAddress resolved = InetAddress.getByName(turnServer);
-            candidates.add(new Candidate(
-                    "relay-" + resolved.getHostAddress(),
-                    1, "UDP", relayPriority(),
-                    resolved.getHostAddress(), turnPort, "relay"));
-        } catch (UnknownHostException e) {
-            // Non-fatal: leave host/srflx only
         }
     }
 
@@ -114,24 +94,23 @@ public final class IceCandidateCollector {
                 NetworkInterface iface = ifaces.nextElement();
                 if (iface.isLoopback() || !iface.isUp()) continue;
                 Enumeration<InetAddress> addrs = iface.getInetAddresses();
-                int compId = 1;
                 while (addrs.hasMoreElements()) {
                     InetAddress addr = addrs.nextElement();
                     if (addr instanceof Inet4Address) {
+                        // component-id 1 = RTP (RFC 8445); port filled by media stack
                         result.add(new Candidate(
                             "host-" + addr.getHostAddress(),
-                            compId++, "UDP", hostPriority(),
+                            1, "UDP", hostPriority(),
                             addr.getHostAddress(), 0, "host"));
                     }
                 }
             }
         } catch (SocketException ignored) {
-            // Non-fatal: return whatever we gathered
+            // Non-fatal
         }
         return result;
     }
 
-    /** Lower rank = preferred when preferRelay. */
     private static int typeRank(Candidate c) {
         return switch (c.type() == null ? "" : c.type().toLowerCase(Locale.ROOT)) {
             case "relay" -> 0;
@@ -140,16 +119,11 @@ public final class IceCandidateCollector {
         };
     }
 
-    // RFC 5245: type pref = 126 (host), 100 (srflx), 0 (relay)
     private static long hostPriority() {
         return (126L << 24) | (65535L << 8) | 255;
     }
 
     private static long srflxPriority() {
         return (100L << 24) | (65535L << 8) | 255;
-    }
-
-    private static long relayPriority() {
-        return (0L << 24) | (65535L << 8) | 255;
     }
 }

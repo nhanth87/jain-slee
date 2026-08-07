@@ -15,28 +15,35 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Per-Call-ID dialog state used by the outbound path and the idle sweeper.
+ * Per-Call-ID dialog state for the outbound path and idle sweeper.
  *
- * <p>This is NOT a full RFC 3261 dialog/transaction state machine — it is
- * the minimum state a B2B/gateway SBB needs to answer and terminate
- * dialogs: the last inbound request (to derive responses from), the peer
- * address and transport (where to send), and a last-activity timestamp
- * (to expire abandoned dialogs so the registry cannot leak).
+ * <p>Two peers for SIP-edge / trunk hops (not a full B2BUA SM):
+ * <ul>
+ *   <li>{@code peer} — reply path (UA); updated only on inbound <em>requests</em></li>
+ *   <li>{@code remotePeer} — far trunk (e.g. FreeSWITCH); set when {@code SendInvite} is sent</li>
+ * </ul>
+ * Inbound <em>responses</em> must not overwrite {@code peer}, or 200 INVITE would
+ * be sent back to the trunk instead of the UA.
  */
 public final class DialogRegistry {
 
-    /** Mutable per-dialog state; fields are volatile — single-writer per field. */
+    /** Mutable per-dialog state. */
     public static final class Dialog {
         public final String callId;
         public final ActivityHandle handle;
         private volatile SIPRequest lastRequest;
         private volatile SIPResponse lastResponse;
+        /** UA / reply peer — where SendResponse goes. */
         private volatile InetSocketAddress peer;
         private volatile String transport;
+        /** Far trunk peer — where SendBye / SendAck toward callee go. */
+        private volatile InetSocketAddress remotePeer;
+        private volatile String remoteTransport;
         private volatile long lastActivityMillis;
-        private volatile long cseq;
+        private final AtomicLong cseq = new AtomicLong();
 
         Dialog(String callId, ActivityHandle handle) {
             this.callId = callId;
@@ -48,15 +55,30 @@ public final class DialogRegistry {
         public SIPResponse lastResponse() { return lastResponse; }
         public InetSocketAddress peer() { return peer; }
         public String transport() { return transport; }
+        public InetSocketAddress remotePeer() { return remotePeer; }
+        public String remoteTransport() {
+            return remoteTransport != null ? remoteTransport : transport;
+        }
         public long lastActivityMillis() { return lastActivityMillis; }
 
-        /** Next CSeq number for locally generated in-dialog requests. */
-        public long nextCseq() { return ++cseq; }
+        public long nextCseq() {
+            return cseq.incrementAndGet();
+        }
 
-        void touch(InetSocketAddress peer, String transport) {
+        void touchActivity() {
+            this.lastActivityMillis = System.currentTimeMillis();
+        }
+
+        void setReplyPeer(InetSocketAddress peer, String transport) {
             this.peer = peer;
             this.transport = transport;
-            this.lastActivityMillis = System.currentTimeMillis();
+            touchActivity();
+        }
+
+        void setRemotePeer(InetSocketAddress peer, String transport) {
+            this.remotePeer = peer;
+            this.remoteTransport = transport;
+            touchActivity();
         }
     }
 
@@ -69,14 +91,23 @@ public final class DialogRegistry {
         if (sipMessage instanceof SIPRequest req) {
             dialog.lastRequest = req;
             long cseq = req.getCSeq() != null ? req.getCSeq().getSeqNumber() : 0L;
-            if (cseq > dialog.cseq) {
-                dialog.cseq = cseq;
-            }
+            dialog.cseq.updateAndGet(cur -> Math.max(cur, cseq));
+            // Only requests update the reply peer (UA). Responses from the trunk
+            // must not steal the return path.
+            dialog.setReplyPeer(peer, transport);
         } else if (sipMessage instanceof SIPResponse resp) {
             dialog.lastResponse = resp;
+            dialog.touchActivity();
         }
-        dialog.touch(peer, transport);
         return dialog;
+    }
+
+    /** Record far-leg peer after outbound INVITE (trunk). */
+    public void recordRemotePeer(String callId, InetSocketAddress peer, String transport) {
+        Dialog dialog = dialogs.get(callId);
+        if (dialog != null && peer != null) {
+            dialog.setRemotePeer(peer, transport);
+        }
     }
 
     public Dialog find(String callId) {

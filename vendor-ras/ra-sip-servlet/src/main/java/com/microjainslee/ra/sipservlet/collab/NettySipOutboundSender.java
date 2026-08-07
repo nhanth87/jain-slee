@@ -145,12 +145,56 @@ public final class NettySipOutboundSender implements SipOutboundSender {
 
     private void sendInDialogRequest(String callId, String method) throws Exception {
         DialogRegistry.Dialog dialog = dialogs.find(callId);
-        if (dialog == null || dialog.lastRequest() == null) {
+        if (dialog == null) {
             LOG.warn("[sip-out] no dialog state for callId={} — cannot send {}", callId, method);
             return;
         }
-        SIPRequest request = buildReversedRequest(dialog, method);
-        transmit(request, dialog.transport(), dialog.peer());
+        SIPRequest request;
+        InetSocketAddress target;
+        String transport;
+        if (dialog.remotePeer() != null && dialog.lastResponse() != null) {
+            // Far trunk leg (UAC toward FreeSWITCH): build from last far response.
+            request = buildFarLegRequest(dialog, method);
+            target = dialog.remotePeer();
+            transport = dialog.remoteTransport();
+        } else if (dialog.lastRequest() != null) {
+            // UAS toward UA: reverse inbound request.
+            request = buildReversedRequest(dialog, method);
+            target = dialog.peer();
+            transport = dialog.transport();
+        } else {
+            LOG.warn("[sip-out] no request/response state for callId={} — cannot send {}", callId, method);
+            return;
+        }
+        transmit(request, transport, target);
+    }
+
+    /**
+     * BYE/etc toward the far leg using From/To tags from the far INVITE 200.
+     */
+    private SIPRequest buildFarLegRequest(DialogRegistry.Dialog dialog, String method)
+            throws Exception {
+        SIPResponse resp = dialog.lastResponse();
+        FromHeader origFrom = (FromHeader) resp.getHeader(FromHeader.NAME);
+        ToHeader origTo = (ToHeader) resp.getHeader(ToHeader.NAME);
+        ContactHeader contact = (ContactHeader) resp.getHeader(ContactHeader.NAME);
+        URI requestUri;
+        if (contact != null && contact.getAddress() != null) {
+            requestUri = (URI) contact.getAddress().getURI().clone();
+        } else {
+            requestUri = (URI) origTo.getAddress().getURI().clone();
+        }
+        CallIdHeader callIdHeader = headerFactory.createCallIdHeader(dialog.callId);
+        CSeqHeader cseq = headerFactory.createCSeqHeader(dialog.nextCseq(), method);
+        FromHeader from = headerFactory.createFromHeader(origFrom.getAddress(), origFrom.getTag());
+        ToHeader to = headerFactory.createToHeader(origTo.getAddress(), origTo.getTag());
+        MaxForwardsHeader maxForwards = headerFactory.createMaxForwardsHeader(70);
+        List<ViaHeader> vias = new ArrayList<>(1);
+        vias.add(localVia(dialog.remoteTransport()));
+        SIPRequest request = (SIPRequest) messageFactory.createRequest(
+                requestUri, method, callIdHeader, cseq, from, to, vias, maxForwards);
+        request.setHeader(localContact(dialog.remoteTransport()));
+        return request;
     }
 
     /**
@@ -216,11 +260,14 @@ public final class NettySipOutboundSender implements SipOutboundSender {
         ToHeader to = (ToHeader) response.getHeader(ToHeader.NAME);
         MaxForwardsHeader maxForwards = headerFactory.createMaxForwardsHeader(70);
         List<ViaHeader> vias = new ArrayList<>(1);
-        vias.add(localVia(dialog.transport()));
+        // ACK for a 2xx toward the far leg (trunk), not back to the UA.
+        InetSocketAddress ackPeer = dialog.remotePeer() != null ? dialog.remotePeer() : dialog.peer();
+        String ackTransport = dialog.remotePeer() != null ? dialog.remoteTransport() : dialog.transport();
+        vias.add(localVia(ackTransport));
 
         SIPRequest ack = (SIPRequest) messageFactory.createRequest(
                 requestUri, Request.ACK, callIdHeader, cseq, from, to, vias, maxForwards);
-        transmit(ack, dialog.transport(), dialog.peer());
+        transmit(ack, ackTransport, ackPeer);
     }
 
     private void sendCancel(String callId) throws Exception {
@@ -230,7 +277,9 @@ public final class NettySipOutboundSender implements SipOutboundSender {
             return;
         }
         SIPRequest cancel = dialog.lastRequest().createCancelRequest();
-        transmit(cancel, dialog.transport(), dialog.peer());
+        InetSocketAddress target = dialog.remotePeer() != null ? dialog.remotePeer() : dialog.peer();
+        String transport = dialog.remotePeer() != null ? dialog.remoteTransport() : dialog.transport();
+        transmit(cancel, transport, target);
     }
 
     // ── out-of-dialog MESSAGE ──────────────────────────────────────
@@ -292,9 +341,9 @@ public final class NettySipOutboundSender implements SipOutboundSender {
         String transport = target.getTransportParam() != null
                 ? target.getTransportParam().toUpperCase(Locale.ROOT) : "UDP";
 
+        String fromSip = normalizeSipUri(cmd.fromUri());
         Address toAddress = addressFactory.createAddress(requestUri);
-        Address fromAddress = addressFactory.createAddress(
-                addressFactory.createURI(cmd.fromUri()));
+        Address fromAddress = addressFactory.createAddress(addressFactory.createURI(fromSip));
 
         CallIdHeader callIdHeader = headerFactory.createCallIdHeader(cmd.callId());
         CSeqHeader cseq = headerFactory.createCSeqHeader(1L, Request.INVITE);
@@ -321,6 +370,42 @@ public final class NettySipOutboundSender implements SipOutboundSender {
         InetSocketAddress peer =
                 new InetSocketAddress(InetAddress.getByName(target.getHost()), port);
         transmit(invite, transport, peer);
+        // Far leg for later BYE/ACK/CANCEL toward trunk
+        dialogs.recordRemotePeer(cmd.callId(), peer, transport);
+    }
+
+    /**
+     * Strip {@code From:}/{@code <…>} / {@code ;tag=} so {@code createURI} accepts the value.
+     */
+    static String normalizeSipUri(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "sip:anonymous@localhost";
+        }
+        String s = raw.trim();
+        if (s.regionMatches(true, 0, "From:", 0, 5)
+                || s.regionMatches(true, 0, "To:", 0, 3)
+                || s.regionMatches(true, 0, "Contact:", 0, 8)) {
+            int c = s.indexOf(':');
+            s = s.substring(c + 1).trim();
+        }
+        int lt = s.indexOf('<');
+        int gt = s.indexOf('>');
+        if (lt >= 0 && gt > lt) {
+            s = s.substring(lt + 1, gt).trim();
+        }
+        int tag = indexOfIgnoreCase(s, ";tag=");
+        if (tag > 0) {
+            s = s.substring(0, tag).trim();
+        }
+        if (!s.regionMatches(true, 0, "sip:", 0, 4)
+                && !s.regionMatches(true, 0, "sips:", 0, 5)) {
+            s = "sip:" + s;
+        }
+        return s;
+    }
+
+    private static int indexOfIgnoreCase(String hay, String needle) {
+        return hay.toLowerCase(Locale.ROOT).indexOf(needle.toLowerCase(Locale.ROOT));
     }
 
     /**

@@ -100,7 +100,7 @@ Multi-ASP loadshare under the **same** AS / OPC / SSN / RC (or equivalent). Diff
 |-------|--------|--------|
 | **P0** | Honesty docs; cache POJO skeleton | **Done** |
 | **P1** | Sticky owner + meta write-through + sticky bus + OTID config | **Done** |
-| **P2** | jSS7 export/import; RA wire; ISPN snapshot; CONTINUE-miss; metrics + lab script | **RA-wired** / multi-ASP lab open ([lab doc](../lab/ss7-multi-asp-failover.md)) |
+| **P2** | jSS7 export/import; RA wire; ISPN snapshot; CONTINUE-miss; **metrics scrapeable on status JSON**; lab script | **RA-wired + metrics Done** / multi-ASP lab open ([lab doc](../lab/ss7-multi-asp-failover.md)) |
 
 ### ACNF note
 

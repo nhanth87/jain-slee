@@ -113,6 +113,10 @@ public final class TcapFailoverMetrics {
         return continueMiss.get();
     }
 
+    public long continueResolveFailCount() {
+        return continueResolveFail.get();
+    }
+
     public long stickyRejectCount() {
         return stickyReject.get();
     }

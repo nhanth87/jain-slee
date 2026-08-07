@@ -161,7 +161,7 @@ public final class Ss7Stack {
                 linkName,
                 cfg.hostIp() + ":" + cfg.hostPort(),
                 cfg.peerIp() + ":" + cfg.peerPort(),
-                null,                                   // localSecondary (no multi-homing)
+                java.util.List.of(),                     // localSecondary — never null (Ss7StackBuilder NPE)
                 cfg.ipChannelType().toLowerCase(),       // "sctp" | "tcp"
                 "client",                                // this RA always dials out
                 null,                                    // server name — n/a for type=client

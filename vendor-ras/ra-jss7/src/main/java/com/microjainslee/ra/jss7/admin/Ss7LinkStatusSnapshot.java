@@ -98,6 +98,12 @@ public final class Ss7LinkStatusSnapshot {
         m.put("detail", detail);
         m.put("note",
                 "active=local lifecycle; routeReady=isM3uaRouteReady(); green tab = routeReady only");
+        // ADR 0001 P2 — scrapeable failover / sticky-miss / import-fail counters
+        if (ra != null) {
+            m.put("failoverMetrics", ra.failoverMetrics().snapshot());
+        } else {
+            m.put("failoverMetrics", Map.of());
+        }
         return m;
     }
 

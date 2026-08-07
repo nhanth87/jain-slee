@@ -15,9 +15,9 @@ package com.microjainslee.core;
  */
 public final class MicroSleeConfiguration {
 
-    private static final int DEFAULT_RING_BUFFER_SIZE = 1024;
+    private static final int DEFAULT_RING_BUFFER_SIZE = 2048;
     private static final int DEFAULT_SBB_POOL_MIN = 16;
-    private static final int DEFAULT_SBB_POOL_MAX = 1024;
+    private static final int DEFAULT_SBB_POOL_MAX = 4096;
 
     private static final int DEFAULT_SBB_TYPE_POOL_MIN_IDLE = 0;
 

@@ -73,6 +73,8 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
     private int port = 8080;
     private String host = "127.0.0.1";
     private int eventLoopThreads = 0;   // 0 = Vert.x default (2 × cores)
+    private int workerPoolSize = 0;     // 0 = Vert.x default (20) — raise for high TPS fireEvent
+    private int acceptBacklog = 0;      // 0 = Vert.x / OS default; lab 10k → 8192+
 
     /** Maps sessionId → pending HttpServerResponse for async resolution. */
     private final ConcurrentHashMap<String, HttpServerResponse> pendingResponses =
@@ -99,6 +101,19 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
     /** 0 = Vert.x default. Tune down for tiny containers. */
     public void setEventLoopThreads(int n) {
         this.eventLoopThreads = n;
+    }
+
+    /**
+     * Vert.x worker pool size for {@code executeBlocking(fireEvent)}.
+     * {@code 0} keeps Vert.x default (20) — too low for multi-k TPS ingress.
+     */
+    public void setWorkerPoolSize(int n) {
+        this.workerPoolSize = Math.max(0, n);
+    }
+
+    /** TCP accept backlog; {@code 0} = Vert.x / OS default. */
+    public void setAcceptBacklog(int n) {
+        this.acceptBacklog = Math.max(0, n);
     }
 
     /** Actual bound port (after ephemeral bind when configured port is 0). */
@@ -137,6 +152,9 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
         if (eventLoopThreads > 0) {
             options.setEventLoopPoolSize(eventLoopThreads);
         }
+        if (workerPoolSize > 0) {
+            options.setWorkerPoolSize(workerPoolSize);
+        }
         vertx = Vertx.vertx(options);
 
         HttpServerOptions serverOptions = new HttpServerOptions()
@@ -144,6 +162,9 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
                 .setPort(port)
                 .setTcpNoDelay(true)
                 .setCompressionSupported(false);
+        if (acceptBacklog > 0) {
+            serverOptions.setAcceptBacklog(acceptBacklog);
+        }
 
         // vertx-web Router: BodyHandler parses form fields, multipart file
         // uploads and cookies for us, so SBBs receive them already structured.
@@ -179,7 +200,13 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
                     "Failed to start HTTP server on " + host + ":" + port, failure[0]);
         }
         LOG.info(() -> "HTTP server RA listening on http://" + host + ":" + server.actualPort()
-                + " (Vert.x)");
+                + " (Vert.x eventLoop="
+                + (eventLoopThreads > 0 ? eventLoopThreads : "default")
+                + " workerPool="
+                + (workerPoolSize > 0 ? workerPoolSize : "default")
+                + " acceptBacklog="
+                + (acceptBacklog > 0 ? acceptBacklog : "default")
+                + ")");
     }
 
     @Override

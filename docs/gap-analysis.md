@@ -43,7 +43,7 @@
 |------|--------|
 | jSS7 `exportDialog` / `importDialog` + `TcapMissingDialogResolver` | **Done** (coral-valley `j25`) |
 | RA `Jss7TcapDialogFailoverPort` + ISPN snapshot | **Done** (RA-wired) |
-| Failover / sticky-miss / import-fail metrics | **P2** |
+| Failover / sticky-miss / import-fail metrics | **Done** (atomics + `failoverMetrics` on `/api/ra/ra-jss7/status`) |
 | Multi-ASP / same-AS lab soak script | **P2** (lab open — not production HA) |
 | Invoke tables / MAP dialogue restore | **Open** (ADR gaps) |
 

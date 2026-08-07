@@ -135,6 +135,10 @@ OutboundCommand   (marker sealed interface)
 - [ ] `@InjectRa` injection works in SBB
 - [ ] No framework imports in `jainslee-api` or `jainslee-core`
 
+## LAB FOOTGUNS (short memory)
+
+Cross-cutting Digicom / host lessons (HttpCallback `JsonPostRequest` Content-Type, SCTP diagnose, 10k `sbb-pool` sizing, virtual threads, attribution): [`docs/agents/lessons.md`](docs/agents/lessons.md). Do **not** paste USSD-only NI/codec rows here — link ussdgw lessons.
+
 ## BUILD GOTCHAS — recurring issues, fix once and remember
 
 ### log4j api/core version skew → `NoSuchFieldError: FlowMessageFactory.INSTANCE`

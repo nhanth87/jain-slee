@@ -38,7 +38,7 @@ public interface MicroJainsleeBuildConfig {
      * Larger values improve throughput at the cost of memory and worst-case latency.
      */
     @WithName("buffer-size")
-    @WithDefault("1024")
+    @WithDefault("2048")
     int bufferSize();
 
     /**
@@ -59,7 +59,7 @@ public interface MicroJainsleeBuildConfig {
      * Maximum number of SBB entity-pool entries.
      */
     @WithName("sbb-pool-max")
-    @WithDefault("1024")
+    @WithDefault("4096")
     int sbbPoolMax();
 
     /**

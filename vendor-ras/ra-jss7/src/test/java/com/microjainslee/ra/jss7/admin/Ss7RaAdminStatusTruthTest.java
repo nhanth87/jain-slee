@@ -49,6 +49,7 @@ public class Ss7RaAdminStatusTruthTest {
         assertTrue(body.contains("\"associations\":[]"));
         assertTrue(body.contains("\"asps\":[]"));
         assertTrue(body.contains("\"applicationServers\":[]"));
+        assertTrue(body.contains("\"failoverMetrics\""));
         assertFalse(body.contains("\"live\":true"));
     }
 

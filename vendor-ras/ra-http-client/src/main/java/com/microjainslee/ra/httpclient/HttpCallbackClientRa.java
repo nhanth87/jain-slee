@@ -57,7 +57,8 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     private int requestTimeoutMs = 15_000;
     private int maxRetries = 2;
     private long retryBackoffMs = 500;
-    private int maxPoolSize = 20;
+    /** Per-host WebClient pool; 20 starved multi-k TPS AS pull — Digicom lab default 256. */
+    private int maxPoolSize = 256;
     private boolean keepAlive = true;
     private boolean followRedirects = true;
     private boolean trustAll = false;

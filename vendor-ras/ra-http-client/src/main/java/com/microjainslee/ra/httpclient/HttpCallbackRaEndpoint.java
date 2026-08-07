@@ -37,7 +37,7 @@ import org.apache.logging.log4j.Logger;
  * <p>Also implements {@link RaCommandPort} — outbound
  * {@link HttpCallbackCommand}s are dispatched to
  * {@link HttpCallbackClientRa#sendCallback(String, String, String)} or
- * {@link HttpCallbackClientRa#sendJsonPost(String, String, String)}.</p>
+ * {@link HttpCallbackClientRa#sendJsonPost(String, String, String, String)}.</p>
  */
 public final class HttpCallbackRaEndpoint implements RaEndpointPort, RaCommandPort {
 
@@ -90,7 +90,7 @@ public final class HttpCallbackRaEndpoint implements RaEndpointPort, RaCommandPo
     @Override
     public void sendCommand(OutboundCommand command) {
         if (command instanceof HttpCallbackCommand.JsonPostRequest req) {
-            delegate.sendJsonPost(req.sessionId(), req.url(), req.body());
+            delegate.sendJsonPost(req.sessionId(), req.url(), req.body(), req.contentType());
         } else if (command instanceof HttpCallbackCommand.CallbackRequest req) {
             delegate.sendCallback(req.sessionId(), req.callbackUrl(), req.payload());
         } else {

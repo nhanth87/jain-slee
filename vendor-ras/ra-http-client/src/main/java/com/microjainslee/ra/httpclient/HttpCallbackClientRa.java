@@ -139,19 +139,34 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     public void sendCallback(String sessionId, String callbackUrl, String payload) {
         String json = "{\"sessionId\":\"" + escapeJson(sessionId)
                 + "\",\"status\":\"OK\",\"payload\":\"" + escapeJson(payload) + "\"}";
-        postJson(sessionId, callbackUrl, json);
+        postBody(sessionId, callbackUrl, json, "application/json");
     }
 
     /**
-     * HTTP request/response: POST raw JSON {@code body} and complete with
-     * status + response body ({@link HttpCallbackCompletedEvent}).
+     * HTTP request/response: POST raw {@code body} as {@code application/json}
+     * and complete with status + response body ({@link HttpCallbackCompletedEvent}).
      * Use for AS pull — do not wrap in a callback envelope.
      */
     public void sendJsonPost(String sessionId, String url, String body) {
-        postJson(sessionId, url, body == null ? "" : body);
+        sendJsonPost(sessionId, url, body, "application/json");
     }
 
-    private void postJson(String sessionId, String url, String json) {
+    /**
+     * HTTP request/response: POST raw {@code body} with the given
+     * {@code Content-Type} and complete with status + response body
+     * ({@link HttpCallbackCompletedEvent}). Body may be JSON or XML
+     * (or any text payload). Null/blank {@code contentType} defaults to
+     * {@code application/json}.
+     */
+    public void sendJsonPost(String sessionId, String url, String body, String contentType) {
+        postBody(sessionId, url, body == null ? "" : body, resolveContentType(contentType));
+    }
+
+    private static String resolveContentType(String contentType) {
+        return contentType == null || contentType.isBlank() ? "application/json" : contentType;
+    }
+
+    private void postBody(String sessionId, String url, String body, String contentType) {
         if (url == null || url.isBlank()) {
             LOG.debug(() -> "HTTP client RA: no URL for session " + sessionId);
             return;
@@ -174,18 +189,18 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
         }
 
         sessionStore.track(sessionId, url);
-        attemptSend(client, sessionId, url, json, 0);
+        attemptSend(client, sessionId, url, body, contentType, 0);
     }
 
     private void attemptSend(WebClient client, String sessionId, String callbackUrl,
-                             String json, int attempt) {
+                             String body, String contentType, int attempt) {
         client.postAbs(callbackUrl)
                 .timeout(requestTimeoutMs)
-                .putHeader("Content-Type", "application/json")
-                .sendBuffer(Buffer.buffer(json))
+                .putHeader("Content-Type", contentType)
+                .sendBuffer(Buffer.buffer(body))
                 .onSuccess(res -> {
                     int status = res.statusCode();
-                    String body = res.bodyAsString();
+                    String responseBody = res.bodyAsString();
                     if (status < 500) {
                         if (status >= 400) {
                             LOG.warn("HTTP client RA: POST {} -> {} for session {} "
@@ -195,19 +210,20 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
                             LOG.info("HTTP client RA: POST {} -> {} for session {}",
                                     callbackUrl, status, sessionId);
                         }
-                        completeWithSuccess(sessionId, status, body);
+                        completeWithSuccess(sessionId, status, responseBody);
                         return;
                     }
-                    retryOrGiveUp(client, sessionId, callbackUrl, json, attempt,
+                    retryOrGiveUp(client, sessionId, callbackUrl, body, contentType, attempt,
                             "HTTP " + status, status);
                 })
                 .onFailure(ex ->
-                        retryOrGiveUp(client, sessionId, callbackUrl, json, attempt,
+                        retryOrGiveUp(client, sessionId, callbackUrl, body, contentType, attempt,
                                 ex.getMessage(), 0));
     }
 
     private void retryOrGiveUp(WebClient client, String sessionId, String callbackUrl,
-                               String json, int attempt, String reason, int lastStatus) {
+                               String body, String contentType, int attempt,
+                               String reason, int lastStatus) {
         if (attempt >= maxRetries || !active.get()) {
             LOG.warn("HTTP client RA: giving up after {} attempt(s) for session {} to {} ({})",
                     attempt + 1, sessionId, callbackUrl, reason);
@@ -221,7 +237,7 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
         Vertx v = this.vertx;
         if (v != null && active.get()) {
             v.setTimer(delay, id ->
-                    attemptSend(client, sessionId, callbackUrl, json, attempt + 1));
+                    attemptSend(client, sessionId, callbackUrl, body, contentType, attempt + 1));
         }
     }
 

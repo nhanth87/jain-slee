@@ -40,15 +40,28 @@ public sealed interface HttpCallbackCommand extends OutboundCommand
     }
 
     /**
-     * HTTP request/response exchange: POST {@code body} as the raw JSON
-     * request entity and complete with the response status/body
+     * HTTP request/response exchange: POST {@code body} as the raw request
+     * entity and complete with the response status/body
      * (classic HttpClientActivity-shaped pull).
      *
-     * @param sessionId  correlation / session id for the completion event
-     * @param url        absolute URL to POST to
-     * @param body       raw JSON request body (not wrapped)
+     * <p>Name kept as {@code JsonPostRequest} for compatibility; {@code body}
+     * may be JSON or XML (or any other text payload). Use
+     * {@code contentType} to set the {@code Content-Type} header
+     * (e.g. {@code application/json}, {@code text/xml}).</p>
+     *
+     * @param sessionId   correlation / session id for the completion event
+     * @param url         absolute URL to POST to
+     * @param body        raw request body (not wrapped); JSON or XML per contentType
+     * @param contentType HTTP {@code Content-Type}; null/blank → {@code application/json}
      */
-    record JsonPostRequest(String sessionId, String url, String body)
+    record JsonPostRequest(String sessionId, String url, String body, String contentType)
             implements HttpCallbackCommand, OutboundCommand {
+
+        /**
+         * Compact ctor: defaults {@code Content-Type} to {@code application/json}.
+         */
+        public JsonPostRequest(String sessionId, String url, String body) {
+            this(sessionId, url, body, "application/json");
+        }
     }
 }

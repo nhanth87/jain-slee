@@ -23,6 +23,9 @@ import org.restcomm.protocols.ss7.map.api.MAPException;
 import org.restcomm.protocols.ss7.map.api.MAPParameterFactory;
 import org.restcomm.protocols.ss7.map.api.MAPProvider;
 import org.restcomm.protocols.ss7.map.api.datacoding.CBSDataCodingScheme;
+import org.restcomm.protocols.ss7.map.api.primitives.AddressNature;
+import org.restcomm.protocols.ss7.map.api.primitives.AddressString;
+import org.restcomm.protocols.ss7.map.api.primitives.NumberingPlan;
 import org.restcomm.protocols.ss7.map.api.primitives.USSDString;
 import org.restcomm.protocols.ss7.map.api.service.supplementary.MAPDialogSupplementary;
 import org.restcomm.protocols.ss7.map.datacoding.CBSDataCodingSchemeImpl;
@@ -133,10 +136,15 @@ final class MapUssdOutbound {
             MAPApplicationContext ac = MAPApplicationContext.getInstance(
                     MAPApplicationContextName.networkUnstructuredSsContext,
                     MAPApplicationContextVersion.version2);
+            // Classic HttpServerSbb.onSRIResult: SCCP dest = networkNodeNumber (MSC),
+            // destReference = IMSI (land_mobile), origReference = USSD GW GT (ISDN).
             SccpAddress dest = toSccp(cmd.targetAddress());
             SccpAddress orig = toSccp(cmd.localAddress());
+            MAPParameterFactory pf = provider.getMAPParameterFactory();
+            AddressString destRef = imsiDestReference(pf, cmd.imsi());
+            AddressString origRef = gtOrigReference(pf, cmd.localAddress());
             dialog = provider.getMAPServiceSupplementary()
-                    .createNewDialog(ac, orig, null, dest, null);
+                    .createNewDialog(ac, orig, origRef, dest, destRef);
             dialog.setNetworkId(cmd.networkId());
             remember(dialog.getLocalDialogId(), cmd.dialogId());
 
@@ -149,8 +157,10 @@ final class MapUssdOutbound {
             }
             dialog.send();
             sent = true;
-            LOG.info("[ra-jss7] USSD NI sent corr={} localDialog={} notify={} dcs=0x{}",
+            LOG.info("[ra-jss7] USSD NI sent corr={} localDialog={} notify={} mscGt={} imsi={} dcs=0x{}",
                     cmd.dialogId(), dialog.getLocalDialogId(), cmd.notifyOnly(),
+                    cmd.targetAddress() == null ? "" : cmd.targetAddress().globalTitle(),
+                    cmd.imsi() == null ? "" : cmd.imsi(),
                     Integer.toHexString(cmd.dataCoding()));
         } catch (MAPException | RuntimeException e) {
             if (!sent && dialog != null) {
@@ -165,6 +175,43 @@ final class MapUssdOutbound {
             LOG.error("[ra-jss7] USSD NI failed corr={}: {}", cmd.dialogId(), e.toString());
             throw new IllegalStateException("MAP USSD NI failed: " + e.getMessage(), e);
         }
+    }
+
+    /** Classic getTargetReference — IMSI as land_mobile AddressString (TS 29.002). */
+    private static AddressString imsiDestReference(MAPParameterFactory pf, String imsi) {
+        if (pf == null || imsi == null || imsi.isBlank()) {
+            return null;
+        }
+        String digits = digitsOnly(imsi);
+        if (digits.isEmpty()) {
+            return null;
+        }
+        return pf.createAddressString(
+                AddressNature.international_number, NumberingPlan.land_mobile, digits);
+    }
+
+    /** Classic getUssdGwReference — local USSD GT as ISDN AddressString. */
+    private static AddressString gtOrigReference(MAPParameterFactory pf, Ss7Address local) {
+        if (pf == null || local == null || local.globalTitle() == null || local.globalTitle().isBlank()) {
+            return null;
+        }
+        String digits = digitsOnly(local.globalTitle());
+        if (digits.isEmpty()) {
+            return null;
+        }
+        return pf.createAddressString(
+                AddressNature.international_number, NumberingPlan.ISDN, digits);
+    }
+
+    private static String digitsOnly(String s) {
+        StringBuilder b = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= '0' && c <= '9') {
+                b.append(c);
+            }
+        }
+        return b.toString();
     }
 
     private void abortDialog(Ss7Command.MapDialogAbort cmd) {

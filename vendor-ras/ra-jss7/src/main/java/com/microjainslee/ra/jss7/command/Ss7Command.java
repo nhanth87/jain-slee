@@ -183,6 +183,10 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
     /**
      * Network-initiated UnstructuredSS-Request (or Notify) toward the MSC/VLR.
      * Uses {@code networkUnstructuredSsContext} v2.
+     *
+     * <p>{@code targetAddress} must be the SRI-SM {@code networkNodeNumber} (MSC/VLR GT),
+     * never the subscriber MSISDN. {@code imsi} becomes MAP destination reference
+     * (numbering plan land_mobile) per classic ussdgateway / 3GPP TS 29.002 table 7.3/2.
      */
     record MapUnstructuredSsRequest(
             String dialogId,
@@ -191,7 +195,8 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             String text,
             int networkId,
             boolean notifyOnly,
-            int dataCoding
+            int dataCoding,
+            String imsi
     ) implements Ss7Command {
         public MapUnstructuredSsRequest(
                 String dialogId,
@@ -199,7 +204,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 Ss7Address localAddress,
                 String text,
                 int networkId) {
-            this(dialogId, targetAddress, localAddress, text, networkId, false, 0x0F);
+            this(dialogId, targetAddress, localAddress, text, networkId, false, 0x0F, null);
         }
 
         public MapUnstructuredSsRequest(
@@ -209,7 +214,18 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 String text,
                 int networkId,
                 boolean notifyOnly) {
-            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, 0x0F);
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, 0x0F, null);
+        }
+
+        public MapUnstructuredSsRequest(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String text,
+                int networkId,
+                boolean notifyOnly,
+                int dataCoding) {
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, null);
         }
     }
 

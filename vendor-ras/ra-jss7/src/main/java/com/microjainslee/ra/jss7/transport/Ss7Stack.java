@@ -176,6 +176,7 @@ public final class Ss7Stack {
                 cfg.ipspClient() ? "client" : null,
                 "se",
                 cfg.routingContext(),
+                null, // routingContexts — prefer single routingContext for RA props path
                 cfg.networkAppearance(),
                 1,
                 List.of(linkName));

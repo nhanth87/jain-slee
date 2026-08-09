@@ -99,7 +99,7 @@ public final class NettySipOutboundSender implements SipOutboundSender {
     public void send(SipOutboundCommand cmd) {
         try {
             switch (cmd) {
-                case SendResponse c  -> sendResponse(c.callId(), c.statusCode(), c.reason(), null);
+                case SendResponse c  -> sendResponse(c.callId(), c.statusCode(), c.reason(), null, c.headers());
                 case SendSdpUpdate c -> sendResponse(c.callId(), 200, "OK", c.sdp());
                 case SendBye c       -> sendInDialogRequest(c.callId(), Request.BYE);
                 case SendAck c       -> sendAck(c.callId());
@@ -119,6 +119,12 @@ public final class NettySipOutboundSender implements SipOutboundSender {
 
     private void sendResponse(String callId, int status, String reason, String sdp)
             throws Exception {
+        sendResponse(callId, status, reason, sdp, null);
+    }
+
+    private void sendResponse(String callId, int status, String reason, String sdp,
+                              java.util.Map<String, String> headers)
+            throws Exception {
         DialogRegistry.Dialog dialog = dialogs.find(callId);
         if (dialog == null || dialog.lastRequest() == null) {
             LOG.warn("[sip-out] no dialog/request state for callId={} — cannot respond", callId);
@@ -133,6 +139,14 @@ public final class NettySipOutboundSender implements SipOutboundSender {
         }
         if (status / 100 == 2 && needsContact(request.getMethod())) {
             response.setHeader(localContact(dialog.transport()));
+        }
+        if (headers != null) {
+            for (var e : headers.entrySet()) {
+                if (e.getKey() == null || e.getValue() == null) {
+                    continue;
+                }
+                response.setHeader(headerFactory.createHeader(e.getKey(), e.getValue()));
+            }
         }
         if (sdp != null && !sdp.isEmpty()) {
             ContentTypeHeader ct = headerFactory.createContentTypeHeader("application", "sdp");

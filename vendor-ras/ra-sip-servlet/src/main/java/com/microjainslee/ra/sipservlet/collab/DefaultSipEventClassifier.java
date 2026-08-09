@@ -55,7 +55,9 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
             case "REGISTER" -> new SipRegisterEvent(callId,
                     extractFrom(req), extractTo(req),
                     extractContact(req),
-                    extractExpires(req));
+                    extractExpires(req),
+                    extractAuthorization(req),
+                    extractPath(req));
             case "OPTIONS"  -> new SipOptionsEvent(callId);
             case "SUBSCRIBE" -> new SipSubscribeEvent(callId,
                     extractFrom(req), extractTo(req),
@@ -256,5 +258,21 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
         }
         // Some JAIN toString() forms omit the name
         return trimmed;
+    }
+
+    private String extractAuthorization(Message msg) {
+        Header h = msg.getHeader(AuthorizationHeader.NAME);
+        if (h == null) {
+            h = msg.getHeader("Proxy-Authorization");
+        }
+        if (h == null) {
+            return null;
+        }
+        return stripHeaderName(h.toString(), AuthorizationHeader.NAME);
+    }
+
+    private String extractPath(Message msg) {
+        Header h = msg.getHeader("Path");
+        return h == null ? null : stripHeaderName(h.toString(), "Path");
     }
 }

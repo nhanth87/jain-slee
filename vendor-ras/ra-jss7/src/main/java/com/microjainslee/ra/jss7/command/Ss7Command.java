@@ -73,8 +73,21 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             Ss7Address localAddress,
             String msisdn,
             String serviceCentreAddress,
-            int networkId
-    ) implements Ss7Command {}
+            int networkId,
+            String preferredAspName,
+            int remotePc
+    ) implements Ss7Command {
+        /** No sticky ASP pin (classic SLS among ACTIVE of N). */
+        public MapSendRoutingInfoForSm(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String msisdn,
+                String serviceCentreAddress,
+                int networkId) {
+            this(dialogId, targetAddress, localAddress, msisdn, serviceCentreAddress, networkId, null, -1);
+        }
+    }
 
     /**
      * Answer an inbound MAP sendRoutingInfoForSM on an existing SMS dialog.
@@ -131,9 +144,11 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             int protocolId,
             boolean udhi,
             int networkId,
-            byte[] lmsi
+            byte[] lmsi,
+            String preferredAspName,
+            int remotePc
     ) implements Ss7Command {
-        /** Backward-compatible: no LMSI. */
+        /** Backward-compatible: no LMSI / no sticky ASP pin. */
         public MapMtForwardSm(
                 String dialogId,
                 Ss7Address targetAddress,
@@ -146,7 +161,24 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 boolean udhi,
                 int networkId) {
             this(dialogId, targetAddress, localAddress, imsi, scAddress, tpUd,
-                    dataCoding, protocolId, udhi, networkId, null);
+                    dataCoding, protocolId, udhi, networkId, null, null, -1);
+        }
+
+        /** Backward-compatible: LMSI, no sticky ASP pin. */
+        public MapMtForwardSm(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String imsi,
+                String scAddress,
+                byte[] tpUd,
+                int dataCoding,
+                int protocolId,
+                boolean udhi,
+                int networkId,
+                byte[] lmsi) {
+            this(dialogId, targetAddress, localAddress, imsi, scAddress, tpUd,
+                    dataCoding, protocolId, udhi, networkId, lmsi, null, -1);
         }
     }
 
@@ -201,7 +233,9 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             int dataCoding,
             String imsi,
             String msisdn,
-            boolean processUnstructured
+            boolean processUnstructured,
+            String preferredAspName,
+            int remotePc
     ) implements Ss7Command {
         public MapUnstructuredSsRequest(
                 String dialogId,
@@ -209,7 +243,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 Ss7Address localAddress,
                 String text,
                 int networkId) {
-            this(dialogId, targetAddress, localAddress, text, networkId, false, 0x0F, null, null, false);
+            this(dialogId, targetAddress, localAddress, text, networkId, false, 0x0F, null, null, false, null, -1);
         }
 
         public MapUnstructuredSsRequest(
@@ -219,7 +253,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 String text,
                 int networkId,
                 boolean notifyOnly) {
-            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, 0x0F, null, null, false);
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, 0x0F, null, null, false, null, -1);
         }
 
         public MapUnstructuredSsRequest(
@@ -230,7 +264,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 int networkId,
                 boolean notifyOnly,
                 int dataCoding) {
-            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, null, null, false);
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, null, null, false, null, -1);
         }
 
         public MapUnstructuredSsRequest(
@@ -242,7 +276,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 boolean notifyOnly,
                 int dataCoding,
                 String imsi) {
-            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, imsi, null, false);
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, imsi, null, false, null, -1);
         }
 
         public MapUnstructuredSsRequest(
@@ -255,7 +289,22 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 int dataCoding,
                 String imsi,
                 String msisdn) {
-            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, imsi, msisdn, false);
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, imsi, msisdn, false, null, -1);
+        }
+
+        public MapUnstructuredSsRequest(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String text,
+                int networkId,
+                boolean notifyOnly,
+                int dataCoding,
+                String imsi,
+                String msisdn,
+                boolean processUnstructured) {
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, imsi, msisdn,
+                    processUnstructured, null, -1);
         }
     }
 

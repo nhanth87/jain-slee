@@ -41,10 +41,19 @@ public final class Ss7DialogCacheNames {
     public static final String RA_STICKY_COMMANDS = "ra-jss7-sticky-cmd";
 
     /**
-     * SCTP local endpoint lease (n-n): key {@code ip:port} → {@link SctpEndpointLease}.
+     * SCTP local endpoint lease (N–N): key {@code ip:port} → {@link SctpEndpointLease}.
      * ISPN CAS + generation fences dual-bind after view change (no ZooKeeper).
      */
     public static final String SCTP_ENDPOINT_LEASE = "sctp-endpoint-lease";
+
+    /**
+     * Cluster-wide N–N peer-route LB counters / affinity pins for <b>new</b> NI/GTT
+     * sessions (any of N candidate PC/ASP pairs). Not A-A pair-only and not A-P.
+     * Mid-dialog sticky ASP lives on the jSS7 dialog ({@code preferredAspName}).
+     *
+     * @see Ss7PeerRouteAffinity
+     */
+    public static final String SS7_PEER_ROUTE_LB = "ss7-peer-route-lb";
 
     private Ss7DialogCacheNames() {
     }

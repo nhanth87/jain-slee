@@ -163,6 +163,7 @@ final class MapSmsOutbound {
             dialog = provider.getMAPServiceSms()
                     .createNewDialog(ac, orig, null, dest, null);
             dialog.setNetworkId(cmd.networkId());
+            DialogRoutePin.apply(dialog, cmd.preferredAspName(), cmd.remotePc());
             remember(dialog.getLocalDialogId(), cmd.dialogId());
 
             MAPParameterFactory pf = provider.getMAPParameterFactory();
@@ -200,6 +201,7 @@ final class MapSmsOutbound {
             dialog = provider.getMAPServiceSms()
                     .createNewDialog(ac, orig, null, dest, null);
             dialog.setNetworkId(cmd.networkId());
+            DialogRoutePin.apply(dialog, cmd.preferredAspName(), cmd.remotePc());
             remember(dialog.getLocalDialogId(), cmd.dialogId());
 
             MAPParameterFactory pf = provider.getMAPParameterFactory();

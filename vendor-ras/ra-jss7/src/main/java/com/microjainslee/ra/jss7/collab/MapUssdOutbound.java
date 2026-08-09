@@ -169,6 +169,7 @@ final class MapUssdOutbound {
             dialog = provider.getMAPServiceSupplementary()
                     .createNewDialog(ac, orig, origRef, dest, destRef);
             dialog.setNetworkId(cmd.networkId());
+            DialogRoutePin.apply(dialog, cmd.preferredAspName(), cmd.remotePc());
             remember(dialog.getLocalDialogId(), cmd.dialogId());
 
             CBSDataCodingScheme dcs = new CBSDataCodingSchemeImpl(cmd.dataCoding());

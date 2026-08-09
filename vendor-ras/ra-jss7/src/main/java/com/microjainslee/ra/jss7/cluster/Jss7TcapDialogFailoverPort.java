@@ -296,7 +296,8 @@ public final class Jss7TcapDialogFailoverPort
                 snap.getSeqControl(),
                 snap.isDpSentInBegin(),
                 snap.getInvokeIdTaken(),
-                System.currentTimeMillis());
+                System.currentTimeMillis(),
+                snap.getPreferredAspName());
     }
 
     static TcapDialogSnapshot toJss7Snapshot(TcapDialogSnapshotPayload payload, ParameterFactory pf) {
@@ -322,7 +323,8 @@ public final class Jss7TcapDialogFailoverPort
                 payload.remotePc(),
                 payload.seqControl(),
                 payload.dpSentInBegin(),
-                payload.invokeIdTaken());
+                payload.invokeIdTaken(),
+                payload.preferredAspName());
     }
 
     static PortableSccpAddress toPortable(SccpAddress addr) {

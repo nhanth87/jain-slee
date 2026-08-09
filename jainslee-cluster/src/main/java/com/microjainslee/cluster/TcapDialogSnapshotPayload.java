@@ -21,12 +21,13 @@ import java.util.Objects;
  * types so values stay inside {@link MarshallingAllowList}. The RA converts
  * to/from the live jSS7 snapshot for {@code exportDialog}/{@code importDialog}.
  *
- * <p><b>Not production HA:</b> invoke objects, MAP dialogue state, and
- * multi-ASP routing are out of scope for this POJO.
+ * <p><b>Not production HA:</b> invoke objects and MAP dialogue state are out of
+ * scope for this POJO. Preferred ASP is carried for N–N sticky dialog continuity
+ * after CONTINUE import (see jSS7 {@code preferredAspName}).
  */
 public final class TcapDialogSnapshotPayload implements Serializable {
 
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 2L;
 
     private final String dialogKey;
     private final long localOtid;
@@ -43,6 +44,7 @@ public final class TcapDialogSnapshotPayload implements Serializable {
     private final boolean dpSentInBegin;
     private final boolean[] invokeIdTaken;
     private final long updatedAtEpochMs;
+    private final String preferredAspName;
 
     public TcapDialogSnapshotPayload(
             String dialogKey,
@@ -60,6 +62,28 @@ public final class TcapDialogSnapshotPayload implements Serializable {
             boolean dpSentInBegin,
             boolean[] invokeIdTaken,
             long updatedAtEpochMs) {
+        this(dialogKey, localOtid, remoteOtid, localAddress, remoteAddress, trState, applicationContextOid,
+                idleDeadlineNanos, networkId, localSsn, remotePc, seqControl, dpSentInBegin, invokeIdTaken,
+                updatedAtEpochMs, null);
+    }
+
+    public TcapDialogSnapshotPayload(
+            String dialogKey,
+            long localOtid,
+            byte[] remoteOtid,
+            PortableSccpAddress localAddress,
+            PortableSccpAddress remoteAddress,
+            String trState,
+            long[] applicationContextOid,
+            long idleDeadlineNanos,
+            int networkId,
+            int localSsn,
+            int remotePc,
+            int seqControl,
+            boolean dpSentInBegin,
+            boolean[] invokeIdTaken,
+            long updatedAtEpochMs,
+            String preferredAspName) {
         this.dialogKey = Objects.requireNonNull(dialogKey, "dialogKey");
         this.localOtid = localOtid;
         this.remoteOtid = remoteOtid == null ? null : remoteOtid.clone();
@@ -77,6 +101,7 @@ public final class TcapDialogSnapshotPayload implements Serializable {
         this.invokeIdTaken = invokeIdTaken == null ? null
                 : Arrays.copyOf(invokeIdTaken, invokeIdTaken.length);
         this.updatedAtEpochMs = updatedAtEpochMs;
+        this.preferredAspName = preferredAspName;
     }
 
     public String dialogKey() {
@@ -156,6 +181,11 @@ public final class TcapDialogSnapshotPayload implements Serializable {
         return updatedAtEpochMs;
     }
 
+    /** Sticky M3UA ASP for N–N dialog-bound PayloadData; null = SLS among ACTIVE of N. */
+    public String preferredAspName() {
+        return preferredAspName;
+    }
+
     /**
      * Minimal PC/SSN (+ optional GT digits) address for rehydrate.
      * Routing indicator name matches jSS7 {@code RoutingIndicator.name()}.
@@ -201,14 +231,15 @@ public final class TcapDialogSnapshotPayload implements Serializable {
                 && Objects.equals(remoteAddress, that.remoteAddress)
                 && Objects.equals(trState, that.trState)
                 && Arrays.equals(applicationContextOid, that.applicationContextOid)
-                && Arrays.equals(invokeIdTaken, that.invokeIdTaken);
+                && Arrays.equals(invokeIdTaken, that.invokeIdTaken)
+                && Objects.equals(preferredAspName, that.preferredAspName);
     }
 
     @Override
     public int hashCode() {
         int result = Objects.hash(dialogKey, localOtid, localAddress, remoteAddress, trState,
                 idleDeadlineNanos, networkId, localSsn, remotePc, seqControl, dpSentInBegin,
-                updatedAtEpochMs);
+                updatedAtEpochMs, preferredAspName);
         result = 31 * result + Arrays.hashCode(remoteOtid);
         result = 31 * result + Arrays.hashCode(applicationContextOid);
         result = 31 * result + Arrays.hashCode(invokeIdTaken);

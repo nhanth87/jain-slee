@@ -119,6 +119,7 @@ Multi-ASP loadshare under the **same** AS / OPC / SSN / RC (or equivalent). Diff
 | MAP after import | `MAPProvider.rehydrateDialogFromTcap` + CONTINUE auto-rehydrate |
 | Snapshot write | Begin + Continue **with components only** |
 | SBB checkpoint (Gate A) | **RA only** calls `checkpointSbbEntity` on Begin + Continue-with-components — SBBs never touch HA (see [ADR 0002](0002-ra-sticky-ha-fabric.md)) |
+| **N–N sticky ASP / NI LB** | jSS7 dialog `preferredAspName` + `AsImpl.write`; new sessions: `Ss7PeerRouteAffinity` across **N** candidates (see jSS7 `docs/sticky-asp-nn.md`) |
 
 ### ACNF note
 

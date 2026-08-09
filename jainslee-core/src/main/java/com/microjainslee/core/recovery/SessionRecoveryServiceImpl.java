@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0
+ * micro-jainslee 1.2.0
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -15,15 +15,19 @@ import org.apache.logging.log4j.Logger;
 
 import com.microjainslee.api.SleeEvent;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Sprint S7 - default {@link SessionRecoveryService} implementation backed
  * by a synchronized {@link LinkedHashMap} in access-order with
- * {@code removeEldestEntry} eviction.
+ * {@code removeEldestEntry} eviction <strong>and</strong> TTL reclaim
+ * (PolyVoice N-N / micro-jainslee zombie pattern: idle snapshots expire).
  *
  * <h2>R10 anti-loop guard</h2>
  * {@link #REHYDRATING} is a process-wide {@link ThreadLocal} flag set for
@@ -44,19 +48,31 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
             ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     private final int maxSize;
+    private final long ttlMs;
     private final RehydrateCallback callback;
     private final Map<String, RecoverySnapshot> snapshots;
+    private final AtomicLong reclaimedExpired = new AtomicLong();
+    private final AtomicLong rejectedStale = new AtomicLong();
 
-    /** Default constructor - uses {@link #DEFAULT_MAX_SNAPSHOTS} (65 536). */
+    /** Default constructor - {@link #DEFAULT_MAX_SNAPSHOTS} + {@link #DEFAULT_TTL_MS}. */
     public SessionRecoveryServiceImpl(RehydrateCallback callback) {
-        this(DEFAULT_MAX_SNAPSHOTS, callback);
+        this(DEFAULT_MAX_SNAPSHOTS, DEFAULT_TTL_MS, callback);
     }
 
+    /** Capacity-only constructor (keeps default TTL). */
     public SessionRecoveryServiceImpl(int maxSize, RehydrateCallback callback) {
+        this(maxSize, DEFAULT_TTL_MS, callback);
+    }
+
+    public SessionRecoveryServiceImpl(int maxSize, long ttlMs, RehydrateCallback callback) {
         if (maxSize < 1) {
             throw new IllegalArgumentException("maxSize must be >= 1, got " + maxSize);
         }
+        if (ttlMs < 1L) {
+            throw new IllegalArgumentException("ttlMs must be >= 1, got " + ttlMs);
+        }
         this.maxSize = maxSize;
+        this.ttlMs = ttlMs;
         this.callback = callback;
         final int initialCapacity = (int) Math.min(maxSize, 1024L);
         LinkedHashMap<String, RecoverySnapshot> lru = new LinkedHashMap<String, RecoverySnapshot>(
@@ -79,6 +95,14 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
         if (snapshot.entityId() == null) {
             throw new IllegalArgumentException("snapshot.entityId is required");
         }
+        reclaimExpired();
+        long now = System.currentTimeMillis();
+        if (isExpired(snapshot, now)) {
+            reclaimedExpired.incrementAndGet();
+            LOG.debug("[SessionRecoveryService] refuse expired snapshot entityId={} age={}ms",
+                    snapshot.entityId(), now - snapshot.capturedAtMs());
+            return;
+        }
         snapshots.put(snapshot.entityId(), snapshot);
     }
 
@@ -87,7 +111,17 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
         if (entityId == null) {
             return Optional.empty();
         }
-        return Optional.ofNullable(snapshots.get(entityId));
+        reclaimExpired();
+        RecoverySnapshot snap = snapshots.get(entityId);
+        if (snap == null) {
+            return Optional.empty();
+        }
+        if (isExpired(snap, System.currentTimeMillis())) {
+            snapshots.remove(entityId, snap);
+            reclaimedExpired.incrementAndGet();
+            return Optional.empty();
+        }
+        return Optional.of(snap);
     }
 
     @Override
@@ -95,7 +129,16 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
         if (entityId == null) {
             return Optional.empty();
         }
-        return Optional.ofNullable(snapshots.remove(entityId));
+        reclaimExpired();
+        RecoverySnapshot snap = snapshots.remove(entityId);
+        if (snap == null) {
+            return Optional.empty();
+        }
+        if (isExpired(snap, System.currentTimeMillis())) {
+            reclaimedExpired.incrementAndGet();
+            return Optional.empty();
+        }
+        return Optional.of(snap);
     }
 
     @Override
@@ -112,6 +155,14 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
         }
         RecoverySnapshot snap = snapshots.remove(sbbId);
         if (snap == null) {
+            reclaimExpired();
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        if (isExpired(snap, now)) {
+            rejectedStale.incrementAndGet();
+            LOG.warn("[SessionRecoveryService] stale snapshot for sbbId={} age={}ms ttlMs={} — drop",
+                    sbbId, now - snap.capturedAtMs(), ttlMs);
             return false;
         }
         if (callback == null) {
@@ -125,7 +176,7 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
             if (!reconstructed) {
                 LOG.warn("[SessionRecoveryService] reconstruction failed for sbbId={} "
                         + "(age={}ms) - dropping event",
-                        sbbId, System.currentTimeMillis() - snap.capturedAtMs());
+                        sbbId, now - snap.capturedAtMs());
                 return false;
             }
             try {
@@ -137,7 +188,7 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
             }
             LOG.info("[SessionRecoveryService] rehydrated sbbId={} age={}ms class={}",
                     sbbId,
-                    System.currentTimeMillis() - snap.capturedAtMs(),
+                    now - snap.capturedAtMs(),
                     snap.sbbClassFqn());
             return true;
         } catch (RuntimeException re) {
@@ -152,12 +203,54 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
 
     @Override
     public int activeSnapshotCount() {
+        reclaimExpired();
         return snapshots.size();
     }
 
-    /** Test/diagnostics only - the configured cap. */
+    @Override
+    public int reclaimExpired() {
+        long now = System.currentTimeMillis();
+        List<String> doomed = new ArrayList<>();
+        synchronized (snapshots) {
+            for (Map.Entry<String, RecoverySnapshot> e : snapshots.entrySet()) {
+                if (isExpired(e.getValue(), now)) {
+                    doomed.add(e.getKey());
+                }
+            }
+            for (String id : doomed) {
+                snapshots.remove(id);
+            }
+        }
+        if (!doomed.isEmpty()) {
+            reclaimedExpired.addAndGet(doomed.size());
+            LOG.debug("[SessionRecoveryService] reclaimed {} expired snapshots ttlMs={}",
+                    doomed.size(), ttlMs);
+        }
+        return doomed.size();
+    }
+
+    /** Test/diagnostics — configured cap. */
     public int maxSize() {
         return maxSize;
+    }
+
+    /** Test/diagnostics — snapshot TTL window. */
+    public long ttlMs() {
+        return ttlMs;
+    }
+
+    /** Test/diagnostics — cumulative TTL reclaim count. */
+    public long reclaimedExpiredCount() {
+        return reclaimedExpired.get();
+    }
+
+    /** Test/diagnostics — rehydrate attempts rejected as stale. */
+    public long rejectedStaleCount() {
+        return rejectedStale.get();
+    }
+
+    private boolean isExpired(RecoverySnapshot snap, long nowMs) {
+        return (nowMs - snap.capturedAtMs()) > ttlMs;
     }
 
     /**

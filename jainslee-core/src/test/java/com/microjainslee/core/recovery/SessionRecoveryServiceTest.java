@@ -72,14 +72,21 @@ public class SessionRecoveryServiceTest {
         SessionRecoveryServiceImpl.resetRehydratingFlag();
     }
 
-    private static RecoverySnapshot snap(String entityId, long ts) {
+    /**
+     * @param tsOrAgeMs if larger than ~1e12 treat as absolute epoch ms; otherwise
+     *                  age in ms before {@code now} (keeps snapshots inside default TTL).
+     */
+    private static RecoverySnapshot snap(String entityId, long tsOrAgeMs) {
+        long captured = tsOrAgeMs > 1_000_000_000_000L
+                ? tsOrAgeMs
+                : System.currentTimeMillis() - Math.max(0L, tsOrAgeMs);
         Map<String, Object> cmp = new LinkedHashMap<String, Object>();
         cmp.put("counter", 0);
         Set<String> acis = new LinkedHashSet<String>();
         acis.add("ac-" + entityId);
         return new RecoverySnapshot(entityId,
                 "com.microjainslee.core.recovery.SessionRecoveryServiceTest$DummySbb",
-                cmp, acis, ts, "conv-" + entityId);
+                cmp, acis, captured, "conv-" + entityId);
     }
 
     // ─── 1. register/get round-trip ─────────────────────────────────
@@ -92,20 +99,50 @@ public class SessionRecoveryServiceTest {
         assertTrue("snapshot must be present after register", got.isPresent());
         assertSame("get must return the same instance we put", s, got.get());
         assertEquals("e1", got.get().entityId());
-        assertEquals(1000L, got.get().capturedAtMs());
+        assertEquals(s.capturedAtMs(), got.get().capturedAtMs());
     }
 
     @Test
     public void registerSnapshot_overwritesPriorEntryForSameEntityId() {
-        RecoverySnapshot first = snap("e1", 100L);
-        RecoverySnapshot second = snap("e1", 200L);
+        RecoverySnapshot first = snap("e1", 200L);
+        RecoverySnapshot second = snap("e1", 100L);
         service.registerSnapshot(first);
         service.registerSnapshot(second);
 
         Optional<RecoverySnapshot> got = service.getSnapshot("e1");
         assertTrue(got.isPresent());
         assertSame("later registration must win", second, got.get());
-        assertEquals(200L, got.get().capturedAtMs());
+        assertEquals(second.capturedAtMs(), got.get().capturedAtMs());
+    }
+
+    @Test
+    public void ttlReclaimDropsExpiredSnapshots() throws InterruptedException {
+        SessionRecoveryServiceImpl shortTtl =
+                new SessionRecoveryServiceImpl(8, 80L, callback);
+        shortTtl.registerSnapshot(snap("aging", 0L));
+        Thread.sleep(100L);
+        int removed = shortTtl.reclaimExpired();
+        assertTrue(removed >= 1);
+        assertFalse(shortTtl.getSnapshot("aging").isPresent());
+        assertTrue(shortTtl.reclaimedExpiredCount() >= 1);
+
+        shortTtl.registerSnapshot(snap("fresh", 0L));
+        assertTrue(shortTtl.getSnapshot("fresh").isPresent());
+    }
+
+    @Test
+    public void tryRehydrateRejectsStaleSnapshot() throws InterruptedException {
+        SessionRecoveryServiceImpl shortTtl =
+                new SessionRecoveryServiceImpl(8, 80L, callback);
+        shortTtl.registerSnapshot(snap("e1", 0L));
+        Thread.sleep(100L);
+        boolean ok = shortTtl.tryRehydrateAndDeliver(
+                "e1",
+                new Object(),
+                null,
+                (ev, aci) -> fail("must not deliver stale"));
+        assertFalse(ok);
+        assertTrue(shortTtl.rejectedStaleCount() >= 1);
     }
 
     // ─── 2. consume removes atomically ──────────────────────────────

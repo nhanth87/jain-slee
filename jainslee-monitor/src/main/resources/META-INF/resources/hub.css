@@ -45,6 +45,7 @@ html[data-theme="light"] {
 
 *, *::before, *::after { box-sizing: border-box; }
 html.h-full, html { height: 100%; }
+/* Same page plate as /admin dashboard (admin.css + index.html body.bg-ink). */
 body.hub-body {
   margin: 0;
   min-height: 100%;
@@ -55,6 +56,11 @@ body.hub-body {
     radial-gradient(ellipse 80% 50% at 10% -10%, rgba(232, 163, 23, 0.08), transparent),
     radial-gradient(ellipse 60% 40% at 100% 0%, rgba(56, 100, 160, 0.12), transparent);
   -webkit-font-smoothing: antialiased;
+}
+/* Never nest pure-black holes inside panels (AGENTS / skills § Admin). */
+.hub-panel-host .admin-panel,
+.hub-panel-host .live-overview {
+  background: transparent;
 }
 
 .hub-header {
@@ -409,3 +415,76 @@ body.hub-body {
 .theme-toggle:hover { color: var(--color-signal); border-color: var(--color-signal); }
 html[data-theme="light"] .theme-toggle-label::after { content: " · dark"; }
 html:not([data-theme="light"]) .theme-toggle-label::after { content: " · light"; }
+
+/* ── Live overview charts (realtime Monitor Hub) ───────────────── */
+.live-overview { padding: 0.25rem 0 0.5rem; }
+.live-head {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
+  gap: 0.75rem;
+}
+.live-head-meta {
+  display: flex; align-items: center; gap: 0.5rem;
+  font-family: var(--font-mono); font-size: 0.75rem; color: var(--color-ink-mute);
+}
+.live-pulse {
+  color: var(--color-ink-mute); font-size: 0.85rem; transition: color 0.15s, transform 0.15s;
+}
+.live-pulse.on { color: var(--color-ok); transform: scale(1.25); }
+.live-pulse.err { color: var(--color-bad); }
+.live-badges {
+  display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.85rem 0 1rem;
+}
+.live-badge {
+  border: 1px solid var(--color-ink-line);
+  background: color-mix(in srgb, var(--color-ink-panel) 90%, transparent);
+  border-radius: 0.375rem;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.75rem;
+  color: var(--color-ink-mute);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.live-badge b {
+  display: inline-block; margin-left: 0.35rem;
+  font-family: var(--font-mono); font-weight: 500;
+  color: var(--color-fg-strong); text-transform: none; letter-spacing: 0;
+}
+.live-badge b.ok { color: var(--color-ok); }
+.live-badge b.bad { color: var(--color-bad); }
+.live-badge b.flash {
+  animation: live-flash 0.35s ease;
+}
+@keyframes live-flash {
+  0% { color: var(--color-signal); transform: translateY(-2px); }
+  100% { transform: none; }
+}
+.live-charts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.85rem;
+}
+@media (min-width: 900px) {
+  .live-charts { grid-template-columns: 1fr 1fr; }
+}
+.live-chart {
+  margin: 0;
+  border: 1px solid var(--color-ink-line);
+  background: var(--color-ink-panel);
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.75rem 0.5rem;
+}
+.live-chart figcaption {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-ink-mute); margin-bottom: 0.35rem;
+}
+.live-chart-val {
+  font-family: var(--font-mono); font-size: 0.85rem; letter-spacing: 0;
+  text-transform: none; color: var(--color-signal);
+}
+.live-chart canvas {
+  display: block; width: 100%; height: 7.5rem;
+  border-radius: 0.25rem;
+  /* Transparent — never nest pure-black / ink holes inside ink-panel (admin skills). */
+  background: transparent;
+}

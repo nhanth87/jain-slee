@@ -32,6 +32,12 @@ public interface SessionRecoveryService {
     int DEFAULT_MAX_SNAPSHOTS = 65_536;
 
     /**
+     * Default snapshot TTL — 5 minutes (aligns with PolyVoice / micro-jainslee
+     * zombie reclaim spirit). Older snapshots are dropped on reclaim / rehydrate.
+     */
+    long DEFAULT_TTL_MS = 300_000L;
+
+    /**
      * Record a snapshot for an entity that is about to be released.
      * Idempotent on the same {@code entityId}: registering a second
      * snapshot replaces the previous one.
@@ -69,6 +75,14 @@ public interface SessionRecoveryService {
 
     /** Total snapshots currently held in the LRU cache (diagnostics only). */
     int activeSnapshotCount();
+
+    /**
+     * Drop snapshots older than the configured TTL. Returns how many were removed.
+     * Default implementations may no-op; {@link SessionRecoveryServiceImpl} reclaims.
+     */
+    default int reclaimExpired() {
+        return 0;
+    }
 
     /**
      * Callback implemented by {@code MicroSleeContainer}. Keeps

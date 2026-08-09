@@ -181,12 +181,15 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
     }
 
     /**
-     * Network-initiated UnstructuredSS-Request (or Notify) toward the MSC/VLR.
+     * Network-initiated UnstructuredSS-Request/Notify toward MSC, or Case 2 MAP2MAP hop.
      * Uses {@code networkUnstructuredSsContext} v2.
      *
-     * <p>{@code targetAddress} must be the SRI-SM {@code networkNodeNumber} (MSC/VLR GT),
-     * never the subscriber MSISDN. {@code imsi} becomes MAP destination reference
-     * (numbering plan land_mobile) per classic ussdgateway / 3GPP TS 29.002 table 7.3/2.
+     * <p>{@code targetAddress} = MSC {@code networkNodeNumber} (NI) or hop dest GT (Case 2) —
+     * never the subscriber MSISDN as SCCP CalledParty.
+     * {@code imsi} → MAP destReference land_mobile when NI knows IMSI.
+     * {@code msisdn} → component MSISDN (ISDN); also MAP destReference when
+     * {@code processUnstructured} is true (Ethio MAP2MAP hop opcode 59).
+     * {@code processUnstructured}=false → {@code unstructuredSS-Request}/Notify (opcode 60).
      */
     record MapUnstructuredSsRequest(
             String dialogId,
@@ -196,7 +199,9 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             int networkId,
             boolean notifyOnly,
             int dataCoding,
-            String imsi
+            String imsi,
+            String msisdn,
+            boolean processUnstructured
     ) implements Ss7Command {
         public MapUnstructuredSsRequest(
                 String dialogId,
@@ -204,7 +209,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 Ss7Address localAddress,
                 String text,
                 int networkId) {
-            this(dialogId, targetAddress, localAddress, text, networkId, false, 0x0F, null);
+            this(dialogId, targetAddress, localAddress, text, networkId, false, 0x0F, null, null, false);
         }
 
         public MapUnstructuredSsRequest(
@@ -214,7 +219,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 String text,
                 int networkId,
                 boolean notifyOnly) {
-            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, 0x0F, null);
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, 0x0F, null, null, false);
         }
 
         public MapUnstructuredSsRequest(
@@ -225,11 +230,73 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 int networkId,
                 boolean notifyOnly,
                 int dataCoding) {
-            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, null);
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, null, null, false);
+        }
+
+        public MapUnstructuredSsRequest(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String text,
+                int networkId,
+                boolean notifyOnly,
+                int dataCoding,
+                String imsi) {
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, imsi, null, false);
+        }
+
+        public MapUnstructuredSsRequest(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String text,
+                int networkId,
+                boolean notifyOnly,
+                int dataCoding,
+                String imsi,
+                String msisdn) {
+            this(dialogId, targetAddress, localAddress, text, networkId, notifyOnly, dataCoding, imsi, msisdn, false);
         }
     }
 
-    /** Abort an existing MAP dialog by local dialog id. */
+    /**
+     * Continue NI UnstructuredSS-Request/Notify on an existing supplementary dialog.
+     * {@code dialogId} is the correlation id (or decimal local dialog id).
+     * Does <strong>not</strong> create a new MAP dialog — classic JSESSIONID multi-POST.
+     */
+    record MapUnstructuredSsContinue(
+            String dialogId,
+            Ss7Address targetAddress,
+            String text,
+            boolean notifyOnly,
+            int dataCoding,
+            int networkId
+    ) implements Ss7Command {
+        public MapUnstructuredSsContinue(
+                String dialogId, String text, boolean notifyOnly, int dataCoding) {
+            this(dialogId, Ss7Address.of("0", 8), text, notifyOnly, dataCoding, 0);
+        }
+    }
+
+    /**
+     * Close an existing MAP dialog ({@code MAPDialog.close(prearrangedEnd)}).
+     * {@code dialogId} is correlation id or decimal local dialog id.
+     */
+    record MapDialogClose(
+            String dialogId,
+            Ss7Address targetAddress,
+            boolean prearrangedEnd,
+            int networkId
+    ) implements Ss7Command {
+        public MapDialogClose(String dialogId, boolean prearrangedEnd) {
+            this(dialogId, Ss7Address.of("0", 8), prearrangedEnd, 0);
+        }
+    }
+
+    /**
+     * Abort an existing MAP dialog by local dialog id <em>or</em> correlation id
+     * (ra-jss7 reverse-maps UUID corr → local id).
+     */
     record MapDialogAbort(
             String dialogId,
             Ss7Address targetAddress,

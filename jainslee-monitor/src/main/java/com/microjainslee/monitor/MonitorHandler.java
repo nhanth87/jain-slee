@@ -207,23 +207,53 @@ public final class MonitorHandler {
     }
 
     private RaAdminHttpResponse overviewHtml() {
+        // Live tiles + canvas sparklines — hub.js polls /admin/monitor-feed + /api/telemetry/snapshot.
         String html = """
-                <div class="admin-panel">
-                  <p class="text-xs uppercase tracking-[0.25em] text-signal">Overview</p>
-                  <h2 class="mt-1 text-xl font-semibold text-slate-50">RA admin hub</h2>
-                  <p class="mt-3 text-sm text-ink-mute">
-                    Tabs below are discovered from classpath
-                    <code class="font-mono text-slate-300">RaAdminDashboardContributor</code>
-                    packs. Select <strong class="text-slate-200">SS7</strong>,
-                    <strong class="text-slate-200">SMPP</strong>, or
-                    <strong class="text-slate-200">HTTP</strong> to configure, apply, and watch
-                    peer-ready status (never confuse local LISTEN with link UP).
+                <div class="admin-panel live-overview" id="live-overview" data-live-poll="1">
+                  <div class="live-head">
+                    <div>
+                      <p class="hub-eyebrow">Realtime</p>
+                      <h2 class="hub-title" style="font-size:1.35rem;margin:0">Live monitor</h2>
+                    </div>
+                    <div class="live-head-meta">
+                      <span id="live-pulse" class="live-pulse" title="poll heartbeat">●</span>
+                      <span id="live-age" class="hub-muted">—</span>
+                    </div>
+                  </div>
+                  <p class="hub-muted" style="margin-top:0.5rem">
+                    Charts refresh every 1s from <code class="font-mono">/admin/monitor-feed</code>
+                    and <code class="font-mono">/api/telemetry/snapshot</code>. Link truth =
+                    peer live (never LISTEN-alone).
                   </p>
-                  <ul class="mt-4 list-disc space-y-1 pl-5 text-sm text-ink-mute">
-                    <li>Shell theme matches Digicom OTA ops (ink / signal).</li>
-                    <li>Tab panels load via HTMX fragments from each RA jar.</li>
-                    <li>Mutating APIs still require admin session or API key.</li>
-                  </ul>
+                  <div class="live-badges" id="live-badges">
+                    <span class="live-badge" data-k="ss7.live">SS7 <b id="lv-ss7">—</b></span>
+                    <span class="live-badge" data-k="smpp.live">SMPP <b id="lv-smpp">—</b></span>
+                    <span class="live-badge">EPS <b id="lv-eps">0</b></span>
+                    <span class="live-badge">SBB <b id="lv-sbb">0</b></span>
+                    <span class="live-badge">Heap <b id="lv-heap">—</b></span>
+                  </div>
+                  <div class="live-charts">
+                    <figure class="live-chart">
+                      <figcaption>SBB events / s <span id="lv-eps-now" class="live-chart-val">0</span></figcaption>
+                      <canvas id="chart-eps" width="640" height="120" aria-label="EPS sparkline"></canvas>
+                    </figure>
+                    <figure class="live-chart">
+                      <figcaption>Bridge gate ticks <span id="lv-gate-now" class="live-chart-val">0</span></figcaption>
+                      <canvas id="chart-gate" width="640" height="120" aria-label="gateTicks sparkline"></canvas>
+                    </figure>
+                    <figure class="live-chart">
+                      <figcaption>MAP2MAP pending / asRouted
+                        <span id="lv-m2m-now" class="live-chart-val">0 / 0</span></figcaption>
+                      <canvas id="chart-m2m" width="640" height="120" aria-label="MAP2MAP sparkline"></canvas>
+                    </figure>
+                    <figure class="live-chart">
+                      <figcaption>Heap used % <span id="lv-heap-now" class="live-chart-val">0%</span></figcaption>
+                      <canvas id="chart-heap" width="640" height="120" aria-label="heap sparkline"></canvas>
+                    </figure>
+                  </div>
+                  <p class="hub-muted" style="margin-top:1rem">
+                    RA tabs below load pack panels (SS7 / SMPP / HTTP). Mutating APIs need session or API key.
+                  </p>
                 </div>
                 """;
         return RaAdminHttpResponse.text(200, "text/html; charset=utf-8", html);

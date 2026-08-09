@@ -45,6 +45,7 @@ jSS7 keeps `DialogImpl` in a JVM-local `NonBlockingHashMap` (`TCAPProviderImpl.d
 | `tcap-dialog-snapshot` | dialog key | `TcapDialogSnapshotPayload` | same | P2 portable fields (no `org.restcomm.*`) |
 | `ra-dialog-owner` | SLEE `dialogId` | `RaDialogOwner` | same | Sticky fence + generation |
 | `ra-jss7-sticky-cmd` | envelope id | `Ss7StickyCommandEnvelope` | `DIST_SYNC` / `LOCAL` | P1 remote outbound |
+| `sctp-endpoint-lease` | `ip:port` | `SctpEndpointLease` | same | P3 n-n endpoint / VIP fence |
 | `sbb-entity-state` / `slee-acnf` / `slee.queue.*` | — | — | existing | Unchanged |
 
 **Allow-list:** `com.microjainslee.*` only — never `org.restcomm.*` stack objects. Snapshots map SCCP addresses to `PortableSccpAddress`.
@@ -101,6 +102,22 @@ Multi-ASP loadshare under the **same** AS / OPC / SSN / RC (or equivalent). Diff
 | **P0** | Honesty docs; cache POJO skeleton | **Done** |
 | **P1** | Sticky owner + meta write-through + sticky bus + OTID config | **Done** |
 | **P2** | jSS7 export/import; RA wire; ISPN snapshot; CONTINUE-miss; **metrics scrapeable on status JSON**; lab script | **RA-wired + metrics Done** / multi-ASP lab open ([lab doc](../lab/ss7-multi-asp-failover.md)) |
+| **P3** | Grill decisions (2026-08-09): n-n SCTP 1 IP:port/node; ISPN view VIP lease/CAS; snapshot on Begin + component Continue; pending-invoke abort + invokeId restore; MAP minimal rehydrate (CAP later) | **Code wired** — OS VIP bind still via `SctpEndpointBinder` callback |
+
+### Grill lock-in (P3)
+
+| Decision | Implementation |
+|----------|----------------|
+| HA plane = TCAP | Existing P2; no SCCP/MAP timers in ISPN |
+| Timers owner-only | jSS7 import re-arms idle from snapshot |
+| Hard miss / pending invoke | `resolve` returns null → UnrecognizedTxID; `hasPendingInvokes()` |
+| Recreate with invokeId | `invokeIdTaken` always restored on import |
+| n-n SCTP | `Ss7RaConfig.sctpLocalEndpoints` + `sctpEndpointIndex`; each node one bind |
+| VIP on peer death | `SctpEndpointFailoverCoordinator` + `sctp-endpoint-lease` CAS/generation |
+| Fence | ISPN only (no ZooKeeper) |
+| SBB MS | unchanged: same `ClusterManager`, `dialogId` sticky, separate `slee.queue.*` |
+| MAP after import | `MAPProvider.rehydrateDialogFromTcap` + CONTINUE auto-rehydrate |
+| Snapshot write | Begin + Continue **with components only** |
 
 ### ACNF note
 

@@ -22,41 +22,35 @@ import org.infinispan.configuration.cache.CacheMode;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 /**
- * Production P2.3 - Distributed SBB Entity Pool with state snapshot /
- * replication.
+ * Production P2.3 / P3 — Distributed SBB Entity Pool with selective HA
+ * checkpoint / replication.
  *
  * <p>This class is a <b>composition</b>-based wrapper around
- * {@link VirtualThreadSbbEntityPool}. The pool class in
- * {@code jainslee-core} is declared {@code final} so we cannot extend
- * it; we therefore hold it as a private final field and forward the
- * lifecycle / acquire / release calls to it. The two extra
- * responsibilities of this class are:
+ * {@link VirtualThreadSbbEntityPool}. Hot path create/delete stays local:
+ * ISPN is touched only via {@link #checkpoint(String)} (debounce + generation)
+ * or legacy {@code jainslee.sbb.checkpoint.on-release=true}.
  *
  * <ol>
- *   <li><b>Snapshot on release.</b> When an entity is released from
- *       the local pool we reflectively scan its {@link CmpField}
- *       accessor methods, build a {@link SbbEntitySnapshot}, and push
- *       it into the {@code "sbb-entity-state"} Infinispan cache. The
- *       cache is opened in {@link CacheMode#REPL_ASYNC} so writes are
- *       replicated asynchronously to peer nodes - we never want a
- *       hot-path release call to block on a JGroups round-trip.</li>
- *   <li><b>Reconstruct on acquire.</b> When an entity is requested on
- *       a node that does not have it locally we first consult the
- *       cluster cache; if a snapshot is present we instantiate a
- *       fresh SBB through the factory and reflectively apply the
- *       snapshot back to it (writing the {@code @CmpField} accessors)
- *       before handing the entity out. If the cache has no snapshot
- *       the call falls back to the standard local-pool acquisition
- *       path.</li>
+ *   <li><b>Checkpoint.</b> Explicit {@link #checkpoint} (or RA/dialog boundary)
+ *       builds a {@link SbbEntitySnapshot} (heap {@code @CmpField} + profile
+ *       refs) and puts it into {@code "sbb-entity-state"} ({@link CacheMode#REPL_ASYNC}).</li>
+ *   <li><b>Release.</b> Local pool release; if the entity was ever checkpointed,
+ *       asynchronously remove the ISPN entry (tombstone). No put on release
+ *       unless legacy on-release is enabled.</li>
+ *   <li><b>Reconstruct on acquire.</b> Local miss → ISPN get → applySnapshot.</li>
  * </ol>
  *
  * <h2>Why composition and not inheritance</h2>
@@ -95,6 +89,11 @@ public final class DistributedSbbEntityPool {
     private final VirtualThreadSbbEntityPool delegate;
     private final Cache<String, SbbEntitySnapshot> stateCache;
     private final ClusterManager clusterManager;
+    private final SbbCheckpointConfig checkpointConfig;
+    /** Entities that have successfully checkpointed at least once. */
+    private final ConcurrentMap<String, Boolean> checkpointedIds = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, AtomicLong> generations = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Long> lastCheckpointNanos = new ConcurrentHashMap<>();
 
     /**
      * Build a distributed SBB entity pool.
@@ -112,20 +111,27 @@ public final class DistributedSbbEntityPool {
      */
     public DistributedSbbEntityPool(int min, int max, boolean perVirtualThread,
                                     ClusterManager clusterMgr) {
+        this(min, max, perVirtualThread, clusterMgr, SbbCheckpointConfig.fromSystemProperties());
+    }
+
+    public DistributedSbbEntityPool(int min, int max, boolean perVirtualThread,
+                                    ClusterManager clusterMgr,
+                                    SbbCheckpointConfig checkpointConfig) {
         Objects.requireNonNull(clusterMgr, "clusterMgr");
         this.clusterManager = clusterMgr;
+        this.checkpointConfig = checkpointConfig == null
+                ? SbbCheckpointConfig.fromSystemProperties()
+                : checkpointConfig;
         this.delegate = new VirtualThreadSbbEntityPool(min, max, perVirtualThread);
-        // REPL_ASYNC: every node holds a full copy of the cache and
-        // writes are replicated asynchronously. This is the right
-        // trade-off for SBB entity state: reads (acquire fallback)
-        // are local and fast; writes (release) do not block the hot
-        // path on a JGroups round-trip.
         this.stateCache = clusterMgr.<String, SbbEntitySnapshot>getCache(
                 CACHE_NAME, CacheMode.REPL_ASYNC);
-        LOG.info("DistributedSbbEntityPool ready: min={} max={} perVT={} cache={} mode={} node={}",
+        LOG.info("DistributedSbbEntityPool ready: min={} max={} perVT={} cache={} mode={} node={} "
+                        + "persistOnRelease={} debounceMs={}",
                 min, max, perVirtualThread, CACHE_NAME,
                 stateCache.getCacheConfiguration().clustering().cacheMode(),
-                clusterMgr.getNodeId());
+                clusterMgr.getNodeId(),
+                this.checkpointConfig.persistOnRelease(),
+                this.checkpointConfig.debounceMs());
     }
 
     /** @return the cluster manager that owns the {@code sbb-entity-state} cache. */
@@ -174,7 +180,12 @@ public final class DistributedSbbEntityPool {
         if (entity == null) {
             return;
         }
-        persistSnapshot(entity);
+        if (checkpointConfig.persistOnRelease()) {
+            persistSnapshot(entity, null);
+        } else {
+            invalidateIfCheckpointed(entity.getSbbId());
+        }
+        clearLocalCheckpointMeta(entity.getSbbId());
         delegate.release(entity);
     }
 
@@ -187,10 +198,62 @@ public final class DistributedSbbEntityPool {
             return;
         }
         VirtualThreadSbbEntityPool.SbbEntity entity = delegate.findEntity(sbbId);
-        if (entity != null) {
-            persistSnapshot(entity);
+        if (checkpointConfig.persistOnRelease()) {
+            if (entity != null) {
+                persistSnapshot(entity, null);
+            }
+        } else {
+            invalidateIfCheckpointed(sbbId);
         }
+        clearLocalCheckpointMeta(sbbId);
         delegate.releaseById(sbbId);
+    }
+
+    /**
+     * Explicit HA checkpoint (debounce + generation). Safe to call from
+     * app code or TCAP Begin/Continue boundary. No-op when entity is not
+     * local.
+     *
+     * @return {@code true} when a snapshot was written (or debounce skipped
+     *         a redundant write after a prior successful checkpoint)
+     */
+    public boolean checkpoint(String sbbId) {
+        return checkpoint(sbbId, null);
+    }
+
+    /**
+     * @param profileRefs optional {@code table/name} refs (ProfileFacility
+     *                    loads data on peer hydrate)
+     */
+    public boolean checkpoint(String sbbId, Set<String> profileRefs) {
+        if (sbbId == null) {
+            return false;
+        }
+        VirtualThreadSbbEntityPool.SbbEntity entity = delegate.findEntity(sbbId);
+        if (entity == null) {
+            return false;
+        }
+        long now = System.nanoTime();
+        long debounceNs = checkpointConfig.debounceMs() * 1_000_000L;
+        if (debounceNs > 0L) {
+            Long last = lastCheckpointNanos.get(sbbId);
+            if (last != null && (now - last) < debounceNs && checkpointedIds.containsKey(sbbId)) {
+                return true; // coalesced
+            }
+        }
+        boolean ok = persistSnapshot(entity, profileRefs);
+        if (ok) {
+            lastCheckpointNanos.put(sbbId, now);
+        }
+        return ok;
+    }
+
+    public boolean wasCheckpointed(String sbbId) {
+        return sbbId != null && checkpointedIds.containsKey(sbbId);
+    }
+
+    public SbbCheckpointConfig checkpointConfig() {
+        return checkpointConfig;
     }
 
     public VirtualThreadSbbEntityPool.SbbEntity findEntity(String sbbId) {
@@ -235,16 +298,19 @@ public final class DistributedSbbEntityPool {
      * @return a fully-populated snapshot suitable for serialization
      */
     public SbbEntitySnapshot takeSnapshot(String sbbId, Sbb sbb) {
+        return buildSnapshot(sbbId, sbb, Collections.emptySet());
+    }
+
+    public SbbEntitySnapshot takeSnapshot(String sbbId, Sbb sbb, Set<String> profileRefs) {
+        return buildSnapshot(sbbId, sbb, profileRefs == null ? Collections.emptySet() : profileRefs);
+    }
+
+    private SbbEntitySnapshot buildSnapshot(String sbbId, Sbb sbb, Set<String> profileRefs) {
         Objects.requireNonNull(sbbId, "sbbId");
         Objects.requireNonNull(sbb, "sbb");
         Class<?> klass = sbb.getClass();
         Map<String, Object> values = new LinkedHashMap<>();
         for (Method m : findCmpAccessors(klass)) {
-            // Getters only - setters require a value and would never
-            // produce the field's current state. We also skip the
-            // rare case where a @CmpField is declared with no args
-            // AND no return type (e.g. a void accessor) - we treat
-            // it as a non-readable accessor.
             if (m.getParameterCount() != 0 || m.getReturnType() == void.class) {
                 continue;
             }
@@ -265,7 +331,9 @@ public final class DistributedSbbEntityPool {
                 sbbId,
                 values,
                 resolveAttachedAciNames(sbbId),
-                System.currentTimeMillis());
+                System.currentTimeMillis(),
+                nextGeneration(sbbId),
+                profileRefs);
     }
 
     /**
@@ -336,22 +404,42 @@ public final class DistributedSbbEntityPool {
 
     /**
      * Persist a snapshot of {@code entity} into the cluster cache.
-     * Called from {@link #release(VirtualThreadSbbEntityPool.SbbEntity)}
-     * and {@link #releaseById(String)} so any subsequent acquire on a
-     * peer node can reconstruct the entity.
+     *
+     * @return {@code true} on success
      */
-    private void persistSnapshot(VirtualThreadSbbEntityPool.SbbEntity entity) {
+    private boolean persistSnapshot(VirtualThreadSbbEntityPool.SbbEntity entity, Set<String> profileRefs) {
         try {
-            SbbEntitySnapshot snap = takeSnapshot(entity.getSbbId(), entity.getSbb());
+            SbbEntitySnapshot snap = profileRefs == null
+                    ? takeSnapshot(entity.getSbbId(), entity.getSbb())
+                    : takeSnapshot(entity.getSbbId(), entity.getSbb(), profileRefs);
             stateCache.put(entity.getSbbId(), snap);
+            checkpointedIds.put(entity.getSbbId(), Boolean.TRUE);
+            return true;
         } catch (RuntimeException re) {
-            // Best effort - a failure to persist must not abort the
-            // release path. We log and move on; the entity is released
-            // locally and a peer-node acquire will simply fall back to
-            // a fresh cold-start (which is the same behaviour as if no
-            // snapshot had ever existed).
             LOG.warn("persistSnapshot('{}') failed: {}", entity.getSbbId(), re.toString());
+            return false;
         }
+    }
+
+    private void invalidateIfCheckpointed(String sbbId) {
+        if (!checkpointedIds.containsKey(sbbId)) {
+            return;
+        }
+        try {
+            stateCache.remove(sbbId);
+        } catch (RuntimeException re) {
+            LOG.warn("invalidateIfCheckpointed('{}') failed: {}", sbbId, re.toString());
+        }
+    }
+
+    private void clearLocalCheckpointMeta(String sbbId) {
+        checkpointedIds.remove(sbbId);
+        generations.remove(sbbId);
+        lastCheckpointNanos.remove(sbbId);
+    }
+
+    private long nextGeneration(String sbbId) {
+        return generations.computeIfAbsent(sbbId, id -> new AtomicLong(0L)).incrementAndGet();
     }
 
     /**

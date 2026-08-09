@@ -20,12 +20,14 @@ import com.microjainslee.core.offheap.AgronaOffHeapArena;
 import com.microjainslee.core.offheap.OffHeapArena;
 import com.microjainslee.core.offheap.OffHeapRuntime;
 import com.microjainslee.core.offheap.OffHeapSlotArena;
+import com.microjainslee.core.offheap.SegmentedAgronaOffHeapArena;
 import com.microjainslee.core.removal.EntityRemovalEvent;
 
 import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -78,8 +80,8 @@ public final class VirtualThreadSbbEntityPool {
         }
     }
 
-    private final ConcurrentHashMap<String, SbbEntity> entities =
-            new ConcurrentHashMap<String, SbbEntity>();
+    private final ConcurrentMap<String, SbbEntity> entities =
+            SbbEntityMapFactory.create();
     /**
      * Production P1.4 (S2) — cache of generated concrete SBB classes
      * keyed by the abstract SBB class. Populated lazily on first
@@ -293,6 +295,13 @@ public final class VirtualThreadSbbEntityPool {
             });
         } else if (arena instanceof AgronaOffHeapArena aa) {
             aa.setSlotMovedListener((entityId, newAddr) -> {
+                SbbEntity entity = entities.get(entityId);
+                if (entity != null && entity.getSbb() instanceof OffHeapBindable ob) {
+                    ob.bindSlot(newAddr);
+                }
+            });
+        } else if (arena instanceof SegmentedAgronaOffHeapArena sa) {
+            sa.setSlotMovedListener((entityId, newAddr) -> {
                 SbbEntity entity = entities.get(entityId);
                 if (entity != null && entity.getSbb() instanceof OffHeapBindable ob) {
                     ob.bindSlot(newAddr);

@@ -40,6 +40,12 @@ public final class Ss7DialogCacheNames {
      */
     public static final String RA_STICKY_COMMANDS = "ra-jss7-sticky-cmd";
 
+    /**
+     * SCTP local endpoint lease (n-n): key {@code ip:port} → {@link SctpEndpointLease}.
+     * ISPN CAS + generation fences dual-bind after view change (no ZooKeeper).
+     */
+    public static final String SCTP_ENDPOINT_LEASE = "sctp-endpoint-lease";
+
     private Ss7DialogCacheNames() {
     }
 }

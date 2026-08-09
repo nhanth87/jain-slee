@@ -558,6 +558,27 @@ public final class MicroSleeContainer {
     }
 
     /**
+     * HA checkpoint for a live SBB entity (no-op when no distributed pool).
+     * Reflective call to {@code DistributedSbbEntityPool.checkpoint(String)}.
+     *
+     * @return {@code true} when a snapshot was written / coalesced
+     */
+    public boolean checkpointSbbEntity(String sbbId) {
+        Object pool = distributedSbbEntityPool;
+        if (pool == null || sbbId == null) {
+            return false;
+        }
+        try {
+            Object result = pool.getClass().getMethod("checkpoint", String.class)
+                    .invoke(pool, sbbId);
+            return Boolean.TRUE.equals(result);
+        } catch (ReflectiveOperationException ex) {
+            LOG.debug("checkpointSbbEntity('{}') failed: {}", sbbId, ex.toString());
+            return false;
+        }
+    }
+
+    /**
      * Production P2.1 — reflectively call {@code ClusterManager.start()}
      * on the bound instance. Best-effort: a failure is logged and the
      * container proceeds in local mode.

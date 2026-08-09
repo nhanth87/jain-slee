@@ -27,6 +27,7 @@ public final class TcapFailoverMetrics {
     public static final String CONTINUE_RESOLVE_FAIL = "ss7_tcap_failover_continue_resolve_fail_total";
     public static final String TAKEOVER_OK = "ss7_tcap_failover_takeover_ok_total";
     public static final String TAKEOVER_FAIL = "ss7_tcap_failover_takeover_fail_total";
+    public static final String PENDING_INVOKE_ABORT = "ss7_tcap_failover_pending_invoke_abort_total";
     public static final String STICKY_REJECT = "ss7_tcap_sticky_reject_total";
     public static final String STICKY_MISS = "ss7_tcap_sticky_miss_total";
 
@@ -43,6 +44,7 @@ public final class TcapFailoverMetrics {
     private final AtomicLong continueResolveFail = new AtomicLong();
     private final AtomicLong takeoverOk = new AtomicLong();
     private final AtomicLong takeoverFail = new AtomicLong();
+    private final AtomicLong pendingInvokeAbort = new AtomicLong();
     private final AtomicLong stickyReject = new AtomicLong();
     private final AtomicLong stickyMiss = new AtomicLong();
 
@@ -82,6 +84,11 @@ public final class TcapFailoverMetrics {
 
     public void takeoverFail() {
         bump(takeoverFail, TAKEOVER_FAIL);
+    }
+
+    /** Snapshot had outstanding invoke-ids — abort policy, no CONTINUE resume. */
+    public void pendingInvokeAbort() {
+        bump(pendingInvokeAbort, PENDING_INVOKE_ABORT);
     }
 
     public void stickyReject() {
@@ -133,6 +140,10 @@ public final class TcapFailoverMetrics {
         return takeoverFail.get();
     }
 
+    public long pendingInvokeAbortCount() {
+        return pendingInvokeAbort.get();
+    }
+
     /** Stable map for lab scrape / admin JSON. */
     public Map<String, Long> snapshot() {
         Map<String, Long> m = new LinkedHashMap<>();
@@ -144,6 +155,7 @@ public final class TcapFailoverMetrics {
         m.put(CONTINUE_RESOLVE_FAIL, continueResolveFail.get());
         m.put(TAKEOVER_OK, takeoverOk.get());
         m.put(TAKEOVER_FAIL, takeoverFail.get());
+        m.put(PENDING_INVOKE_ABORT, pendingInvokeAbort.get());
         m.put(STICKY_REJECT, stickyReject.get());
         m.put(STICKY_MISS, stickyMiss.get());
         return Map.copyOf(m);

@@ -13,6 +13,8 @@ import com.microjainslee.cluster.ClusterManager;
 import com.microjainslee.cluster.Ss7DialogClusterCaches;
 import com.microjainslee.ra.jss7.cluster.IspnStickyCommandBus;
 import com.microjainslee.ra.jss7.cluster.Jss7TcapDialogFailoverPort;
+import com.microjainslee.ra.jss7.cluster.MapDialogRehydrator;
+import com.microjainslee.ra.jss7.cluster.SctpEndpointFailoverCoordinator;
 import com.microjainslee.ra.jss7.cluster.Ss7DialogOwnershipTracker;
 import com.microjainslee.ra.jss7.cluster.StickyRaCommandRouter;
 import com.microjainslee.ra.jss7.cluster.TcapDialogFailoverPort;
@@ -77,6 +79,7 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     private volatile StickyRaCommandRouter stickyRouter;
     private volatile IspnStickyCommandBus stickyBus;
     private volatile TcapDialogFailoverPort failoverPort;
+    private volatile SctpEndpointFailoverCoordinator endpointCoordinator;
     private final TcapFailoverMetrics failoverMetrics = new TcapFailoverMetrics();
 
     // ── configuration ────────────────────────────────────────
@@ -259,6 +262,32 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
             stickyBus = null;
         }
         wireFailoverPort(caches);
+        wireEndpointCoordinator(nodeId, caches);
+    }
+
+    private void wireEndpointCoordinator(String nodeId, Ss7DialogClusterCaches caches) {
+        if (caches == null || clusterManager == null || config == null) {
+            endpointCoordinator = null;
+            return;
+        }
+        try {
+            String preferred = config.resolvedLocalEndpoint();
+            List<String> endpoints = config.allLocalEndpoints();
+            SctpEndpointFailoverCoordinator coord = new SctpEndpointFailoverCoordinator(
+                    nodeId,
+                    endpoints,
+                    preferred,
+                    caches,
+                    clusterManager,
+                    (endpointKey, generation, takeover) -> LOG.info(
+                            "[ra-jss7] SCTP endpoint claimed endpoint={} generation={} takeover={}",
+                            endpointKey, generation, takeover));
+            coord.start();
+            endpointCoordinator = coord;
+        } catch (RuntimeException e) {
+            LOG.warn("[ra-jss7] SCTP endpoint coordinator not started: {}", e.toString());
+            endpointCoordinator = null;
+        }
     }
 
     private void wireFailoverPort(Ss7DialogClusterCaches caches) {
@@ -280,7 +309,11 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                 },
                 ownershipTracker,
                 caches,
-                failoverMetrics);
+                failoverMetrics,
+                new MapDialogRehydrator(() -> {
+                    Ss7Stack st = stack;
+                    return st != null ? st.mapProvider() : null;
+                }));
         failoverPort = wired;
         try {
             if (s.tcapProvider() != null) {
@@ -293,6 +326,15 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     }
 
     private void teardownOwnership() {
+        SctpEndpointFailoverCoordinator coord = endpointCoordinator;
+        endpointCoordinator = null;
+        if (coord != null) {
+            try {
+                coord.stop();
+            } catch (RuntimeException e) {
+                LOG.warn("endpoint coordinator stop failed: {}", e.toString());
+            }
+        }
         IspnStickyCommandBus bus = stickyBus;
         stickyBus = null;
         if (bus != null) {
@@ -369,9 +411,12 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         if (event instanceof Ss7Event.TcapBegin || sessionCreated) {
             tracker.onDialogOpened(dialogId, parseOtid(dialogId), null, 0, 0, stateOf(event), null);
             exportSnapshotBestEffort(dialogId);
-        } else if (event instanceof Ss7Event.TcapContinue) {
+        } else if (event instanceof Ss7Event.TcapContinue cont) {
             tracker.onDialogTouched(dialogId, "Active", null, 0, 0);
-            exportSnapshotBestEffort(dialogId);
+            // Snapshot only when components / state change (grilling Q13=C).
+            if (cont.components() != null && !cont.components().isEmpty()) {
+                exportSnapshotBestEffort(dialogId);
+            }
         } else if (event instanceof Ss7Event.TcapEnd || event instanceof Ss7Event.TcapAbort) {
             // closed in forceEndSession
         } else {
@@ -486,6 +531,10 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     LOG.warn("MAP USSD MO reply not handled by any adapter: {}", ussdRsp.dialogId());
             case Ss7Command.MapUnstructuredSsRequest ussdNi ->
                     LOG.warn("MAP USSD NI not handled by any adapter: {}", ussdNi.dialogId());
+            case Ss7Command.MapUnstructuredSsContinue ussdCont ->
+                    LOG.warn("MAP USSD NI continue not handled by any adapter: {}", ussdCont.dialogId());
+            case Ss7Command.MapDialogClose close ->
+                    LOG.warn("MAP dialog close not handled by any adapter: {}", close.dialogId());
             case Ss7Command.MapDialogAbort abort ->
                     LOG.warn("MAP dialog abort not handled by any adapter: {}", abort.dialogId());
         }

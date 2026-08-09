@@ -198,6 +198,44 @@ public class Jss7TcapDialogFailoverPortTest {
     }
 
     @Test
+    public void resolveRefusesPendingInvokes() {
+        boolean[] taken = new boolean[256];
+        taken[3] = true;
+        TcapDialogSnapshotPayload payload = new TcapDialogSnapshotPayload(
+                "99",
+                99L,
+                new byte[] {9, 9},
+                PortableSccpAddress.pcSsn(1, 8),
+                PortableSccpAddress.pcSsn(2, 8),
+                "Active",
+                null,
+                System.nanoTime() + 10_000_000_000L,
+                0,
+                8,
+                2,
+                1,
+                false,
+                taken,
+                System.currentTimeMillis());
+        assertTrue(payload.hasPendingInvokes());
+        caches.putSnapshot(payload);
+
+        Ss7DialogOwnershipTracker tracker = Ss7DialogOwnershipTracker.localOnly(
+                manager.getNodeId(), "ra-jss7", 1, 8);
+        TcapFailoverMetrics metrics = new TcapFailoverMetrics();
+        Jss7TcapDialogFailoverPort port = new Jss7TcapDialogFailoverPort(
+                () -> proxyProvider(otid -> null, snap -> null),
+                ParameterFactoryImpl::new,
+                tracker,
+                caches,
+                metrics);
+
+        assertEquals(null, port.resolve(99L));
+        assertEquals(1, metrics.pendingInvokeAbortCount());
+        assertEquals(1, metrics.continueResolveFailCount());
+    }
+
+    @Test
     public void unsupportedPortRemainsNoOp() {
         TcapDialogFailoverPort port = TcapDialogFailoverPort.unsupported();
         assertFalse(port.exportAndStore(1L).isPresent());

@@ -157,9 +157,13 @@ public final class Ss7Stack {
 
         var protocols = new Ss7Config.Protocols(cfg.mapEnabled(), cfg.capEnabled(), false);
 
+        String local = cfg.resolvedLocalEndpoint();
+        // n-n: each RA binds exactly one IP:port — do not put peer-node endpoints
+        // into localSecondary (that would multi-home one process). Extra cluster
+        // endpoints are claimed via ISPN lease / VIP takeover, not SCTP multi-home.
         var link = new Ss7Config.Link(
                 linkName,
-                cfg.hostIp() + ":" + cfg.hostPort(),
+                local,
                 cfg.peerIp() + ":" + cfg.peerPort(),
                 java.util.List.of(),                     // localSecondary — never null (Ss7StackBuilder NPE)
                 cfg.ipChannelType().toLowerCase(),       // "sctp" | "tcp"

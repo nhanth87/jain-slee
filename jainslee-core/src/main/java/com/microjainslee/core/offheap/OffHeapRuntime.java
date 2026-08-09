@@ -49,6 +49,10 @@ public final class OffHeapRuntime {
      */
     public static OffHeapSlotArena newArena(String name, OffHeapLayout layout, int maxSlots) {
         if (useAgrona) {
+            if (SegmentedAgronaOffHeapArena.needsSegmentation(layout.slotSize(), maxSlots)) {
+                int seg = SegmentedAgronaOffHeapArena.resolveSegmentSlots(layout.slotSize(), maxSlots);
+                return new SegmentedAgronaOffHeapArena(name, layout, maxSlots, seg);
+            }
             return new AgronaOffHeapArena(name, layout, maxSlots);
         }
         return new OffHeapArena(name, layout, maxSlots);

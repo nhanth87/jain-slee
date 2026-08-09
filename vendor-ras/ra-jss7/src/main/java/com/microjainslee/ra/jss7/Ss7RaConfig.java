@@ -34,6 +34,17 @@ public final class Ss7RaConfig {
     /** "SCTP" or "TCP" (falls back to TCP when native SCTP is unavailable). */
     private String ipChannelType = "SCTP";
     private int sctpWorkerThreads = 16;
+    /**
+     * Cluster-wide local SCTP endpoints as {@code ip:port}. Empty → use
+     * {@link #hostIp}:{@link #hostPort} only. Each RA node binds exactly one
+     * entry (see {@link #sctpEndpointIndex()}).
+     */
+    private java.util.List<String> sctpLocalEndpoints = java.util.List.of();
+    /**
+     * Index into {@link #sctpLocalEndpoints()} for this node's steady-state bind
+     * (0-based). Ignored when the endpoint list is empty.
+     */
+    private int sctpEndpointIndex = 0;
 
     // ── M3UA ──────────────────────────────────────────────────
     private long routingContext = 100;
@@ -77,6 +88,8 @@ public final class Ss7RaConfig {
     public String associationName()      { return associationName; }
     public String ipChannelType()        { return ipChannelType; }
     public int sctpWorkerThreads()       { return sctpWorkerThreads; }
+    public java.util.List<String> sctpLocalEndpoints() { return sctpLocalEndpoints; }
+    public int sctpEndpointIndex()       { return sctpEndpointIndex; }
     public long routingContext()         { return routingContext; }
     public long networkAppearance()      { return networkAppearance; }
     public int originatingPointCode()    { return originatingPointCode; }
@@ -104,6 +117,11 @@ public final class Ss7RaConfig {
     public Ss7RaConfig associationName(String v)      { this.associationName = v; return this; }
     public Ss7RaConfig ipChannelType(String v)        { this.ipChannelType = v; return this; }
     public Ss7RaConfig sctpWorkerThreads(int v)       { this.sctpWorkerThreads = v; return this; }
+    public Ss7RaConfig sctpLocalEndpoints(java.util.List<String> v) {
+        this.sctpLocalEndpoints = v == null ? java.util.List.of() : java.util.List.copyOf(v);
+        return this;
+    }
+    public Ss7RaConfig sctpEndpointIndex(int v)       { this.sctpEndpointIndex = v; return this; }
     public Ss7RaConfig routingContext(long v)         { this.routingContext = v; return this; }
     public Ss7RaConfig networkAppearance(long v)      { this.networkAppearance = v; return this; }
     public Ss7RaConfig originatingPointCode(int v)    { this.originatingPointCode = v; return this; }
@@ -138,11 +156,37 @@ public final class Ss7RaConfig {
         }
     }
 
+    /**
+     * Local SCTP bind for this node: {@code sctpLocalEndpoints[sctpEndpointIndex]}
+     * or {@code hostIp:hostPort} when the list is empty.
+     */
+    public String resolvedLocalEndpoint() {
+        if (sctpLocalEndpoints == null || sctpLocalEndpoints.isEmpty()) {
+            return hostIp + ":" + hostPort;
+        }
+        if (sctpEndpointIndex < 0 || sctpEndpointIndex >= sctpLocalEndpoints.size()) {
+            throw new IllegalArgumentException(
+                    "sctpEndpointIndex=" + sctpEndpointIndex
+                            + " out of range for sctpLocalEndpoints size="
+                            + sctpLocalEndpoints.size());
+        }
+        return sctpLocalEndpoints.get(sctpEndpointIndex);
+    }
+
+    /** All cluster local endpoints (singleton list when only hostIp/hostPort set). */
+    public java.util.List<String> allLocalEndpoints() {
+        if (sctpLocalEndpoints == null || sctpLocalEndpoints.isEmpty()) {
+            return java.util.List.of(hostIp + ":" + hostPort);
+        }
+        return sctpLocalEndpoints;
+    }
+
     @Override
     public String toString() {
-        return "Ss7RaConfig{" + stackName + " " + hostIp + ":" + hostPort
+        return "Ss7RaConfig{" + stackName + " local=" + resolvedLocalEndpoint()
                 + " -> " + peerIp + ":" + peerPort + " opc=" + originatingPointCode
                 + " dpc=" + destinationPointCode + " ssn=" + localSsn
+                + " endpoints=" + allLocalEndpoints()
                 + " otid=[" + dialogIdRangeStart + "," + dialogIdRangeEnd + "]"
                 + " map=" + mapEnabled + " cap=" + capEnabled + "}";
     }

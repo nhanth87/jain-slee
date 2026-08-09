@@ -30,6 +30,7 @@ public final class Ss7DialogClusterCaches {
     private final Cache<String, RaDialogOwner> ownerCache;
     private final Cache<String, TcapDialogSnapshotPayload> snapshotCache;
     private final Cache<String, Object> stickyCommandCache;
+    private final Cache<String, SctpEndpointLease> endpointLeaseCache;
 
     private Ss7DialogClusterCaches(ClusterManager clusterManager) {
         this.clusterManager = clusterManager;
@@ -44,6 +45,7 @@ public final class Ss7DialogClusterCaches {
         this.ownerCache = clusterManager.getCache(Ss7DialogCacheNames.RA_DIALOG_OWNER, mode);
         this.snapshotCache = clusterManager.getCache(Ss7DialogCacheNames.TCAP_DIALOG_SNAPSHOT, mode);
         this.stickyCommandCache = clusterManager.getCache(Ss7DialogCacheNames.RA_STICKY_COMMANDS, stickyMode);
+        this.endpointLeaseCache = clusterManager.getCache(Ss7DialogCacheNames.SCTP_ENDPOINT_LEASE, mode);
     }
 
     /**
@@ -82,6 +84,11 @@ public final class Ss7DialogClusterCaches {
      */
     public Cache<String, Object> stickyCommandCache() {
         return stickyCommandCache;
+    }
+
+    /** SCTP {@code ip:port} → lease (n-n endpoint fence). */
+    public Cache<String, SctpEndpointLease> endpointLeaseCache() {
+        return endpointLeaseCache;
     }
 
     public void putSnapshot(TcapDialogSnapshotPayload snapshot) {
@@ -160,5 +167,43 @@ public final class Ss7DialogClusterCaches {
         RaDialogOwner next = expected.withOwner(
                 newOwnerNodeId, newRaName, expected.generation() + 1, updatedAtEpochMs);
         return ownerCache.replace(expected.dialogId(), expected, next);
+    }
+
+    /**
+     * Claim an SCTP endpoint if absent ({@code generation == 0} first write).
+     *
+     * @return {@code true} when this caller installed the first lease
+     */
+    public boolean tryPutEndpointLeaseIfAbsent(SctpEndpointLease lease) {
+        Objects.requireNonNull(lease, "lease");
+        return endpointLeaseCache.putIfAbsent(lease.endpointKey(), lease) == null;
+    }
+
+    public SctpEndpointLease getEndpointLease(String endpointKey) {
+        return endpointKey == null ? null : endpointLeaseCache.get(endpointKey);
+    }
+
+    /**
+     * CAS transfer of an SCTP endpoint lease (VIP takeover fence).
+     *
+     * @return {@code true} when replace succeeded
+     */
+    public boolean tryClaimEndpointLease(SctpEndpointLease expected, String newOwnerNodeId, long updatedAtEpochMs) {
+        Objects.requireNonNull(expected, "expected");
+        Objects.requireNonNull(newOwnerNodeId, "newOwnerNodeId");
+        SctpEndpointLease next = expected.withOwner(
+                newOwnerNodeId, expected.generation() + 1, updatedAtEpochMs);
+        return endpointLeaseCache.replace(expected.endpointKey(), expected, next);
+    }
+
+    public void putEndpointLease(SctpEndpointLease lease) {
+        Objects.requireNonNull(lease, "lease");
+        endpointLeaseCache.put(lease.endpointKey(), lease);
+    }
+
+    public void removeEndpointLease(String endpointKey) {
+        if (endpointKey != null) {
+            endpointLeaseCache.remove(endpointKey);
+        }
     }
 }

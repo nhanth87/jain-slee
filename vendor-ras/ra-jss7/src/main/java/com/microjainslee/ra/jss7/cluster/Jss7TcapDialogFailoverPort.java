@@ -19,6 +19,7 @@ import org.restcomm.protocols.ss7.sccp.parameter.SccpAddress;
 import org.restcomm.protocols.ss7.tcap.api.TCAPProvider;
 import org.restcomm.protocols.ss7.tcap.api.TcapDialogSnapshot;
 import org.restcomm.protocols.ss7.tcap.api.TcapMissingDialogResolver;
+import org.restcomm.protocols.ss7.tcap.api.tc.dialog.Dialog;
 import org.restcomm.protocols.ss7.tcap.api.tc.dialog.TRPseudoState;
 
 import java.util.Objects;
@@ -31,6 +32,11 @@ import java.util.function.Supplier;
  *
  * <p>Also implements {@link TcapMissingDialogResolver} so inbound CONTINUE for an
  * unknown DTID can rehydrate from cache before UnrecognizedTxID.
+ *
+ * <p>Pending-invoke policy (grilling): if snapshot {@code invokeIdTaken} has any
+ * bit set, CONTINUE resume is refused (return null from {@link #resolve});
+ * explicit {@link #importPayload} still recreates TCAP with invoke-id table then
+ * aborts ownership claim for resume (dialog must start via new BEGIN).
  */
 public final class Jss7TcapDialogFailoverPort
         implements TcapDialogFailoverPort, TcapMissingDialogResolver {
@@ -42,13 +48,14 @@ public final class Jss7TcapDialogFailoverPort
     private final Ss7DialogOwnershipTracker tracker;
     private final Ss7DialogClusterCaches clusterCaches; // nullable
     private final TcapFailoverMetrics metrics;
+    private final MapDialogRehydrator mapRehydrator; // nullable
 
     public Jss7TcapDialogFailoverPort(
             Supplier<TCAPProvider> tcapProvider,
             Supplier<ParameterFactory> parameterFactory,
             Ss7DialogOwnershipTracker tracker,
             Ss7DialogClusterCaches clusterCaches) {
-        this(tcapProvider, parameterFactory, tracker, clusterCaches, new TcapFailoverMetrics());
+        this(tcapProvider, parameterFactory, tracker, clusterCaches, new TcapFailoverMetrics(), null);
     }
 
     public Jss7TcapDialogFailoverPort(
@@ -57,11 +64,22 @@ public final class Jss7TcapDialogFailoverPort
             Ss7DialogOwnershipTracker tracker,
             Ss7DialogClusterCaches clusterCaches,
             TcapFailoverMetrics metrics) {
+        this(tcapProvider, parameterFactory, tracker, clusterCaches, metrics, null);
+    }
+
+    public Jss7TcapDialogFailoverPort(
+            Supplier<TCAPProvider> tcapProvider,
+            Supplier<ParameterFactory> parameterFactory,
+            Ss7DialogOwnershipTracker tracker,
+            Ss7DialogClusterCaches clusterCaches,
+            TcapFailoverMetrics metrics,
+            MapDialogRehydrator mapRehydrator) {
         this.tcapProvider = Objects.requireNonNull(tcapProvider, "tcapProvider");
         this.parameterFactory = Objects.requireNonNull(parameterFactory, "parameterFactory");
         this.tracker = Objects.requireNonNull(tracker, "tracker");
         this.clusterCaches = clusterCaches;
         this.metrics = Objects.requireNonNull(metrics, "metrics");
+        this.mapRehydrator = mapRehydrator;
     }
 
     public TcapFailoverMetrics metrics() {
@@ -101,22 +119,69 @@ public final class Jss7TcapDialogFailoverPort
             metrics.importFail();
             return false;
         }
+        // Pending invokes: recreate TCAP with invokeId table, then refuse resume.
+        if (payload.hasPendingInvokes()) {
+            metrics.pendingInvokeAbort();
+            LOG.warn("[ra-jss7] importPayload({}): pending invoke-ids — recreate+abort policy (no CONTINUE resume)",
+                    payload.localOtid());
+            boolean imported = doImport(payload, false, false);
+            if (imported && clusterCaches != null) {
+                clusterCaches.removeSnapshot(payload.dialogKey());
+            }
+            abortImportedDialog(payload.localOtid());
+            metrics.importFail();
+            return false;
+        }
+        return doImport(payload, true, true);
+    }
+
+    private boolean doImport(TcapDialogSnapshotPayload payload, boolean claimAndRehydrate, boolean countOk) {
         TCAPProvider provider = tcapProvider.get();
         ParameterFactory pf = parameterFactory.get();
         if (provider == null || pf == null) {
-            metrics.importFail();
+            if (countOk) {
+                metrics.importFail();
+            }
             return false;
         }
         try {
             TcapDialogSnapshot snap = toJss7Snapshot(payload, pf);
-            provider.importDialog(snap);
-            claimOwnershipAfterImport(payload.dialogKey(), payload.localOtid());
-            metrics.importOk();
+            Dialog imported = provider.importDialog(snap);
+            if (claimAndRehydrate) {
+                claimOwnershipAfterImport(payload.dialogKey(), payload.localOtid());
+                if (mapRehydrator != null) {
+                    mapRehydrator.rehydrate(imported);
+                }
+            }
+            if (countOk) {
+                metrics.importOk();
+            }
             return true;
         } catch (Exception e) {
             LOG.warn("[ra-jss7] importDialog({}) failed: {}", payload.localOtid(), e.toString());
-            metrics.importFail();
+            if (countOk) {
+                metrics.importFail();
+            }
             return false;
+        }
+    }
+
+    private void abortImportedDialog(long localOtid) {
+        TCAPProvider provider = tcapProvider.get();
+        if (provider == null) {
+            return;
+        }
+        try {
+            // Best-effort: drop snapshot path; live dialog may be released via stack APIs later.
+            // Prefer UnrecognizedTxID / new BEGIN over half-resumed invokes.
+            TcapDialogSnapshot still = provider.exportDialog(localOtid);
+            if (still != null) {
+                LOG.info("[ra-jss7] pending-invoke abort: dialog otid={} present after import — "
+                        + "operator/peer must open new BEGIN (invokeId table was restored then abandoned)",
+                        localOtid);
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("[ra-jss7] abortImportedDialog({}): {}", localOtid, e.toString());
         }
     }
 
@@ -136,7 +201,6 @@ public final class Jss7TcapDialogFailoverPort
         if (clusterCaches != null) {
             payload = clusterCaches.getSnapshot(String.valueOf(localOtid));
             if (payload == null) {
-                // Meta may key by dialog id string equal to otid.
                 payload = clusterCaches.getSnapshot(Long.toString(localOtid));
             }
         }
@@ -156,9 +220,7 @@ public final class Jss7TcapDialogFailoverPort
 
     /**
      * jSS7 CONTINUE-miss hook — load cache snapshot for {@code importDialog}.
-     * jSS7 calls {@code resolve} then {@code importDialog} in the same stack;
-     * claim ownership here (same path as {@link #importPayload}/{@link #tryTakeover})
-     * so sticky outbound becomes {@code SEND_LOCAL} on the survivor.
+     * Pending invoke-ids → return null (UnrecognizedTxID / new BEGIN).
      */
     @Override
     public TcapDialogSnapshot resolve(long localOtid) {
@@ -172,6 +234,13 @@ public final class Jss7TcapDialogFailoverPort
             metrics.continueResolveFail();
             return null;
         }
+        if (payload.hasPendingInvokes()) {
+            metrics.pendingInvokeAbort();
+            metrics.continueResolveFail();
+            LOG.warn("[ra-jss7] CONTINUE miss otid={}: pending invoke-ids — refuse resume (new BEGIN required)",
+                    localOtid);
+            return null;
+        }
         ParameterFactory pf = parameterFactory.get();
         if (pf == null) {
             metrics.continueResolveFail();
@@ -179,10 +248,8 @@ public final class Jss7TcapDialogFailoverPort
         }
         try {
             TcapDialogSnapshot snap = toJss7Snapshot(payload, pf);
-            // Ownership must land on the survivor before CONTINUE processing continues;
-            // otherwise sticky router still sees the dead owner and REJECT/FORWARD.
             claimOwnershipAfterImport(payload.dialogKey(), payload.localOtid());
-            LOG.info("[ra-jss7] CONTINUE miss: resolving snapshot for otid={} (ownership claimed)",
+            LOG.info("[ra-jss7] CONTINUE miss: resolving snapshot for otid={} (ownership claimed, invokeId restored)",
                     localOtid);
             return snap;
         } catch (RuntimeException e) {
@@ -210,7 +277,6 @@ public final class Jss7TcapDialogFailoverPort
                 }
             }
         }
-        // Refresh local tracker view (open or touch).
         tracker.onDialogOpened(dialogId, localOtid, null, 0, 0, "Active", null);
     }
 

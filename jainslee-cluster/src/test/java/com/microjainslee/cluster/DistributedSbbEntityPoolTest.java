@@ -174,27 +174,60 @@ class DistributedSbbEntityPoolTest {
     // -----------------------------------------------------------------
 
     @Test
-    @DisplayName("release(SbbEntity) persists the snapshot into the cache")
-    void releasePersistsSnapshot() {
+    @DisplayName("release without checkpoint does not persist (hot path)")
+    void releaseWithoutCheckpointSkipsIspn() {
         DistributedSbbEntityPool pool = newPool(manager);
         try {
-            Supplier<Sbb> factory = CounterSbb::new;
             VirtualThreadSbbEntityPool.SbbEntity entity =
-                    pool.acquire("local-entity", factory);
+                    pool.acquire("ephemeral", CounterSbb::new);
+            ((CounterSbb) entity.getSbb()).setBalance(1);
+            pool.release(entity);
+            assertThat(pool.getStateCache().get("ephemeral")).isNull();
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("checkpoint persists; release invalidates ISPN entry")
+    void checkpointThenReleaseInvalidates() {
+        DistributedSbbEntityPool pool = newPool(manager);
+        try {
+            VirtualThreadSbbEntityPool.SbbEntity entity =
+                    pool.acquire("ha-entity", CounterSbb::new);
             CounterSbb sbb = (CounterSbb) entity.getSbb();
             sbb.setBalance(777);
             sbb.setMsisdn("+84000");
             sbb.setAttempts(3);
 
-            pool.release(entity);
-
-            // Snapshot must now be in the cache.
-            SbbEntitySnapshot persisted = pool.getStateCache().get("local-entity");
+            assertThat(pool.checkpoint("ha-entity")).isTrue();
+            SbbEntitySnapshot persisted = pool.getStateCache().get("ha-entity");
             assertThat(persisted).isNotNull();
             assertThat(persisted.getCmpFieldValues())
                     .containsEntry("balance", 777)
                     .containsEntry("msisdn", "+84000")
                     .containsEntry("attempts", 3);
+            assertThat(persisted.getGeneration()).isPositive();
+
+            pool.release(entity);
+            assertThat(pool.getStateCache().get("ha-entity")).isNull();
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("legacy on-release=true still persists on release")
+    void legacyPersistOnRelease() {
+        DistributedSbbEntityPool pool = new DistributedSbbEntityPool(
+                1, 8, false, manager, new SbbCheckpointConfig(true, 0L));
+        try {
+            VirtualThreadSbbEntityPool.SbbEntity entity =
+                    pool.acquire("local-entity", CounterSbb::new);
+            CounterSbb sbb = (CounterSbb) entity.getSbb();
+            sbb.setBalance(777);
+            pool.release(entity);
+            assertThat(pool.getStateCache().get("local-entity")).isNotNull();
         } finally {
             pool.shutdown();
         }
@@ -346,7 +379,8 @@ class DistributedSbbEntityPoolTest {
             sbb.setBalance(2024);
             sbb.setMsisdn("+842024");
             sbb.setAttempts(42);
-            cluster.pool0.release(entity);
+            assertThat(cluster.pool0.checkpoint("cross-pool")).isTrue();
+            // Keep entity alive on node0 so snapshot remains in ISPN for peer read.
 
             // The remote node must be able to read the same snapshot
             // from its own cache view.

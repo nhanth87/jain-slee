@@ -136,6 +136,22 @@ public final class TcapDialogSnapshotPayload implements Serializable {
         return invokeIdTaken == null ? null : Arrays.copyOf(invokeIdTaken, invokeIdTaken.length);
     }
 
+    /**
+     * Outstanding TCAP invokes (invoke-id bits taken). After import, operation
+     * objects are empty — any taken bit means pending-invoke abort policy.
+     */
+    public boolean hasPendingInvokes() {
+        if (invokeIdTaken == null) {
+            return false;
+        }
+        for (boolean taken : invokeIdTaken) {
+            if (taken) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public long updatedAtEpochMs() {
         return updatedAtEpochMs;
     }

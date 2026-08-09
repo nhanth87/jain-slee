@@ -21,16 +21,19 @@ import org.restcomm.protocols.ss7.indicator.RoutingIndicator;
 import org.restcomm.protocols.ss7.sccp.impl.parameter.ParameterFactoryImpl;
 import org.restcomm.protocols.ss7.sccp.parameter.ParameterFactory;
 import org.restcomm.protocols.ss7.sccp.parameter.SccpAddress;
+import org.restcomm.protocols.ss7.map.api.MAPProvider;
 import org.restcomm.protocols.ss7.tcap.api.TCAPException;
 import org.restcomm.protocols.ss7.tcap.api.TCAPProvider;
 import org.restcomm.protocols.ss7.tcap.api.TcapDialogSnapshot;
 import org.restcomm.protocols.ss7.tcap.api.tc.dialog.Dialog;
 import org.restcomm.protocols.ss7.tcap.api.tc.dialog.TRPseudoState;
 
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
@@ -236,6 +239,99 @@ public class Jss7TcapDialogFailoverPortTest {
     }
 
     @Test
+    public void deployImportPendingInvokesRecreatesThenFailsAndDropsSnapshot() {
+        boolean[] taken = new boolean[256];
+        taken[5] = true;
+        TcapDialogSnapshotPayload payload = new TcapDialogSnapshotPayload(
+                "101",
+                101L,
+                new byte[] {1, 0, 1},
+                PortableSccpAddress.pcSsn(1, 8),
+                PortableSccpAddress.pcSsn(2, 8),
+                "Active",
+                null,
+                System.nanoTime() + 10_000_000_000L,
+                0,
+                8,
+                2,
+                1,
+                false,
+                taken,
+                System.currentTimeMillis());
+        caches.putSnapshot(payload);
+
+        Map<Long, TcapDialogSnapshot> imported = new ConcurrentHashMap<>();
+        Ss7DialogOwnershipTracker tracker = new Ss7DialogOwnershipTracker(
+                manager.getNodeId(), "ra-jss7", 1, 8, caches);
+        TcapFailoverMetrics metrics = new TcapFailoverMetrics();
+        Jss7TcapDialogFailoverPort port = new Jss7TcapDialogFailoverPort(
+                () -> proxyProvider(otid -> imported.get(otid), snap -> {
+                    imported.put(snap.getLocalOtid(), snap);
+                    return null;
+                }),
+                () -> parameterFactory,
+                tracker,
+                caches,
+                metrics,
+                null);
+
+        assertFalse(port.importPayload(payload));
+        assertTrue(imported.containsKey(101L));
+        assertTrue(imported.get(101L).getInvokeIdTaken()[5]);
+        assertEquals(null, caches.getSnapshot("101"));
+        assertEquals(1, metrics.pendingInvokeAbortCount());
+        // Policy: abandon half-resumed dialog; without snapshot, peer cannot CONTINUE-resume.
+        imported.clear();
+        assertFalse(port.tryTakeover(101L));
+        assertEquals(null, port.resolve(101L));
+    }
+
+    @Test
+    public void deploySuccessfulImportInvokesMapRehydrator() {
+        TcapDialogSnapshotPayload payload = samplePayload(202L);
+        caches.putSnapshot(payload);
+        AtomicInteger rehydrateCalls = new AtomicInteger();
+        AtomicReference<Dialog> seen = new AtomicReference<>();
+        MapDialogRehydrator mapRehydrator = new MapDialogRehydrator(() -> (MAPProvider) Proxy.newProxyInstance(
+                MAPProvider.class.getClassLoader(),
+                new Class<?>[] {MAPProvider.class},
+                (proxy, method, args) -> {
+                    if ("getMAPDialog".equals(method.getName())) {
+                        return null;
+                    }
+                    if ("rehydrateDialogFromTcap".equals(method.getName())) {
+                        seen.set((Dialog) args[0]);
+                        rehydrateCalls.incrementAndGet();
+                        return null;
+                    }
+                    return defaultProxyReturn(method);
+                }));
+
+        Ss7DialogOwnershipTracker tracker = new Ss7DialogOwnershipTracker(
+                "node-map", "ra-jss7", 1, 8, caches);
+        Jss7TcapDialogFailoverPort port = new Jss7TcapDialogFailoverPort(
+                () -> proxyProvider(otid -> null, snap -> (Dialog) Proxy.newProxyInstance(
+                        Dialog.class.getClassLoader(),
+                        new Class<?>[] {Dialog.class},
+                        (proxy, method, args) -> {
+                            if ("getLocalDialogId".equals(method.getName())) {
+                                return snap.getLocalOtid();
+                            }
+                            return defaultProxyReturn(method);
+                        })),
+                () -> parameterFactory,
+                tracker,
+                caches,
+                new TcapFailoverMetrics(),
+                mapRehydrator);
+
+        assertTrue(port.importPayload(payload));
+        assertEquals(1, rehydrateCalls.get());
+        assertNotNull(seen.get());
+        assertEquals(Long.valueOf(202L), seen.get().getLocalDialogId());
+    }
+
+    @Test
     public void unsupportedPortRemainsNoOp() {
         TcapDialogFailoverPort port = TcapDialogFailoverPort.unsupported();
         assertFalse(port.exportAndStore(1L).isPresent());
@@ -293,20 +389,24 @@ public class Jss7TcapDialogFailoverPortTest {
                     if ("equals".equals(name)) {
                         return proxy == args[0];
                     }
-                    Class<?> rt = method.getReturnType();
-                    if (rt == boolean.class) {
-                        return false;
-                    }
-                    if (rt == int.class) {
-                        return 0;
-                    }
-                    if (rt == long.class) {
-                        return 0L;
-                    }
-                    if (rt == void.class) {
-                        return null;
-                    }
-                    return null;
+                    return defaultProxyReturn(method);
                 });
+    }
+
+    private static Object defaultProxyReturn(Method method) {
+        Class<?> rt = method.getReturnType();
+        if (rt == boolean.class) {
+            return false;
+        }
+        if (rt == int.class) {
+            return 0;
+        }
+        if (rt == long.class) {
+            return 0L;
+        }
+        if (rt == void.class) {
+            return null;
+        }
+        return null;
     }
 }

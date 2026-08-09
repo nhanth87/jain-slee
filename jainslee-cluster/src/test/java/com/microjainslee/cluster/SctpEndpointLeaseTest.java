@@ -55,4 +55,23 @@ class SctpEndpointLeaseTest {
         assertThat(after.ownerNodeId()).isEqualTo("node-b");
         assertThat(after.generation()).isEqualTo(1L);
     }
+
+    @Test
+    void deployStaleLeaseCasMustFail() {
+        SctpEndpointLease first = new SctpEndpointLease("10.0.0.3:2905", "node-a", 0L, 1L);
+        assertThat(caches.tryPutEndpointLeaseIfAbsent(first)).isTrue();
+        assertThat(caches.tryClaimEndpointLease(first, "node-b", 2L)).isTrue();
+
+        // Stale expected (pre-claim) must not steal after generation bump.
+        assertThat(caches.tryClaimEndpointLease(first, "node-c", 4L)).isFalse();
+        assertThat(caches.getEndpointLease("10.0.0.3:2905").ownerNodeId()).isEqualTo("node-b");
+    }
+
+    @Test
+    void deployLeaseIsMarshallableForIspn() {
+        SctpEndpointLease lease = new SctpEndpointLease("10.0.0.9:2905", "node-z", 7L, 99L);
+        MarshallingAllowList.assertMarshallable("sctp-endpoint-lease", lease);
+        caches.putEndpointLease(lease);
+        assertThat(caches.getEndpointLease("10.0.0.9:2905")).isEqualTo(lease);
+    }
 }

@@ -8,6 +8,8 @@ package com.microjainslee.ra.sipservlet.command;
 
 import com.microjainslee.api.OutboundCommand;
 
+import java.io.Serializable;
+
 /**
  * Sealed hierarchy of SIP outbound commands sent from SBB to RA
  * via {@link com.microjainslee.api.RaCommandPort#sendCommand(OutboundCommand)}.
@@ -15,8 +17,11 @@ import com.microjainslee.api.OutboundCommand;
  * <p>Each command carries at minimum a {@code callId} identifying
  * the target dialog. Concrete command records live in their own
  * source files under this package.</p>
+ *
+ * <p>{@link Serializable} so sticky HA bus (ADR 0002) can forward to the
+ * owning node — no NIST stack types in the envelope.</p>
  */
-public sealed interface SipOutboundCommand extends OutboundCommand
+public sealed interface SipOutboundCommand extends OutboundCommand, Serializable
         permits SendInvite, SendBye, SendResponse, SendAck, SendCancel,
                 StartIce, SelectIceCandidate, SendSdpUpdate, SendMediaKeepAlive,
                 SendMessage {

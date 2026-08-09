@@ -8,6 +8,11 @@ package com.microjainslee.ra.diameter;
 
 import com.microjainslee.api.ActivityHandle;
 import com.microjainslee.api.RaBootstrapPort;
+import com.microjainslee.cluster.ClusterManager;
+import com.microjainslee.cluster.RaHaSupport;
+import com.microjainslee.cluster.RaStickyRouter;
+import com.microjainslee.cluster.SctpEndpointLease;
+import com.microjainslee.cluster.Ss7DialogClusterCaches;
 import com.microjainslee.ra.diameter.collab.DiameterEventClassifier;
 import com.microjainslee.ra.diameter.collab.DiameterOutboundSender;
 import com.microjainslee.ra.diameter.collab.DiameterPeerTracker;
@@ -58,6 +63,9 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
     private MessageParser baseParser = new MessageParser();
     private final Map<String, ActivityHandle> sessions = new ConcurrentHashMap<>();
     private final AtomicBoolean active = new AtomicBoolean(false);
+    private volatile ClusterManager clusterManager;
+    private volatile RaHaSupport haSupport;
+    private volatile Object pendingCheckpointContainer;
 
     // ---- collaborator injection ----
 
@@ -71,6 +79,22 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
     /** Replace peer tracker (tests). */
     public void setPeerTracker(DiameterPeerTracker tracker) {
         this.peerTracker = tracker != null ? tracker : new DiameterPeerTracker(0);
+    }
+
+    public void setClusterManager(ClusterManager clusterManager) {
+        this.clusterManager = clusterManager;
+    }
+
+    public void setMicroSleeContainer(Object container) {
+        pendingCheckpointContainer = container;
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.checkpointBridge().bindContainer(container);
+        }
+    }
+
+    public RaHaSupport haSupport() {
+        return haSupport;
     }
 
     // ---- accessors ----
@@ -124,17 +148,79 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
             transports.add(tcp);
         }
         transports.forEach(DiameterTransport::start);
+        initHa();
         LOG.info("[ra-diameter] ACTIVE transports={} (LISTEN ≠ peer UP; use isPeerReady())",
                 transports.size());
     }
 
     public void raInactive() {
         if (!active.compareAndSet(true, false)) return;
+        teardownHa();
         transports.forEach(DiameterTransport::stop);
         transports.clear();
         sessions.clear();
         peerTracker.clear();
         LOG.info("[ra-diameter] INACTIVE");
+    }
+
+    private void initHa() {
+        ClusterManager cm = clusterManager;
+        RaHaSupport ha = cm != null
+                ? RaHaSupport.create(cm, "diameter")
+                : RaHaSupport.localOnly("diameter", "local-diameter");
+        Object pending = pendingCheckpointContainer;
+        if (pending != null) {
+            ha.checkpointBridge().bindContainer(pending);
+        }
+        haSupport = ha;
+        claimTcpEndpointLease(cm);
+    }
+
+    private void teardownHa() {
+        RaHaSupport ha = haSupport;
+        haSupport = null;
+        if (ha != null) {
+            ha.stopStickyBus();
+        }
+        releaseTcpEndpointLease();
+    }
+
+    private void claimTcpEndpointLease(ClusterManager cm) {
+        if (cm == null || config.host() == null || config.port() <= 0) {
+            return;
+        }
+        String endpointKey = config.host() + ":" + config.port();
+        try {
+            Ss7DialogClusterCaches caches = Ss7DialogClusterCaches.ensureCaches(cm);
+            SctpEndpointLease lease = new SctpEndpointLease(
+                    endpointKey, cm.getNodeId(), 0L, System.currentTimeMillis());
+            if (caches.tryPutEndpointLeaseIfAbsent(lease)) {
+                LOG.info("[ra-diameter] claimed TCP endpoint lease {}", endpointKey);
+            } else {
+                SctpEndpointLease existing = caches.getEndpointLease(endpointKey);
+                LOG.warn("[ra-diameter] TCP endpoint {} owned by {}",
+                        endpointKey, existing == null ? "?" : existing.ownerNodeId());
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("[ra-diameter] endpoint lease claim failed: {}", e.toString());
+        }
+    }
+
+    private void releaseTcpEndpointLease() {
+        ClusterManager cm = clusterManager;
+        if (cm == null || config.host() == null || config.port() <= 0) {
+            return;
+        }
+        String endpointKey = config.host() + ":" + config.port();
+        try {
+            Ss7DialogClusterCaches caches = Ss7DialogClusterCaches.ensureCaches(cm);
+            SctpEndpointLease lease = caches.getEndpointLease(endpointKey);
+            if (lease != null && cm.getNodeId().equals(lease.ownerNodeId())) {
+                caches.removeEndpointLease(endpointKey);
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("[ra-diameter] endpoint lease release: {}", e.toString());
+        }
     }
 
     public void raUnconfigure() {
@@ -147,6 +233,27 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
     /** Called by {@code DiameterRaEndpoint.sendCommand} when an SBB
      * sends an outbound Diameter command. */
     public void sendOutbound(DiameterCommand cmd) {
+        if (cmd == null) {
+            return;
+        }
+        String sessionId = cmd.sessionId() != null ? cmd.sessionId() : "";
+        RaHaSupport ha = haSupport;
+        if (ha != null && !sessionId.isBlank()) {
+            RaStickyRouter.Decision d = ha.decide(sessionId, true, isPeerReady());
+            if (d.action() == RaStickyRouter.Action.REJECT) {
+                LOG.warn("[ra-diameter] sticky REJECT {}: {}",
+                        cmd.getClass().getSimpleName(), d.reason());
+                return;
+            }
+            if (d.action() == RaStickyRouter.Action.FORWARD_REMOTE) {
+                LOG.warn("[ra-diameter] sticky FORWARD not wired for DiameterCommand payload "
+                        + "(session={}) — reject nearest send", sessionId);
+                ha.metrics().stickyReject();
+                return;
+            }
+            ha.onOpened(sessionId, "Active", Map.of("cmd", cmd.getClass().getSimpleName()));
+            ha.checkpointSbb(sessionId);
+        }
         if (outboundSender != null) {
             outboundSender.send(cmd);
         } else {
@@ -205,6 +312,15 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
         String sessionId = extractSessionId(msg);
         ActivityHandle handle = sessions.computeIfAbsent(sessionId,
                 id -> bootstrapPort.createActivityHandle(id));
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            if (ha.lookupOwner(sessionId).isEmpty()) {
+                ha.onOpened(sessionId, "Active", Map.of("peerId", peerId == null ? "" : peerId));
+            } else {
+                ha.onTouched(sessionId, "Active", Map.of("peerId", peerId == null ? "" : peerId));
+            }
+            ha.checkpointSbb(sessionId);
+        }
 
         DiameterEvent event = classifier.classify(msg);
         if (event != null) {

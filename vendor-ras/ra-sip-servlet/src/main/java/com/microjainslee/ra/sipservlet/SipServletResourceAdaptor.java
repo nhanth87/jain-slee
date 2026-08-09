@@ -8,8 +8,12 @@ package com.microjainslee.ra.sipservlet;
 
 import com.microjainslee.api.ActivityHandle;
 import com.microjainslee.api.RaBootstrapPort;
+import com.microjainslee.cluster.ClusterManager;
+import com.microjainslee.cluster.RaHaSupport;
+import com.microjainslee.cluster.RaStickyRouter;
 import com.microjainslee.ra.sipservlet.collab.*;
 import com.microjainslee.ra.sipservlet.command.SelectIceCandidate;
+import com.microjainslee.ra.sipservlet.command.SendInvite;
 import com.microjainslee.ra.sipservlet.command.SendMediaKeepAlive;
 import com.microjainslee.ra.sipservlet.command.SendResponse;
 import com.microjainslee.ra.sipservlet.command.SipOutboundCommand;
@@ -77,6 +81,10 @@ public final class SipServletResourceAdaptor {
     private StunClient stunClient;
     private IceCandidateCollector iceCollector;
 
+    // ---- HA (ADR 0002 / Gate A) ----
+    private volatile ClusterManager clusterManager;
+    private volatile RaHaSupport haSupport;
+
     // ---- collaborator injection ----
 
     public void setBootstrapPort(RaBootstrapPort bp) {
@@ -96,12 +104,31 @@ public final class SipServletResourceAdaptor {
         this.outboundSender = s;
     }
 
+    /** Bind optional {@link ClusterManager} for sticky Call-ID ownership. */
+    public void setClusterManager(ClusterManager clusterManager) {
+        this.clusterManager = clusterManager;
+    }
+
+    /** Gate A — bind MicroSleeContainer for RA-driven SBB checkpoint. */
+    public void setMicroSleeContainer(Object container) {
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.checkpointBridge().bindContainer(container);
+        } else {
+            // Defer until raActive creates haSupport
+            pendingCheckpointContainer = container;
+        }
+    }
+
+    private volatile Object pendingCheckpointContainer;
+
     // ---- accessors ----
 
     public SipRaConfig config() { return config; }
     /** RA lifecycle / transports started — **not** SIP peer registered or dialog-ready. */
     public boolean isActive() { return active.get(); }
     public DialogRegistry dialogRegistry() { return dialogRegistry; }
+    public RaHaSupport haSupport() { return haSupport; }
 
     // ---- Lifecycle ----
 
@@ -160,11 +187,13 @@ public final class SipServletResourceAdaptor {
         });
         sweeper.scheduleAtFixedRate(this::sweepIdleDialogs, sweepSecs, sweepSecs, TimeUnit.SECONDS);
 
+        initHa();
         LOG.info("[ra-sip-servlet] ACTIVE transports={}", transports.size());
     }
 
     public void raInactive() {
         if (!active.compareAndSet(true, false)) return;
+        teardownHa();
         if (sweeper != null) { sweeper.shutdownNow(); sweeper = null; }
         transports.values().forEach(SipTransport::stop);
         transports.clear();
@@ -176,6 +205,33 @@ public final class SipServletResourceAdaptor {
         if (dnsResolver != null) { dnsResolver.clearCache(); dnsResolver = null; }
         iceCollector = null;
         LOG.info("[ra-sip-servlet] INACTIVE");
+    }
+
+    private void initHa() {
+        ClusterManager cm = clusterManager;
+        RaHaSupport ha = cm != null
+                ? RaHaSupport.create(cm, "sip-servlet")
+                : RaHaSupport.localOnly("sip-servlet", "local-sip");
+        Object pending = pendingCheckpointContainer;
+        if (pending != null) {
+            ha.checkpointBridge().bindContainer(pending);
+        }
+        if (ha.isClustered()) {
+            ha.startStickyBus(env -> {
+                if (env.payload() instanceof SipOutboundCommand cmd) {
+                    sendOutboundLocal(cmd);
+                }
+            });
+        }
+        haSupport = ha;
+    }
+
+    private void teardownHa() {
+        RaHaSupport ha = haSupport;
+        haSupport = null;
+        if (ha != null) {
+            ha.stopStickyBus();
+        }
     }
 
     public void raUnconfigure() {
@@ -191,6 +247,29 @@ public final class SipServletResourceAdaptor {
      * SIP commands are delegated to the outbound sender.
      */
     public void sendOutbound(SipOutboundCommand cmd) {
+        if (cmd == null) return;
+        RaHaSupport ha = haSupport;
+        if (ha == null) {
+            sendOutboundLocal(cmd);
+            return;
+        }
+        boolean creating = cmd instanceof SendInvite;
+        // Transport up = honest route for SIP edge (listen ≠ peer registered).
+        boolean routeReady = active.get() && !transports.isEmpty();
+        RaStickyRouter.Decision d = ha.decide(cmd.callId(), creating, routeReady);
+        switch (d.action()) {
+            case REJECT -> LOG.warn("[ra-sip-servlet] sticky REJECT {}: {}",
+                    cmd.getClass().getSimpleName(), d.reason());
+            case FORWARD_REMOTE -> {
+                if (d.owner() == null || !ha.forward(d.owner().ownerNodeId(), cmd.callId(), cmd)) {
+                    LOG.warn("[ra-sip-servlet] sticky FORWARD failed callId={}", cmd.callId());
+                }
+            }
+            case SEND_LOCAL -> sendOutboundLocal(cmd);
+        }
+    }
+
+    void sendOutboundLocal(SipOutboundCommand cmd) {
         if (cmd == null) return;
         switch (cmd) {
             case StartIce c -> startIce(c.callId());
@@ -216,6 +295,9 @@ public final class SipServletResourceAdaptor {
                             cmd.getClass().getSimpleName());
                 }
             }
+        }
+        if (cmd instanceof SendInvite) {
+            publishHaOpened(cmd.callId(), null, null);
         }
     }
 
@@ -274,6 +356,7 @@ public final class SipServletResourceAdaptor {
         ActivityHandle handle = dialogs.computeIfAbsent(callId,
                 id -> bootstrapPort.createActivityHandle(id));
         dialogRegistry.recordInbound(callId, handle, msg, peer, transport);
+        publishHaOpened(callId, peer, transport);
 
         SipEvent event = classifier.classify(msg, callId);
         if (event != null) {
@@ -287,6 +370,32 @@ public final class SipServletResourceAdaptor {
             }
             endDialog(callId);
         }
+    }
+
+    private void publishHaOpened(String callId, InetSocketAddress peer, String transport) {
+        RaHaSupport ha = haSupport;
+        if (ha == null || callId == null) {
+            return;
+        }
+        Map<String, String> attrs = new LinkedHashMap<>();
+        if (peer != null) {
+            attrs.put("peer", peer.getAddress().getHostAddress() + ":" + peer.getPort());
+        }
+        if (transport != null) {
+            attrs.put("transport", transport);
+        }
+        DialogRegistry.Dialog d = dialogRegistry.find(callId);
+        if (d != null && d.remotePeer() != null) {
+            attrs.put("remotePeer", d.remotePeer().getAddress().getHostAddress()
+                    + ":" + d.remotePeer().getPort());
+        }
+        if (ha.lookupOwner(callId).isEmpty()) {
+            ha.onOpened(callId, "Active", attrs);
+        } else {
+            ha.onTouched(callId, "Active", attrs);
+        }
+        // Gate A: RA checkpoints SBB entity keyed by Call-ID / activity id.
+        ha.checkpointSbb(callId);
     }
 
     /** BYE requests and final non-2xx INVITE responses terminate the dialog. */
@@ -312,6 +421,10 @@ public final class SipServletResourceAdaptor {
         dialogRegistry.remove(callId);
         if (defaultSender != null) {
             defaultSender.forgetDialog(callId);
+        }
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.onClosed(callId);
         }
         ActivityHandle handle = dialogs.remove(callId);
         if (handle != null && bootstrapPort != null) {

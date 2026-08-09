@@ -34,6 +34,11 @@
             <artifactId>jainslee-ra-spi</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-cluster</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- SIP protocol stack — corsac-sip -->
         <dependency>

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -228,6 +229,60 @@ class DistributedSbbEntityPoolTest {
             sbb.setBalance(777);
             pool.release(entity);
             assertThat(pool.getStateCache().get("local-entity")).isNotNull();
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("deploy: debounce coalesces rapid checkpoints; generation still advances on real writes")
+    void checkpointDebounceAndGeneration() {
+        DistributedSbbEntityPool pool = new DistributedSbbEntityPool(
+                1, 8, false, manager, new SbbCheckpointConfig(false, 5_000L));
+        try {
+            pool.acquire("debounce-entity", CounterSbb::new);
+            CounterSbb sbb = (CounterSbb) pool.findEntity("debounce-entity").getSbb();
+            sbb.setBalance(1);
+            assertThat(pool.checkpoint("debounce-entity")).isTrue();
+            long gen1 = pool.getStateCache().get("debounce-entity").getGeneration();
+
+            sbb.setBalance(2);
+            assertThat(pool.checkpoint("debounce-entity")).isTrue(); // coalesced
+            assertThat(pool.getStateCache().get("debounce-entity").getCmpFieldValues())
+                    .containsEntry("balance", 1);
+            assertThat(pool.getStateCache().get("debounce-entity").getGeneration()).isEqualTo(gen1);
+
+            DistributedSbbEntityPool immediate = new DistributedSbbEntityPool(
+                    1, 8, false, manager, new SbbCheckpointConfig(false, 0L));
+            try {
+                immediate.acquire("gen-entity", CounterSbb::new);
+                assertThat(immediate.checkpoint("gen-entity")).isTrue();
+                long g1 = immediate.getStateCache().get("gen-entity").getGeneration();
+                assertThat(immediate.checkpoint("gen-entity")).isTrue();
+                long g2 = immediate.getStateCache().get("gen-entity").getGeneration();
+                assertThat(g2).isGreaterThan(g1);
+            } finally {
+                immediate.shutdown();
+            }
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("deploy: checkpoint carries profile refs for peer hydrate")
+    void checkpointStoresProfileRefs() {
+        DistributedSbbEntityPool pool = new DistributedSbbEntityPool(
+                1, 8, false, manager, new SbbCheckpointConfig(false, 0L));
+        try {
+            pool.acquire("profile-entity", CounterSbb::new);
+            Set<String> refs = Set.of(
+                    SbbCheckpointConfig.profileRef("ussd", "session-1"),
+                    SbbCheckpointConfig.profileRef("routing", "default"));
+            assertThat(pool.checkpoint("profile-entity", refs)).isTrue();
+            SbbEntitySnapshot snap = pool.getStateCache().get("profile-entity");
+            assertThat(snap.getProfileRefs()).containsExactlyInAnyOrderElementsOf(refs);
+            MarshallingAllowList.assertMarshallable("sbb-snapshot", snap);
         } finally {
             pool.shutdown();
         }

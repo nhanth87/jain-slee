@@ -46,6 +46,19 @@
 | Failover / sticky-miss / import-fail metrics | **Done** (atomics + `failoverMetrics` on `/api/ra/ra-jss7/status`) |
 | Multi-ASP / same-AS lab soak script | **P2** (lab open — not production HA) |
 | Invoke tables / MAP dialogue restore | **Open** (ADR gaps) |
+| Gate A RA checkpoint on Begin/Continue | **Done** (`RaCheckpointBridge` — see ADR 0002) |
+
+### Other RA sticky HA (ADR 0002 P1)
+
+| Item | Status |
+|------|--------|
+| Shared `RaHaSupport` fabric | **Done** (`jainslee-cluster`) |
+| `ra-sip-servlet` Call-ID sticky + RA checkpoint | **P1 wired** |
+| `ra-http-client` / `ra-http-server` session sticky + RA checkpoint | **P1 wired** |
+| `ra-diameter` Session-Id + TCP lease + RA checkpoint | **P1 wired** (sticky command payload later) |
+| Sync-path default (HTTP/SIP/Diameter/gRPC): remote → REJECT | **Done** (`jainslee.ra.sticky.forward=false`) |
+| `ra-grpc-client` / `ra-grpc-server` ownership + sync path | **P1 wired** |
+| Lab soak / production claim | **Open** |
 
 ### jSS7 Phase 3–5 (adjacent)
 

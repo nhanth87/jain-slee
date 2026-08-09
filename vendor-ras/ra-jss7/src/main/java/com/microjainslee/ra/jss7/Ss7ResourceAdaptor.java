@@ -10,6 +10,7 @@ import com.microjainslee.api.ActivityHandle;
 import com.microjainslee.api.RaBootstrapPort;
 import com.microjainslee.api.SleeEvent;
 import com.microjainslee.cluster.ClusterManager;
+import com.microjainslee.cluster.RaCheckpointBridge;
 import com.microjainslee.cluster.Ss7DialogClusterCaches;
 import com.microjainslee.ra.jss7.cluster.IspnStickyCommandBus;
 import com.microjainslee.ra.jss7.cluster.Jss7TcapDialogFailoverPort;
@@ -81,6 +82,8 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     private volatile TcapDialogFailoverPort failoverPort;
     private volatile SctpEndpointFailoverCoordinator endpointCoordinator;
     private final TcapFailoverMetrics failoverMetrics = new TcapFailoverMetrics();
+    /** Gate A — RA-only SBB checkpoint (SBBs must not call this). */
+    private final RaCheckpointBridge checkpointBridge = new RaCheckpointBridge();
 
     // ── configuration ────────────────────────────────────────
     public void setBootstrapPort(RaBootstrapPort bp) { this.bootstrap = bp; }
@@ -103,6 +106,15 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
 
     public ClusterManager clusterManager() {
         return clusterManager;
+    }
+
+    /** Gate A — bind MicroSleeContainer so RA can checkpoint SBB CMP/profile. */
+    public void setMicroSleeContainer(Object container) {
+        checkpointBridge.bindContainer(container);
+    }
+
+    public RaCheckpointBridge checkpointBridge() {
+        return checkpointBridge;
     }
 
     public void setRaName(String raName) {
@@ -411,11 +423,13 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         if (event instanceof Ss7Event.TcapBegin || sessionCreated) {
             tracker.onDialogOpened(dialogId, parseOtid(dialogId), null, 0, 0, stateOf(event), null);
             exportSnapshotBestEffort(dialogId);
+            checkpointBridge.checkpoint(dialogId);
         } else if (event instanceof Ss7Event.TcapContinue cont) {
             tracker.onDialogTouched(dialogId, "Active", null, 0, 0);
             // Snapshot only when components / state change (grilling Q13=C).
             if (cont.components() != null && !cont.components().isEmpty()) {
                 exportSnapshotBestEffort(dialogId);
+                checkpointBridge.checkpoint(dialogId);
             }
         } else if (event instanceof Ss7Event.TcapEnd || event instanceof Ss7Event.TcapAbort) {
             // closed in forceEndSession
@@ -552,9 +566,11 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     cmd.targetAddress() != null ? cmd.targetAddress().subSystemNumber() : 0,
                     "Active", cmd.dialogId());
             exportSnapshotBestEffort(cmd.dialogId());
+            checkpointBridge.checkpoint(cmd.dialogId());
         } else if (cmd instanceof Ss7Command.TcapContinue) {
             tracker.onDialogTouched(cmd.dialogId(), "Active", null, 0, 0);
             exportSnapshotBestEffort(cmd.dialogId());
+            checkpointBridge.checkpoint(cmd.dialogId());
         }
     }
 

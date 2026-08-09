@@ -12,6 +12,10 @@ package com.microjainslee.ra.httpclient;
 
 import com.microjainslee.api.ActivityHandle;
 import com.microjainslee.api.RaBootstrapPort;
+import com.microjainslee.cluster.ClusterManager;
+import com.microjainslee.cluster.RaHaSupport;
+import com.microjainslee.cluster.RaStickyRouter;
+import com.microjainslee.ra.httpclient.cluster.HttpStickyPost;
 import com.microjainslee.ra.httpclient.collab.HttpClientSessionStore;
 import com.microjainslee.ra.httpclient.events.HttpCallbackCompletedEvent;
 import com.microjainslee.ra.spi.AbstractResourceAdaptor;
@@ -25,6 +29,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.net.URI;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -52,6 +57,9 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     private HttpClientSessionStore sessionStore;
     private RaBootstrapPort bootstrapPort;
     private final AtomicBoolean active = new AtomicBoolean(false);
+    private volatile ClusterManager clusterManager;
+    private volatile RaHaSupport haSupport;
+    private volatile Object pendingCheckpointContainer;
 
     private int connectTimeoutMs = 10_000;
     private int requestTimeoutMs = 15_000;
@@ -78,6 +86,22 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     public void setSessionStore(HttpClientSessionStore store) { this.sessionStore = store; }
     public void setBootstrapPort(RaBootstrapPort port) { this.bootstrapPort = port; }
 
+    public void setClusterManager(ClusterManager clusterManager) {
+        this.clusterManager = clusterManager;
+    }
+
+    public void setMicroSleeContainer(Object container) {
+        pendingCheckpointContainer = container;
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.checkpointBridge().bindContainer(container);
+        }
+    }
+
+    public RaHaSupport haSupport() {
+        return haSupport;
+    }
+
     // -- lifecycle -------------------------------------------------------
 
     @Override
@@ -101,6 +125,22 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
 
     @Override
     public void raActive() {
+        ClusterManager cm = clusterManager;
+        RaHaSupport ha = cm != null
+                ? RaHaSupport.create(cm, "http-client")
+                : RaHaSupport.localOnly("http-client", "local-http-client");
+        Object pending = pendingCheckpointContainer;
+        if (pending != null) {
+            ha.checkpointBridge().bindContainer(pending);
+        }
+        if (ha.isClustered()) {
+            ha.startStickyBus(env -> {
+                if (env.payload() instanceof HttpStickyPost post) {
+                    postBodyLocal(post.sessionId(), post.url(), post.body(), post.contentType());
+                }
+            });
+        }
+        haSupport = ha;
         active.set(true);
         LOG.info("HTTP callback client RA active");
     }
@@ -108,6 +148,11 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     @Override
     public void raStopping() {
         active.set(false);
+        RaHaSupport ha = haSupport;
+        haSupport = null;
+        if (ha != null) {
+            ha.stopStickyBus();
+        }
         LOG.info("HTTP callback client RA stopping");
     }
 
@@ -168,6 +213,23 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     }
 
     private void postBody(String sessionId, String url, String body, String contentType) {
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            RaStickyRouter.Decision d = ha.decide(sessionId, true, active.get());
+            if (d.action() == RaStickyRouter.Action.FORWARD_REMOTE && d.owner() != null) {
+                ha.forward(d.owner().ownerNodeId(), sessionId,
+                        new HttpStickyPost(sessionId, url, body, contentType));
+                return;
+            }
+            if (d.action() == RaStickyRouter.Action.REJECT) {
+                LOG.warn("HTTP client RA sticky REJECT session={}: {}", sessionId, d.reason());
+                return;
+            }
+        }
+        postBodyLocal(sessionId, url, body, contentType);
+    }
+
+    private void postBodyLocal(String sessionId, String url, String body, String contentType) {
         if (url == null || url.isBlank()) {
             LOG.debug(() -> "HTTP client RA: no URL for session " + sessionId);
             return;
@@ -190,6 +252,11 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
         }
 
         sessionStore.track(sessionId, url);
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.onOpened(sessionId, "IN_FLIGHT", Map.of("url", url));
+            ha.checkpointSbb(sessionId);
+        }
         attemptSend(client, sessionId, url, body, contentType, 0);
     }
 
@@ -246,12 +313,23 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
 
     private void completeWithSuccess(String sessionId, int statusCode, String responseBody) {
         sessionStore.complete(sessionId, statusCode, responseBody);
+        touchHaComplete(sessionId, statusCode >= 400 ? "ERROR" : "OK", statusCode);
         fireCompletedEvent(sessionId, statusCode, responseBody, null);
     }
 
     private void completeWithError(String sessionId, int statusCode, String errorMessage) {
         sessionStore.complete(sessionId, statusCode, null);
+        touchHaComplete(sessionId, "ERROR", statusCode);
         fireCompletedEvent(sessionId, statusCode, null, errorMessage);
+    }
+
+    private void touchHaComplete(String sessionId, String status, int statusCode) {
+        RaHaSupport ha = haSupport;
+        if (ha == null) {
+            return;
+        }
+        ha.onTouched(sessionId, status, Map.of("statusCode", String.valueOf(statusCode)));
+        ha.checkpointSbb(sessionId);
     }
 
     private void fireCompletedEvent(String sessionId, int statusCode,

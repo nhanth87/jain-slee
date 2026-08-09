@@ -11,6 +11,8 @@
 package com.microjainslee.ra.httpserver;
 
 import com.microjainslee.api.SimpleActivityContextHandle;
+import com.microjainslee.cluster.ClusterManager;
+import com.microjainslee.cluster.RaHaSupport;
 import com.microjainslee.ra.httpserver.events.HttpWebRequestEvent;
 import com.microjainslee.ra.spi.AbstractResourceAdaptor;
 
@@ -79,6 +81,26 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
     /** Maps sessionId → pending HttpServerResponse for async resolution. */
     private final ConcurrentHashMap<String, HttpServerResponse> pendingResponses =
             new ConcurrentHashMap<>();
+
+    private volatile ClusterManager clusterManager;
+    private volatile RaHaSupport haSupport;
+    private volatile Object pendingCheckpointContainer;
+
+    public void setClusterManager(ClusterManager clusterManager) {
+        this.clusterManager = clusterManager;
+    }
+
+    public void setMicroSleeContainer(Object container) {
+        pendingCheckpointContainer = container;
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.checkpointBridge().bindContainer(container);
+        }
+    }
+
+    public RaHaSupport haSupport() {
+        return haSupport;
+    }
 
     public void setPort(int port) {
         this.port = port;
@@ -199,6 +221,15 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
             throw new IllegalStateException(
                     "Failed to start HTTP server on " + host + ":" + port, failure[0]);
         }
+        ClusterManager cm = clusterManager;
+        RaHaSupport ha = cm != null
+                ? RaHaSupport.create(cm, "http-server")
+                : RaHaSupport.localOnly("http-server", "local-http-server");
+        Object pending = pendingCheckpointContainer;
+        if (pending != null) {
+            ha.checkpointBridge().bindContainer(pending);
+        }
+        haSupport = ha;
         LOG.info(() -> "HTTP server RA listening on http://" + host + ":" + server.actualPort()
                 + " (Vert.x eventLoop="
                 + (eventLoopThreads > 0 ? eventLoopThreads : "default")
@@ -211,6 +242,11 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
 
     @Override
     public void raStopping() {
+        RaHaSupport ha = haSupport;
+        haSupport = null;
+        if (ha != null) {
+            ha.stopStickyBus();
+        }
         LOG.info("HTTP server RA stopping");
     }
 
@@ -243,6 +279,13 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
         HttpServerRequest req = ctx.request();
         String sessionId = UUID.randomUUID().toString();
         pendingResponses.put(sessionId, ctx.response());
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.onOpened(sessionId, "PENDING", Map.of(
+                    "method", req.method().name(),
+                    "path", req.path() == null ? "" : req.path()));
+            ha.checkpointSbb(sessionId);
+        }
 
         Map<String, String> headers = new HashMap<>();
         req.headers().forEach(e -> headers.put(e.getKey(), e.getValue()));
@@ -326,6 +369,12 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
         } else {
             response.end();
         }
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.onTouched(sessionId, "DONE", Map.of("statusCode", String.valueOf(statusCode)));
+            ha.checkpointSbb(sessionId);
+            ha.onClosed(sessionId);
+        }
         endRequestActivity(sessionId);
     }
 
@@ -352,7 +401,10 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
             return;
         }
         if (headers != null) {
-            headers.forEach(response::putHeader);
+            // Set-Cookie is the only header that routinely needs multiple values on one
+            // response (session + CSRF). The Map contract collapses duplicates, so the app
+            // joins them with '\n'; expand here with addHeader so browsers see both.
+            headers.forEach((name, value) -> putOrAddHeader(response, name, value));
         }
         if (contentType != null && !contentType.isEmpty()) {
             response.putHeader("Content-Type", contentType);
@@ -404,6 +456,29 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
             LOG.warn("Failed to read uploaded file {}: {}", fu.fileName(), e.getMessage());
             return new byte[0];
         }
+    }
+
+    /**
+     * Expand newline-joined {@code Set-Cookie} values into distinct headers via Vert.x
+     * {@code putHeader(name, Iterable)}. Other header names keep single-value putHeader.
+     */
+    private static void putOrAddHeader(HttpServerResponse response, String name, String value) {
+        if (name == null) {
+            return;
+        }
+        if (value != null && "Set-Cookie".equalsIgnoreCase(name) && value.indexOf('\n') >= 0) {
+            java.util.List<String> parts = new java.util.ArrayList<>();
+            for (String part : value.split("\n", -1)) {
+                if (!part.isBlank()) {
+                    parts.add(part);
+                }
+            }
+            if (!parts.isEmpty()) {
+                response.putHeader(name, parts);
+            }
+            return;
+        }
+        response.putHeader(name, value == null ? "" : value);
     }
 
     private static void writeJson(HttpServerResponse response, int status, String body) {

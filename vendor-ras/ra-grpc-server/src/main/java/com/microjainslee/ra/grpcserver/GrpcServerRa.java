@@ -11,6 +11,8 @@
 package com.microjainslee.ra.grpcserver;
 
 import com.microjainslee.api.SimpleActivityContextHandle;
+import com.microjainslee.cluster.ClusterManager;
+import com.microjainslee.cluster.RaHaSupport;
 import com.microjainslee.ra.grpcserver.collab.BytesMarshaller;
 import com.microjainslee.ra.grpcserver.collab.PendingCallRegistry;
 import com.microjainslee.ra.grpcserver.collab.PendingCallRegistry.PendingCall;
@@ -81,9 +83,28 @@ public final class GrpcServerRa extends AbstractResourceAdaptor {
     private Server server;
     private ScheduledExecutorService sweeper;
     private final PendingCallRegistry pendingCalls = new PendingCallRegistry();
+    private volatile ClusterManager clusterManager;
+    private volatile RaHaSupport haSupport;
+    private volatile Object pendingCheckpointContainer;
 
     public void setPort(int port) { this.port = port; }
     public void setHost(String host) { this.host = host; }
+
+    public void setClusterManager(ClusterManager clusterManager) {
+        this.clusterManager = clusterManager;
+    }
+
+    public void setMicroSleeContainer(Object container) {
+        pendingCheckpointContainer = container;
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.checkpointBridge().bindContainer(container);
+        }
+    }
+
+    public RaHaSupport haSupport() {
+        return haSupport;
+    }
 
     /** Metadata (ASCII) key whose value becomes the SLEE activity id. */
     public void setCorrelationMetadataKey(String key) { this.correlationMetadataKey = key; }
@@ -129,11 +150,25 @@ public final class GrpcServerRa extends AbstractResourceAdaptor {
             return t;
         });
         sweeper.scheduleAtFixedRate(this::sweepExpiredCalls, 5, 5, TimeUnit.SECONDS);
+        ClusterManager cm = clusterManager;
+        RaHaSupport ha = cm != null
+                ? RaHaSupport.create(cm, "grpc-server")
+                : RaHaSupport.localOnly("grpc-server", "local-grpc-server");
+        Object pending = pendingCheckpointContainer;
+        if (pending != null) {
+            ha.checkpointBridge().bindContainer(pending);
+        }
+        haSupport = ha;
         LOG.info("gRPC server RA listening on {}:{}", host, server.getPort());
     }
 
     @Override
     public void raStopping() {
+        RaHaSupport ha = haSupport;
+        haSupport = null;
+        if (ha != null) {
+            ha.stopStickyBus();
+        }
         LOG.info("gRPC server RA stopping");
     }
 
@@ -224,6 +259,13 @@ public final class GrpcServerRa extends AbstractResourceAdaptor {
 
     private void fireRequest(String callId, String methodName, byte[] payload,
                              Map<String, String> metadata, String activityId) {
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.onOpened(activityId, "PENDING", Map.of(
+                    "callId", callId,
+                    "method", methodName == null ? "" : methodName));
+            ha.checkpointSbb(activityId);
+        }
         try {
             endpoint().startActivity(new SimpleActivityContextHandle(activityId), null);
         } catch (RuntimeException e) {
@@ -262,11 +304,28 @@ public final class GrpcServerRa extends AbstractResourceAdaptor {
             LOG.warn("gRPC RA: response for unknown/expired call {} — dropped", callId);
             return;
         }
+        // Sync-path: live ServerCall exists only on the accepting RA — refuse if
+        // ownership says another node owns this activity.
+        RaHaSupport ha = haSupport;
+        if (ha != null
+                && ha.lookupOwner(pending.activityId()).isPresent()
+                && !ha.isLocalOwner(pending.activityId())) {
+            LOG.warn("gRPC RA sync-path REJECT callId={} activity={} — not local owner",
+                    callId, pending.activityId());
+            pendingCalls.register(callId, pending);
+            ha.metrics().stickyReject();
+            return;
+        }
         pending.markCompleted();
         try {
             completion.accept(pending);
         } catch (RuntimeException e) {
             LOG.warn("gRPC RA: completing call {} failed: {}", callId, e.getMessage());
+        }
+        if (ha != null) {
+            ha.onTouched(pending.activityId(), "DONE", Map.of("callId", callId));
+            ha.checkpointSbb(pending.activityId());
+            ha.onClosed(pending.activityId());
         }
         endCallActivity(pending.activityId());
     }

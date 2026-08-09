@@ -75,4 +75,23 @@ public class SctpEndpointFailoverCoordinatorTest {
         assertEquals(nodeA, caches.getEndpointLease("10.0.0.2:2905").ownerNodeId());
         assertTrue(claims.get() >= 2);
     }
+
+    @Test
+    public void deployDoesNotStealAlreadyOwnedPreferredEndpoint() {
+        List<String> endpoints = List.of("10.0.0.1:2905", "10.0.0.2:2905");
+        caches.putEndpointLease(new SctpEndpointLease(
+                "10.0.0.1:2905", "other-node", 0L, System.currentTimeMillis()));
+
+        AtomicInteger claims = new AtomicInteger();
+        SctpEndpointFailoverCoordinator coord = new SctpEndpointFailoverCoordinator(
+                manager.getNodeId(),
+                endpoints,
+                "10.0.0.1:2905",
+                caches,
+                manager,
+                (ep, gen, takeover) -> claims.incrementAndGet());
+        assertTrue(!coord.claimPreferred());
+        assertEquals("other-node", caches.getEndpointLease("10.0.0.1:2905").ownerNodeId());
+        assertEquals(0, claims.get());
+    }
 }

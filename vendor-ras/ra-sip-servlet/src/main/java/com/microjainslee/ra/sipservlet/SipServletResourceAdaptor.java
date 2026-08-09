@@ -130,6 +130,54 @@ public final class SipServletResourceAdaptor {
     public DialogRegistry dialogRegistry() { return dialogRegistry; }
     public RaHaSupport haSupport() { return haSupport; }
 
+    /** True when local DialogRegistry still holds Call-ID (local respawn path). */
+    public boolean hasDialog(String callId) {
+        return dialogRegistry.contains(callId);
+    }
+
+    /**
+     * Failover priming: restore portable peers/cseq from RaSessionMeta ISPN attrs.
+     * Does not rebuild lastRequest — SendResponse still needs inbound wire (R4).
+     *
+     * @return true when peers were restored into the local DialogRegistry
+     */
+    public boolean restoreDialogFromCluster(String callId) {
+        if (callId == null || callId.isBlank()) {
+            return false;
+        }
+        if (dialogRegistry.contains(callId)) {
+            return true;
+        }
+        RaHaSupport ha = haSupport;
+        if (ha == null) {
+            return false;
+        }
+        return ha.lookupMeta(callId).map(meta -> {
+            DialogRegistry.PortableDialogMeta portable =
+                    DialogRegistry.PortableDialogMeta.fromAttrs(callId, meta.attrs());
+            if (portable == null) {
+                return false;
+            }
+            ActivityHandle handle = dialogs.computeIfAbsent(callId, id -> {
+                if (bootstrapPort != null) {
+                    return bootstrapPort.createActivityHandle(id);
+                }
+                return () -> id;
+            });
+            dialogRegistry.restorePortable(portable, handle);
+            // Claim sticky ownership after fence win (manager already claimed app fence).
+            if (ha.lookupOwner(callId).isEmpty()
+                    || !ha.isLocalOwner(callId)) {
+                ha.onOpened(callId, "Recovered", portable.toAttrs());
+            } else {
+                ha.onTouched(callId, "Recovered", portable.toAttrs());
+            }
+            LOG.info("[ra-sip-servlet] restored portable dialog peers callId={} peer={}",
+                    callId, portable.peerHost());
+            return true;
+        }).orElse(false);
+    }
+
     // ---- Lifecycle ----
 
     public void raConfigure() {
@@ -378,16 +426,18 @@ public final class SipServletResourceAdaptor {
             return;
         }
         Map<String, String> attrs = new LinkedHashMap<>();
-        if (peer != null) {
-            attrs.put("peer", peer.getAddress().getHostAddress() + ":" + peer.getPort());
-        }
-        if (transport != null) {
-            attrs.put("transport", transport);
-        }
-        DialogRegistry.Dialog d = dialogRegistry.find(callId);
-        if (d != null && d.remotePeer() != null) {
-            attrs.put("remotePeer", d.remotePeer().getAddress().getHostAddress()
-                    + ":" + d.remotePeer().getPort());
+        DialogRegistry.PortableDialogMeta portable = dialogRegistry.exportPortable(callId);
+        if (portable != null) {
+            attrs.putAll(portable.toAttrs());
+        } else {
+            if (peer != null) {
+                attrs.put("peer", peer.getAddress().getHostAddress() + ":" + peer.getPort());
+                attrs.put("peerHost", peer.getAddress().getHostAddress());
+                attrs.put("peerPort", Integer.toString(peer.getPort()));
+            }
+            if (transport != null) {
+                attrs.put("transport", transport);
+            }
         }
         if (ha.lookupOwner(callId).isEmpty()) {
             ha.onOpened(callId, "Active", attrs);

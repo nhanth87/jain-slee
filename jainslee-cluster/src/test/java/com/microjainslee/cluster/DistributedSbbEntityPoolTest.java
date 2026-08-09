@@ -289,6 +289,24 @@ class DistributedSbbEntityPoolTest {
     }
 
     @Test
+    @DisplayName("Gate A: remembered profile refs ride along on RA checkpoint(String)")
+    void rememberedProfileRefsSurviveRaCheckpoint() {
+        DistributedSbbEntityPool pool = new DistributedSbbEntityPool(
+                1, 8, false, manager, new SbbCheckpointConfig(false, 0L));
+        try {
+            pool.acquire("ra-entity", CounterSbb::new);
+            Set<String> refs = Set.of(SbbCheckpointConfig.profileRef("ussd", "sess-9"));
+            pool.rememberProfileRefs("ra-entity", refs);
+            assertThat(pool.checkpoint("ra-entity")).isTrue();
+            SbbEntitySnapshot snap = pool.getStateCache().get("ra-entity");
+            assertThat(snap.getProfileRefs()).containsExactlyInAnyOrderElementsOf(refs);
+            assertThat(snap.getCmpFieldValues()).isNotNull();
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    @Test
     @DisplayName("acquire on cold node rebuilds the entity from a pre-existing snapshot")
     void acquireReconstructsFromSnapshot() {
         DistributedSbbEntityPool pool = newPool(manager);

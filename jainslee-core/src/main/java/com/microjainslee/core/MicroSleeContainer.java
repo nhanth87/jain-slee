@@ -370,6 +370,8 @@ public final class MicroSleeContainer {
         if (previous != null && previous != clusterManager) {
             invokeStopOnClusterManager(previous);
         }
+        // Gate A — push cluster into already-registered RAs that expose the seam.
+        rebindHaSeamsOnRegisteredRas();
     }
 
     /**
@@ -536,11 +538,18 @@ public final class MicroSleeContainer {
             }
         }
         if (pool != null) {
+            // Gate A — pool needs the container for ACI names / profile-ref hydrate.
+            try {
+                pool.getClass().getMethod("bindContainer", Object.class).invoke(pool, this);
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                LOG.debug("DistributedSbbEntityPool.bindContainer failed: {}", e.toString());
+            }
             LOG.info("Bound distributed SBB entity pool: {}",
                     pool.getClass().getName());
         } else {
             LOG.info("Cleared distributed SBB entity pool binding");
         }
+        rebindHaSeamsOnRegisteredRas();
     }
 
     /** Optional reference to a bound DistributedSbbEntityPool, or {@code null}. */
@@ -558,8 +567,11 @@ public final class MicroSleeContainer {
     }
 
     /**
-     * HA checkpoint for a live SBB entity (no-op when no distributed pool).
-     * Reflective call to {@code DistributedSbbEntityPool.checkpoint(String)}.
+     * Gate A — HA checkpoint for a live SBB entity (no-op when no distributed
+     * pool). <b>RA-only</b> entry point ({@code RaCheckpointBridge}); SBBs must
+     * not call this. Snapshot payload is CMP + remembered profile refs only.
+     *
+     * <p>Reflective call to {@code DistributedSbbEntityPool.checkpoint(String)}.
      *
      * @return {@code true} when a snapshot was written / coalesced
      */
@@ -575,6 +587,68 @@ public final class MicroSleeContainer {
         } catch (ReflectiveOperationException ex) {
             LOG.debug("checkpointSbbEntity('{}') failed: {}", sbbId, ex.toString());
             return false;
+        }
+    }
+
+    /**
+     * Gate A — remember profile {@code table/name} refs for an SBB entity so
+     * subsequent RA-driven {@link #checkpointSbbEntity(String)} snapshots
+     * carry them for peer hydrate. Not an SBB HA API.
+     */
+    public void rememberSbbProfileRefs(String sbbId, java.util.Set<String> profileRefs) {
+        Object pool = distributedSbbEntityPool;
+        if (pool == null || sbbId == null) {
+            return;
+        }
+        try {
+            pool.getClass()
+                    .getMethod("rememberProfileRefs", String.class, java.util.Set.class)
+                    .invoke(pool, sbbId, profileRefs);
+        } catch (ReflectiveOperationException ex) {
+            LOG.debug("rememberSbbProfileRefs('{}') failed: {}", sbbId, ex.toString());
+        }
+    }
+
+    /**
+     * Gate A — bind {@code setMicroSleeContainer(this)} and optional
+     * {@code setClusterManager(...)} on RAs that expose those seams.
+     */
+    private void bindRaHaSeams(Object ra) {
+        if (ra == null) {
+            return;
+        }
+        try {
+            ra.getClass().getMethod("setMicroSleeContainer", Object.class).invoke(ra, this);
+        } catch (NoSuchMethodException ignored) {
+            // RA does not participate in Gate A checkpoint
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            LOG.debug("setMicroSleeContainer on {} failed: {}",
+                    ra.getClass().getName(), e.toString());
+        }
+        Object cm = this.clusterManager;
+        if (cm == null) {
+            return;
+        }
+        try {
+            Class<?> cmClass = Class.forName("com.microjainslee.cluster.ClusterManager");
+            if (!cmClass.isInstance(cm)) {
+                return;
+            }
+            ra.getClass().getMethod("setClusterManager", cmClass).invoke(ra, cm);
+        } catch (ClassNotFoundException | NoSuchMethodException ignored) {
+            // cluster module absent or RA has no cluster seam
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            LOG.debug("setClusterManager on {} failed: {}",
+                    ra.getClass().getName(), e.toString());
+        }
+    }
+
+    private void rebindHaSeamsOnRegisteredRas() {
+        for (RaBootstrapContextImpl context : resourceAdaptors.values()) {
+            bindRaHaSeams(context.getResourceAdaptor());
+        }
+        for (RaEntity entry : raEntities.values()) {
+            bindRaHaSeams(entry.ra());
         }
     }
 
@@ -1073,6 +1147,8 @@ public final class MicroSleeContainer {
         RaBootstrapContextImpl context = new RaBootstrapContextImpl(this, entityName);
         context.setResourceAdaptor(ra);
         ra.setResourceAdaptorContext(context);
+        // Gate A — bind container/cluster before configure/active so RA HA seams work.
+        bindRaHaSeams(ra);
         ra.raConfigure();
         ra.raActive();
         resourceAdaptors.put(entityName, context);
@@ -1299,8 +1375,9 @@ public final class MicroSleeContainer {
                         this, ra, raEntityName);
         com.microjainslee.ra.ResourceAdaptorContextImpl ctx = built.context();
 
-        // 4 — bind RA into context, then run raConfigure().
+        // 4 — bind RA into context, Gate A HA seams, then run raConfigure().
         ra.setResourceAdaptorContext(ctx);
+        bindRaHaSeams(ra);
         try {
             ra.raConfigure();
         } catch (RuntimeException re) {

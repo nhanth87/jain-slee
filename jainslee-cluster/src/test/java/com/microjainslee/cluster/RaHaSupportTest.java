@@ -75,6 +75,23 @@ class RaHaSupportTest {
     }
 
     @Test
+    void gateABridgeInvokesContainerCheckpointSbbEntity() {
+        AtomicInteger calls = new AtomicInteger();
+        RaCheckpointBridge bridge = new RaCheckpointBridge();
+        bridge.bindContainer(new Object() {
+            @SuppressWarnings("unused")
+            public boolean checkpointSbbEntity(String sbbId) {
+                calls.incrementAndGet();
+                return "bound-sbb".equals(sbbId);
+            }
+        });
+        assertThat(bridge.checkpoint("bound-sbb")).isTrue();
+        assertThat(bridge.checkpoint("missing")).isFalse();
+        assertThat(calls.get()).isEqualTo(2);
+        assertThat(bridge.metrics().raCheckpointOkCount()).isEqualTo(1);
+    }
+
+    @Test
     void syncPathDefaultRejectsRemoteOwnerWithoutForward() {
         String old = System.getProperty(RaHaSupport.PROP_STICKY_FORWARD);
         System.clearProperty(RaHaSupport.PROP_STICKY_FORWARD);

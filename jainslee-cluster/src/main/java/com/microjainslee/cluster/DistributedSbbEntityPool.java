@@ -43,10 +43,17 @@ import java.util.function.Supplier;
  * ISPN is touched only via {@link #checkpoint(String)} (debounce + generation)
  * or legacy {@code jainslee.sbb.checkpoint.on-release=true}.
  *
+ * <p><b>Gate A:</b> only RAs (via {@link RaCheckpointBridge} /
+ * {@code MicroSleeContainer.checkpointSbbEntity}) may call {@link #checkpoint}.
+ * Application SBBs must never invoke this API — they only hold
+ * {@code @CmpField} heap state and ProfileFacility refs that ride along
+ * in the snapshot.
+ *
  * <ol>
- *   <li><b>Checkpoint.</b> Explicit {@link #checkpoint} (or RA/dialog boundary)
+ *   <li><b>Checkpoint.</b> RA-driven {@link #checkpoint} at create / continue
  *       builds a {@link SbbEntitySnapshot} (heap {@code @CmpField} + profile
- *       refs) and puts it into {@code "sbb-entity-state"} ({@link CacheMode#REPL_ASYNC}).</li>
+ *       refs only — no protocol dialog objects) and puts it into
+ *       {@code "sbb-entity-state"} ({@link CacheMode#REPL_ASYNC}).</li>
  *   <li><b>Release.</b> Local pool release; if the entity was ever checkpointed,
  *       asynchronously remove the ISPN entry (tombstone). No put on release
  *       unless legacy on-release is enabled.</li>
@@ -94,6 +101,11 @@ public final class DistributedSbbEntityPool {
     private final ConcurrentMap<String, Boolean> checkpointedIds = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, AtomicLong> generations = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Long> lastCheckpointNanos = new ConcurrentHashMap<>();
+    /**
+     * Profile {@code table/name} refs remembered by the container/ProfileFacility
+     * (Gate A — not supplied by SBB HA calls). Merged into RA-driven checkpoints.
+     */
+    private final ConcurrentMap<String, Set<String>> rememberedProfileRefs = new ConcurrentHashMap<>();
 
     /**
      * Build a distributed SBB entity pool.
@@ -210,9 +222,9 @@ public final class DistributedSbbEntityPool {
     }
 
     /**
-     * Explicit HA checkpoint (debounce + generation). Safe to call from
-     * app code or TCAP Begin/Continue boundary. No-op when entity is not
-     * local.
+     * Explicit HA checkpoint (debounce + generation). <b>Gate A — RA only</b>
+     * (via {@link RaCheckpointBridge} / container). Not an SBB/app API.
+     * No-op when entity is not local.
      *
      * @return {@code true} when a snapshot was written (or debounce skipped
      *         a redundant write after a prior successful checkpoint)
@@ -222,8 +234,11 @@ public final class DistributedSbbEntityPool {
     }
 
     /**
-     * @param profileRefs optional {@code table/name} refs (ProfileFacility
-     *                    loads data on peer hydrate)
+     * @param profileRefs optional {@code table/name} refs collected by the
+     *                    container/ProfileFacility (not by SBB HA calls).
+     *                    When {@code null}, remembered refs / prior snapshot
+     *                    refs are reused so CMP-only RA checkpoints still
+     *                    carry profile keys for peer hydrate.
      */
     public boolean checkpoint(String sbbId, Set<String> profileRefs) {
         if (sbbId == null) {
@@ -233,6 +248,9 @@ public final class DistributedSbbEntityPool {
         if (entity == null) {
             return false;
         }
+        if (profileRefs != null && !profileRefs.isEmpty()) {
+            rememberProfileRefs(sbbId, profileRefs);
+        }
         long now = System.nanoTime();
         long debounceNs = checkpointConfig.debounceMs() * 1_000_000L;
         if (debounceNs > 0L) {
@@ -241,11 +259,53 @@ public final class DistributedSbbEntityPool {
                 return true; // coalesced
             }
         }
-        boolean ok = persistSnapshot(entity, profileRefs);
+        Set<String> effective = resolveProfileRefs(sbbId, profileRefs);
+        boolean ok = persistSnapshot(entity, effective);
         if (ok) {
             lastCheckpointNanos.put(sbbId, now);
         }
         return ok;
+    }
+
+    /**
+     * Remember profile refs for later RA-driven {@link #checkpoint(String)}
+     * calls. Called by the container/ProfileFacility — never by app SBBs for HA.
+     */
+    public void rememberProfileRefs(String sbbId, Set<String> refs) {
+        if (sbbId == null) {
+            return;
+        }
+        if (refs == null || refs.isEmpty()) {
+            rememberedProfileRefs.remove(sbbId);
+            return;
+        }
+        rememberedProfileRefs.put(sbbId, SbbCheckpointConfig.copyProfileRefs(refs));
+    }
+
+    public Set<String> rememberedProfileRefs(String sbbId) {
+        if (sbbId == null) {
+            return Collections.emptySet();
+        }
+        return rememberedProfileRefs.getOrDefault(sbbId, Collections.emptySet());
+    }
+
+    private Set<String> resolveProfileRefs(String sbbId, Set<String> profileRefs) {
+        if (profileRefs != null && !profileRefs.isEmpty()) {
+            return SbbCheckpointConfig.copyProfileRefs(profileRefs);
+        }
+        Set<String> remembered = rememberedProfileRefs.get(sbbId);
+        if (remembered != null && !remembered.isEmpty()) {
+            return remembered;
+        }
+        try {
+            SbbEntitySnapshot existing = stateCache.get(sbbId);
+            if (existing != null && !existing.getProfileRefs().isEmpty()) {
+                return existing.getProfileRefs();
+            }
+        } catch (RuntimeException ignored) {
+            // cache may be unavailable in shutdown races
+        }
+        return Collections.emptySet();
     }
 
     public boolean wasCheckpointed(String sbbId) {
@@ -436,6 +496,7 @@ public final class DistributedSbbEntityPool {
         checkpointedIds.remove(sbbId);
         generations.remove(sbbId);
         lastCheckpointNanos.remove(sbbId);
+        rememberedProfileRefs.remove(sbbId);
     }
 
     private long nextGeneration(String sbbId) {

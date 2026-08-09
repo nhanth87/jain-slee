@@ -417,23 +417,25 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
 
     private void trackInbound(String dialogId, SleeEvent event, boolean sessionCreated) {
         Ss7DialogOwnershipTracker tracker = ownershipTracker;
-        if (tracker == null) {
-            return;
-        }
         if (event instanceof Ss7Event.TcapBegin || sessionCreated) {
-            tracker.onDialogOpened(dialogId, parseOtid(dialogId), null, 0, 0, stateOf(event), null);
+            if (tracker != null) {
+                tracker.onDialogOpened(dialogId, parseOtid(dialogId), null, 0, 0, stateOf(event), null);
+            }
             exportSnapshotBestEffort(dialogId);
+            // Gate A — RA-only SBB checkpoint (independent of sticky ownership).
             checkpointBridge.checkpoint(dialogId);
         } else if (event instanceof Ss7Event.TcapContinue cont) {
-            tracker.onDialogTouched(dialogId, "Active", null, 0, 0);
-            // Snapshot only when components / state change (grilling Q13=C).
+            if (tracker != null) {
+                tracker.onDialogTouched(dialogId, "Active", null, 0, 0);
+            }
+            // Snapshot / checkpoint only on Continue-with-components (grilling Q13=C).
             if (cont.components() != null && !cont.components().isEmpty()) {
                 exportSnapshotBestEffort(dialogId);
                 checkpointBridge.checkpoint(dialogId);
             }
         } else if (event instanceof Ss7Event.TcapEnd || event instanceof Ss7Event.TcapAbort) {
             // closed in forceEndSession
-        } else {
+        } else if (tracker != null) {
             tracker.onDialogTouched(dialogId, "Active", null, 0, 0);
         }
     }
@@ -557,20 +559,25 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
 
     private void afterLocalOutbound(Ss7Command cmd) {
         Ss7DialogOwnershipTracker tracker = ownershipTracker;
-        if (tracker == null) {
-            return;
-        }
         if (StickyRaCommandRouter.isDialogCreating(cmd)) {
-            tracker.onDialogOpened(cmd.dialogId(), parseOtid(cmd.dialogId()), null,
-                    cmd.targetAddress() != null ? cmd.targetAddress().pointCode() : 0,
-                    cmd.targetAddress() != null ? cmd.targetAddress().subSystemNumber() : 0,
-                    "Active", cmd.dialogId());
+            if (tracker != null) {
+                tracker.onDialogOpened(cmd.dialogId(), parseOtid(cmd.dialogId()), null,
+                        cmd.targetAddress() != null ? cmd.targetAddress().pointCode() : 0,
+                        cmd.targetAddress() != null ? cmd.targetAddress().subSystemNumber() : 0,
+                        "Active", cmd.dialogId());
+            }
             exportSnapshotBestEffort(cmd.dialogId());
+            // Gate A — RA-only checkpoint on dialog create.
             checkpointBridge.checkpoint(cmd.dialogId());
-        } else if (cmd instanceof Ss7Command.TcapContinue) {
-            tracker.onDialogTouched(cmd.dialogId(), "Active", null, 0, 0);
-            exportSnapshotBestEffort(cmd.dialogId());
-            checkpointBridge.checkpoint(cmd.dialogId());
+        } else if (cmd instanceof Ss7Command.TcapContinue cont) {
+            if (tracker != null) {
+                tracker.onDialogTouched(cmd.dialogId(), "Active", null, 0, 0);
+            }
+            // Gate A parity with inbound: Continue-with-components only.
+            if (cont.components() != null && !cont.components().isEmpty()) {
+                exportSnapshotBestEffort(cmd.dialogId());
+                checkpointBridge.checkpoint(cmd.dialogId());
+            }
         }
     }
 

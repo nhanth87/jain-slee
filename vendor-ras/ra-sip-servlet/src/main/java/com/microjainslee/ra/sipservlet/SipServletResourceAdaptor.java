@@ -15,6 +15,7 @@ import com.microjainslee.ra.sipservlet.collab.*;
 import com.microjainslee.ra.sipservlet.command.SelectIceCandidate;
 import com.microjainslee.ra.sipservlet.command.SendInvite;
 import com.microjainslee.ra.sipservlet.command.SendMediaKeepAlive;
+import com.microjainslee.ra.sipservlet.command.SendRegister;
 import com.microjainslee.ra.sipservlet.command.SendResponse;
 import com.microjainslee.ra.sipservlet.command.SipOutboundCommand;
 import com.microjainslee.ra.sipservlet.command.StartIce;
@@ -301,7 +302,7 @@ public final class SipServletResourceAdaptor {
             sendOutboundLocal(cmd);
             return;
         }
-        boolean creating = cmd instanceof SendInvite;
+        boolean creating = cmd instanceof SendInvite || cmd instanceof SendRegister;
         // Transport up = honest route for SIP edge (listen ≠ peer registered).
         boolean routeReady = active.get() && !transports.isEmpty();
         RaStickyRouter.Decision d = ha.decide(cmd.callId(), creating, routeReady);
@@ -344,7 +345,7 @@ public final class SipServletResourceAdaptor {
                 }
             }
         }
-        if (cmd instanceof SendInvite) {
+        if (cmd instanceof SendInvite || cmd instanceof SendRegister) {
             publishHaOpened(cmd.callId(), null, null);
         }
     }

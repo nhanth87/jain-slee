@@ -41,6 +41,10 @@ public final class ImsSipHeaderNames {
     public static final String SUPPORTED = "Supported";
     public static final String PROXY_REQUIRE = "Proxy-Require";
 
+    /** Elisa lab correlates (ISC → FreeSWITCH dialplan / CDR). */
+    public static final String X_ELISA_SIP_CALL_ID = "X-Elisa-Sip-Call-Id";
+    public static final String X_ELISA_ICID = "X-Elisa-Icid";
+
     /**
      * Ordered whitelist extracted from inbound INVITE and eligible for
      * outbound {@code SendInvite} extension headers.
@@ -61,8 +65,26 @@ public final class ImsSipHeaderNames {
             SECURITY_SERVER,
             SECURITY_VERIFY,
             REQUIRE,
-            SUPPORTED
+            SUPPORTED,
+            X_ELISA_SIP_CALL_ID,
+            X_ELISA_ICID
             // Proxy-Require intentionally omitted — proxy must 420 if unsatisfied (RFC 3261 §16.3)
+    );
+
+    /**
+     * Whitelist for outbound {@code SendRegister} (Mw hop Path / AKA / sec-agree).
+     */
+    public static final List<String> REGISTER_PRESERVE = List.of(
+            "Path",
+            "Authorization",
+            "Proxy-Authorization",
+            P_ACCESS_NETWORK_INFO,
+            P_VISITED_NETWORK_ID,
+            P_CHARGING_VECTOR,
+            SECURITY_CLIENT,
+            SECURITY_VERIFY,
+            REQUIRE,
+            SUPPORTED
     );
 
     private ImsSipHeaderNames() {

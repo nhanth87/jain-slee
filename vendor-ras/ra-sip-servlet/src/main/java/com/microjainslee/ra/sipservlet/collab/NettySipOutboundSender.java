@@ -12,6 +12,7 @@ import com.microjainslee.ra.sipservlet.command.SendBye;
 import com.microjainslee.ra.sipservlet.command.SendCancel;
 import com.microjainslee.ra.sipservlet.command.SendInvite;
 import com.microjainslee.ra.sipservlet.command.SendMessage;
+import com.microjainslee.ra.sipservlet.command.SendRegister;
 import com.microjainslee.ra.sipservlet.command.SendResponse;
 import com.microjainslee.ra.sipservlet.command.SendSdpUpdate;
 import com.microjainslee.ra.sipservlet.command.SipOutboundCommand;
@@ -35,6 +36,7 @@ import javax.sip.header.CSeqHeader;
 import javax.sip.header.CallIdHeader;
 import javax.sip.header.ContactHeader;
 import javax.sip.header.ContentTypeHeader;
+import javax.sip.header.ExpiresHeader;
 import javax.sip.header.FromHeader;
 import javax.sip.header.MaxForwardsHeader;
 import javax.sip.header.ToHeader;
@@ -105,6 +107,7 @@ public final class NettySipOutboundSender implements SipOutboundSender {
                 case SendAck c       -> sendAck(c.callId());
                 case SendCancel c    -> sendCancel(c.callId());
                 case SendInvite c    -> sendInvite(c);
+                case SendRegister c  -> sendRegister(c);
                 case SendMessage c   -> sendMessage(c);
                 default -> LOG.warn("[sip-out] unsupported command {} — ignored",
                         cmd.getClass().getSimpleName());
@@ -388,6 +391,50 @@ public final class NettySipOutboundSender implements SipOutboundSender {
         dialogs.recordRemotePeer(cmd.callId(), peer, transport);
     }
 
+    // ── out-of-dialog REGISTER (Mw) ────────────────────────────────
+
+    private void sendRegister(SendRegister cmd) throws Exception {
+        URI requestUri = addressFactory.createURI(cmd.requestUri());
+        if (!(requestUri instanceof SipURI target)) {
+            LOG.warn("[sip-out] SendRegister requestUri is not a SIP URI: {}", cmd.requestUri());
+            return;
+        }
+        String transport = target.getTransportParam() != null
+                ? target.getTransportParam().toUpperCase(Locale.ROOT) : "UDP";
+
+        String fromSip = normalizeSipUri(cmd.fromUri());
+        String toSip = normalizeSipUri(cmd.toUri());
+        Address toAddress = addressFactory.createAddress(addressFactory.createURI(toSip));
+        Address fromAddress = addressFactory.createAddress(addressFactory.createURI(fromSip));
+
+        CallIdHeader callIdHeader = headerFactory.createCallIdHeader(cmd.callId());
+        CSeqHeader cseq = headerFactory.createCSeqHeader(1L, Request.REGISTER);
+        FromHeader from = headerFactory.createFromHeader(fromAddress, newTag());
+        ToHeader to = headerFactory.createToHeader(toAddress, null);
+        MaxForwardsHeader maxForwards = headerFactory.createMaxForwardsHeader(70);
+        List<ViaHeader> vias = new ArrayList<>(1);
+        vias.add(localVia(transport));
+
+        SIPRequest register = (SIPRequest) messageFactory.createRequest(
+                requestUri, Request.REGISTER, callIdHeader, cseq, from, to, vias, maxForwards);
+
+        if (cmd.contactUri() != null && !cmd.contactUri().isBlank()) {
+            String contactSip = normalizeSipUri(cmd.contactUri());
+            ContactHeader contact = headerFactory.createContactHeader(
+                    addressFactory.createAddress(addressFactory.createURI(contactSip)));
+            register.setHeader(contact);
+        }
+        ExpiresHeader expires = headerFactory.createExpiresHeader(cmd.expires());
+        register.setHeader(expires);
+        applyWhitelistedExtensionHeaders(register, cmd.extensionHeaders());
+
+        int port = target.getPort() > 0 ? target.getPort() : 5060;
+        InetSocketAddress peer =
+                new InetSocketAddress(InetAddress.getByName(target.getHost()), port);
+        transmit(register, transport, peer);
+        dialogs.recordRemotePeer(cmd.callId(), peer, transport);
+    }
+
     /**
      * Strip {@code From:}/{@code <…>} / {@code ;tag=} so {@code createURI} accepts the value.
      */
@@ -423,15 +470,16 @@ public final class NettySipOutboundSender implements SipOutboundSender {
     }
 
     /**
-     * Copy only {@link ImsSipHeaderNames#INVITE_PRESERVE} onto the outbound INVITE.
+     * Copy only IMS whitelist headers onto outbound INVITE/REGISTER.
      * Arbitrary headers are dropped (anti-spoof).
      */
-    private void applyWhitelistedExtensionHeaders(SIPRequest invite,
+    private void applyWhitelistedExtensionHeaders(SIPRequest request,
                                                   Map<String, List<String>> headers) {
         if (headers == null || headers.isEmpty()) {
             return;
         }
         Set<String> allow = new HashSet<>(ImsSipHeaderNames.INVITE_PRESERVE);
+        allow.addAll(ImsSipHeaderNames.REGISTER_PRESERVE);
         for (var entry : headers.entrySet()) {
             String name = entry.getKey();
             if (name == null || !allow.contains(name) || entry.getValue() == null) {
@@ -442,7 +490,7 @@ public final class NettySipOutboundSender implements SipOutboundSender {
                     continue;
                 }
                 try {
-                    invite.addHeader(headerFactory.createHeader(name, value.trim()));
+                    request.addHeader(headerFactory.createHeader(name, value.trim()));
                 } catch (Exception e) {
                     LOG.debug("[sip-out] skip extension header {}: {}", name, e.getMessage());
                 }

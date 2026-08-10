@@ -22,7 +22,7 @@ import java.io.Serializable;
  * owning node — no NIST stack types in the envelope.</p>
  */
 public sealed interface SipOutboundCommand extends OutboundCommand, Serializable
-        permits SendInvite, SendBye, SendResponse, SendAck, SendCancel,
+        permits SendInvite, SendRegister, SendBye, SendResponse, SendAck, SendCancel,
                 StartIce, SelectIceCandidate, SendSdpUpdate, SendMediaKeepAlive,
                 SendMessage {
 

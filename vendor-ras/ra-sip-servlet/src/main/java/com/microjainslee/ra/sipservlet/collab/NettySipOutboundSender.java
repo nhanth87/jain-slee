@@ -103,7 +103,7 @@ public final class NettySipOutboundSender implements SipOutboundSender {
             switch (cmd) {
                 case SendResponse c  -> sendResponse(c.callId(), c.statusCode(), c.reason(), null, c.headers());
                 case SendSdpUpdate c -> sendResponse(c.callId(), 200, "OK", c.sdp());
-                case SendBye c       -> sendInDialogRequest(c.callId(), Request.BYE);
+                case SendBye c       -> sendInDialogRequest(c.callId(), Request.BYE, c.nextHopUri());
                 case SendAck c       -> sendAck(c.callId());
                 case SendCancel c    -> sendCancel(c.callId());
                 case SendInvite c    -> sendInvite(c);
@@ -161,6 +161,10 @@ public final class NettySipOutboundSender implements SipOutboundSender {
     // ── in-dialog requests ─────────────────────────────────────────
 
     private void sendInDialogRequest(String callId, String method) throws Exception {
+        sendInDialogRequest(callId, method, null);
+    }
+
+    private void sendInDialogRequest(String callId, String method, String nextHopUri) throws Exception {
         DialogRegistry.Dialog dialog = dialogs.find(callId);
         if (dialog == null) {
             LOG.warn("[sip-out] no dialog state for callId={} — cannot send {}", callId, method);
@@ -182,6 +186,16 @@ public final class NettySipOutboundSender implements SipOutboundSender {
         } else {
             LOG.warn("[sip-out] no request/response state for callId={} — cannot send {}", callId, method);
             return;
+        }
+        if (nextHopUri != null && !nextHopUri.isBlank()) {
+            URI hop = addressFactory.createURI(nextHopUri.trim());
+            if (hop instanceof SipURI sipHop) {
+                int port = sipHop.getPort() > 0 ? sipHop.getPort() : 5060;
+                target = new InetSocketAddress(InetAddress.getByName(sipHop.getHost()), port);
+                if (sipHop.getTransportParam() != null) {
+                    transport = sipHop.getTransportParam().toUpperCase(Locale.ROOT);
+                }
+            }
         }
         transmit(request, transport, target);
     }
@@ -351,8 +365,14 @@ public final class NettySipOutboundSender implements SipOutboundSender {
 
     private void sendInvite(SendInvite cmd) throws Exception {
         URI requestUri = addressFactory.createURI(cmd.toUri());
-        if (!(requestUri instanceof SipURI target)) {
+        if (!(requestUri instanceof SipURI)) {
             LOG.warn("[sip-out] SendInvite target is not a SIP URI: {}", cmd.toUri());
+            return;
+        }
+        String hop = cmd.nextHopUri() != null ? cmd.nextHopUri() : cmd.toUri();
+        URI hopUri = addressFactory.createURI(hop);
+        if (!(hopUri instanceof SipURI target)) {
+            LOG.warn("[sip-out] SendInvite next hop is not a SIP URI: {}", hop);
             return;
         }
         String transport = target.getTransportParam() != null

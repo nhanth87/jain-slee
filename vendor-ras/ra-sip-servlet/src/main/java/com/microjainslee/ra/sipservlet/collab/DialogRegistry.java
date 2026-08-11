@@ -7,10 +7,18 @@
 package com.microjainslee.ra.sipservlet.collab;
 
 import com.microjainslee.api.ActivityHandle;
+import gov.nist.javax.sip.message.SIPMessage;
 import gov.nist.javax.sip.message.SIPRequest;
 import gov.nist.javax.sip.message.SIPResponse;
+import gov.nist.javax.sip.parser.StringMsgParser;
+
+import javax.sip.header.ContactHeader;
+import javax.sip.header.FromHeader;
+import javax.sip.header.ToHeader;
+import javax.sip.message.Request;
 
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -87,14 +95,30 @@ public final class DialogRegistry {
                 cseq.updateAndGet(cur -> Math.max(cur, value));
             }
         }
+
+        void seedLastRequest(SIPRequest request) {
+            if (request != null) {
+                this.lastRequest = request;
+                touchActivity();
+            }
+        }
+
+        void seedLastResponse(SIPResponse response) {
+            if (response != null) {
+                this.lastResponse = response;
+                touchActivity();
+            }
+        }
     }
 
     /**
-     * Portable DialogRegistry meta for ISPN / sticky session-meta (ADR 0002).
-     * Peers + cseq only — no SIPRequest/SIPResponse stack objects.
-     * Mid-dialog SendResponse still needs {@code lastRequest} from wire rebuild;
-     * peer priming lets the failover node accept sticky inbound and resume after
-     * the first recovered request/response.
+     * Portable DialogRegistry meta for ISPN / sticky session-meta (ADR 0002)
+     * and Elisa {@code DialogCheckpoint} dual-write.
+     *
+     * <p>Peers + cseq + dialog URI/tag essentials (not full NIST stack objects).
+     * {@link DialogRegistry#restorePortable} rebuilds synthetic {@code lastRequest}
+     * / far-leg {@code lastResponse} when URI+tag fields are present so lab
+     * SendResponse/SendBye can resume after S-CSCF failover (not Clearwater Chronos).
      */
     public record PortableDialogMeta(
             String callId,
@@ -104,9 +128,43 @@ public final class DialogRegistry {
             String remotePeerHost,
             int remotePeerPort,
             String remoteTransport,
-            long cseq
+            long cseq,
+            String fromUri,
+            String fromTag,
+            String toUri,
+            String toTag,
+            String contactUri,
+            String remoteContactUri,
+            String method,
+            String farFromUri,
+            String farFromTag
     ) implements java.io.Serializable {
-        private static final long serialVersionUID = 1L;
+        private static final long serialVersionUID = 3L;
+
+        /** Compat ctor — peers + cseq only (pre-wire-essentials). */
+        public PortableDialogMeta(
+                String callId,
+                String peerHost,
+                int peerPort,
+                String transport,
+                String remotePeerHost,
+                int remotePeerPort,
+                String remoteTransport,
+                long cseq) {
+            this(callId, peerHost, peerPort, transport, remotePeerHost, remotePeerPort,
+                    remoteTransport, cseq, null, null, null, null, null, null, null, null, null);
+        }
+
+        public boolean hasWireEssentials() {
+            return fromUri != null && !fromUri.isBlank() && fromTag != null && !fromTag.isBlank();
+        }
+
+        public boolean hasFarWireEssentials() {
+            String fTag = farFromTag != null ? farFromTag : fromTag;
+            return remoteContactUri != null && !remoteContactUri.isBlank()
+                    && toTag != null && !toTag.isBlank()
+                    && fTag != null && !fTag.isBlank();
+        }
 
         public Map<String, String> toAttrs() {
             Map<String, String> attrs = new java.util.LinkedHashMap<>();
@@ -129,7 +187,22 @@ public final class DialogRegistry {
             if (cseq > 0) {
                 attrs.put("cseq", Long.toString(cseq));
             }
+            putIfPresent(attrs, "fromUri", fromUri);
+            putIfPresent(attrs, "fromTag", fromTag);
+            putIfPresent(attrs, "toUri", toUri);
+            putIfPresent(attrs, "toTag", toTag);
+            putIfPresent(attrs, "contactUri", contactUri);
+            putIfPresent(attrs, "remoteContactUri", remoteContactUri);
+            putIfPresent(attrs, "method", method);
+            putIfPresent(attrs, "farFromUri", farFromUri);
+            putIfPresent(attrs, "farFromTag", farFromTag);
             return attrs;
+        }
+
+        private static void putIfPresent(Map<String, String> attrs, String key, String value) {
+            if (value != null && !value.isBlank()) {
+                attrs.put(key, value);
+            }
         }
 
         public static PortableDialogMeta fromAttrs(String callId, Map<String, String> attrs) {
@@ -159,7 +232,9 @@ public final class DialogRegistry {
             } catch (NumberFormatException ignored) {
                 cseq = 0L;
             }
-            if (peerHost == null && remoteHost == null) {
+            String fromUri = attrs.get("fromUri");
+            String fromTag = attrs.get("fromTag");
+            if (peerHost == null && remoteHost == null && (fromUri == null || fromUri.isBlank())) {
                 return null;
             }
             return new PortableDialogMeta(
@@ -170,7 +245,16 @@ public final class DialogRegistry {
                     remoteHost,
                     remotePort,
                     attrs.getOrDefault("remoteTransport", attrs.get("transport")),
-                    cseq);
+                    cseq,
+                    fromUri,
+                    fromTag,
+                    attrs.get("toUri"),
+                    attrs.get("toTag"),
+                    attrs.get("contactUri"),
+                    attrs.get("remoteContactUri"),
+                    attrs.get("method"),
+                    attrs.get("farFromUri"),
+                    attrs.get("farFromTag"));
         }
 
         private static int parsePort(String s, int def) {
@@ -246,6 +330,51 @@ public final class DialogRegistry {
         }
         InetSocketAddress peer = d.peer();
         InetSocketAddress remote = d.remotePeer();
+        String fromUri = null;
+        String fromTag = null;
+        String toUri = null;
+        String toTag = null;
+        String contactUri = null;
+        String method = null;
+        SIPRequest lastReq = d.lastRequest();
+        if (lastReq != null) {
+            method = lastReq.getMethod();
+            FromHeader from = (FromHeader) lastReq.getHeader(FromHeader.NAME);
+            ToHeader to = (ToHeader) lastReq.getHeader(ToHeader.NAME);
+            ContactHeader contact = (ContactHeader) lastReq.getHeader(ContactHeader.NAME);
+            if (from != null && from.getAddress() != null) {
+                fromUri = from.getAddress().getURI().toString();
+                fromTag = from.getTag();
+            }
+            if (to != null && to.getAddress() != null) {
+                toUri = to.getAddress().getURI().toString();
+                toTag = to.getTag();
+            }
+            if (contact != null && contact.getAddress() != null) {
+                contactUri = contact.getAddress().getURI().toString();
+            }
+        }
+        String remoteContactUri = null;
+        String farFromUri = null;
+        String farFromTag = null;
+        String farToTag = null;
+        SIPResponse lastResp = d.lastResponse();
+        if (lastResp != null) {
+            ContactHeader rc = (ContactHeader) lastResp.getHeader(ContactHeader.NAME);
+            if (rc != null && rc.getAddress() != null) {
+                remoteContactUri = rc.getAddress().getURI().toString();
+            }
+            FromHeader respFrom = (FromHeader) lastResp.getHeader(FromHeader.NAME);
+            if (respFrom != null && respFrom.getAddress() != null) {
+                farFromUri = respFrom.getAddress().getURI().toString();
+                farFromTag = respFrom.getTag();
+            }
+            ToHeader respTo = (ToHeader) lastResp.getHeader(ToHeader.NAME);
+            if (respTo != null && respTo.getTag() != null) {
+                farToTag = respTo.getTag();
+            }
+        }
+        String exportToTag = farToTag != null ? farToTag : toTag;
         return new PortableDialogMeta(
                 callId,
                 hostOf(peer),
@@ -254,7 +383,16 @@ public final class DialogRegistry {
                 hostOf(remote),
                 remote != null ? remote.getPort() : 0,
                 d.remoteTransport(),
-                d.cseq());
+                d.cseq(),
+                fromUri,
+                fromTag,
+                toUri,
+                exportToTag,
+                contactUri,
+                remoteContactUri,
+                method != null ? method : Request.INVITE,
+                farFromUri,
+                farFromTag);
     }
 
     private static String hostOf(InetSocketAddress addr) {
@@ -269,9 +407,9 @@ public final class DialogRegistry {
     }
 
     /**
-     * Restore peers + cseq from portable meta without SIP message objects.
-     * Does not invent lastRequest/lastResponse — SendResponse still needs wire
-     * rebuild (R4 honesty). Returns the dialog entry (created or updated).
+     * Restore peers + cseq from portable meta; when URI/tag essentials are present,
+     * rebuild synthetic lastRequest (and far lastResponse) for lab SendResponse/SendBye.
+     * Live wire objects are never overwritten if already present.
      */
     public Dialog restorePortable(PortableDialogMeta meta, ActivityHandle handle) {
         if (meta == null || meta.callId() == null || meta.callId().isBlank()) {
@@ -288,7 +426,101 @@ public final class DialogRegistry {
                     meta.remoteTransport() != null ? meta.remoteTransport() : meta.transport());
         }
         dialog.seedCseq(meta.cseq());
+        seedWireFromPortable(dialog, meta);
         return dialog;
+    }
+
+    /**
+     * Lab-grade synthetic wire rebuild for mid-dialog Send* after failover.
+     * Not a full NIST dialog SM — enough for SendResponse from INVITE and
+     * SendBye toward UA / far trunk when tags+contacts were checkpointed.
+     */
+    void seedWireFromPortable(Dialog dialog, PortableDialogMeta meta) {
+        if (dialog == null || meta == null) {
+            return;
+        }
+        try {
+            if (dialog.lastRequest() == null && meta.hasWireEssentials()) {
+                SIPRequest req = buildSyntheticRequest(meta);
+                if (req != null) {
+                    dialog.seedLastRequest(req);
+                }
+            }
+            if (dialog.lastResponse() == null && meta.hasFarWireEssentials()) {
+                SIPResponse resp = buildSyntheticFarResponse(meta);
+                if (resp != null) {
+                    dialog.seedLastResponse(resp);
+                }
+            }
+        } catch (Exception ignored) {
+            // Best-effort; inbound wire after failover remains the honest fallback.
+        }
+    }
+
+    private static SIPRequest buildSyntheticRequest(PortableDialogMeta meta) throws Exception {
+        String method = meta.method() != null && !meta.method().isBlank() ? meta.method() : Request.INVITE;
+        long cseq = meta.cseq() > 0 ? meta.cseq() : 1L;
+        String contact = bareUri(meta.contactUri() != null ? meta.contactUri() : meta.fromUri());
+        String fromUri = bareUri(meta.fromUri());
+        String toUri = bareUri(meta.toUri() != null ? meta.toUri() : "sip:unknown@invalid");
+        String transport = meta.transport() != null ? meta.transport() : "UDP";
+        String peerHost = meta.peerHost() != null ? meta.peerHost() : "127.0.0.1";
+        int peerPort = meta.peerPort() > 0 ? meta.peerPort() : 5060;
+        String fromTag = meta.fromTag() != null ? ";tag=" + meta.fromTag() : "";
+        String toTag = meta.toTag() != null ? ";tag=" + meta.toTag() : "";
+        String raw = method + " " + contact + " SIP/2.0\r\n"
+                + "Via: SIP/2.0/" + transport + " " + peerHost + ":" + peerPort
+                + ";branch=z9hG4bK-ha-restore\r\n"
+                + "From: <" + fromUri + ">" + fromTag + "\r\n"
+                + "To: <" + toUri + ">" + toTag + "\r\n"
+                + "Call-ID: " + meta.callId() + "\r\n"
+                + "CSeq: " + cseq + " " + method + "\r\n"
+                + "Contact: <" + contact + ">\r\n"
+                + "Max-Forwards: 70\r\n"
+                + "Content-Length: 0\r\n\r\n";
+        SIPMessage msg = new StringMsgParser().parseSIPMessage(
+                raw.getBytes(StandardCharsets.US_ASCII), true, false, null);
+        return msg instanceof SIPRequest req ? req : null;
+    }
+
+    private static SIPResponse buildSyntheticFarResponse(PortableDialogMeta meta) throws Exception {
+        // Far UAC INVITE 200: From=local UAC tag toward trunk, To=remote with toTag.
+        String fromUri = bareUri(meta.farFromUri() != null ? meta.farFromUri() : meta.fromUri());
+        String fromTag = meta.farFromTag() != null ? meta.farFromTag() : meta.fromTag();
+        String toUri = bareUri(meta.toUri() != null ? meta.toUri() : meta.remoteContactUri());
+        String remoteContact = bareUri(meta.remoteContactUri());
+        String transport = meta.remoteTransport() != null ? meta.remoteTransport()
+                : (meta.transport() != null ? meta.transport() : "UDP");
+        String host = meta.remotePeerHost() != null ? meta.remotePeerHost() : "127.0.0.1";
+        int port = meta.remotePeerPort() > 0 ? meta.remotePeerPort() : 5060;
+        long cseq = meta.cseq() > 0 ? meta.cseq() : 1L;
+        String raw = "SIP/2.0 200 OK\r\n"
+                + "Via: SIP/2.0/" + transport + " " + host + ":" + port
+                + ";branch=z9hG4bK-ha-far\r\n"
+                + "From: <" + fromUri + ">;tag=" + fromTag + "\r\n"
+                + "To: <" + toUri + ">;tag=" + meta.toTag() + "\r\n"
+                + "Call-ID: " + meta.callId() + "\r\n"
+                + "CSeq: " + cseq + " INVITE\r\n"
+                + "Contact: <" + remoteContact + ">\r\n"
+                + "Content-Length: 0\r\n\r\n";
+        SIPMessage msg = new StringMsgParser().parseSIPMessage(
+                raw.getBytes(StandardCharsets.US_ASCII), true, false, null);
+        return msg instanceof SIPResponse resp ? resp : null;
+    }
+
+    private static String bareUri(String uri) {
+        if (uri == null) {
+            return "sip:unknown@invalid";
+        }
+        String s = uri.trim();
+        if (s.startsWith("<") && s.endsWith(">") && s.length() > 2) {
+            s = s.substring(1, s.length() - 1);
+        }
+        int semi = s.indexOf(';');
+        if (semi > 0) {
+            s = s.substring(0, semi);
+        }
+        return s;
     }
 
     public Dialog remove(String callId) {

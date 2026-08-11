@@ -35,7 +35,8 @@ public final class UdpTransport extends AbstractNettyTransport {
 
     @Override
     public void start() {
-        workerGroup = new NioEventLoopGroup((int) config.nettyWorkerThreads());
+        int workers = (int) config.nettyWorkerThreads();
+        workerGroup = new NioEventLoopGroup(workers > 0 ? workers : 2);
         Bootstrap b = new Bootstrap();
         b.group(workerGroup)
          .channel(NioDatagramChannel.class)
@@ -50,6 +51,8 @@ public final class UdpTransport extends AbstractNettyTransport {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("UDP bind interrupted", e);
+        } catch (Exception e) {
+            throw new RuntimeException("UDP bind failed on " + config.host() + ":" + config.udpPort(), e);
         }
     }
 }

@@ -11,9 +11,11 @@
 package com.microjainslee.core;
 
 import com.microjainslee.api.ActivityContextInterface;
+import com.microjainslee.api.RaCommandPort;
 import com.microjainslee.api.Sbb;
 import com.microjainslee.api.SleeEvent;
 import com.microjainslee.api.SleeEventHandler;
+import com.microjainslee.api.annotations.InjectRa;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -27,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -269,6 +272,29 @@ public class VirtualThreadSbbEntityPoolTest {
         }
     }
 
+    @Test
+    public void injectRaWalksSuperclassFieldsOnConcreteSbb() {
+        VirtualThreadSbbEntityPool pool = new VirtualThreadSbbEntityPool(1, 4, true);
+        MicroSleeContainer container = new MicroSleeContainer(
+                MicroSleeConfiguration.builder()
+                        .eventRouterBufferSize(64)
+                        .preferVirtualThreads(false)
+                        .sbbPerVirtualThread(false)
+                        .build());
+        container.start();
+        try {
+            container.registerRaCommandPort("sip-servlet-ra", cmd -> { });
+            pool.setContainer(container);
+            VirtualThreadSbbEntityPool.SbbEntity entity =
+                    pool.acquire("cmp-concrete", ParentInjectSbb.Concrete::new);
+            ParentInjectSbb sbb = (ParentInjectSbb) entity.getSbb();
+            assertNotNull("parent @InjectRa must be set on $Concrete subclass", sbb.injected());
+        } finally {
+            pool.shutdown();
+            container.stop();
+        }
+    }
+
     @Test(expected = IllegalArgumentException.class)
     public void rejectsMinGreaterThanMax() {
         new VirtualThreadSbbEntityPool(10, 5, true);
@@ -277,6 +303,20 @@ public class VirtualThreadSbbEntityPoolTest {
     @Test(expected = IllegalArgumentException.class)
     public void rejectsMaxLessThanOne() {
         new VirtualThreadSbbEntityPool(0, 0, true);
+    }
+
+    /** Mirrors Elisa CMP {@code $Concrete} — @InjectRa lives on the abstract parent. */
+    abstract static class ParentInjectSbb implements Sbb {
+        @InjectRa(name = "sip-servlet-ra")
+        private volatile RaCommandPort sipRa;
+
+        RaCommandPort injected() {
+            return sipRa;
+        }
+
+        static final class Concrete extends ParentInjectSbb {
+            private final String local = "cmp";
+        }
     }
 
     private static final class NoopSbb implements Sbb { }

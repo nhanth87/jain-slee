@@ -151,6 +151,15 @@ public class NettySipOutboundSenderTest {
     }
 
     @Test
+    public void sendInviteNextHopKeepsCalleeRequestUri() {
+        sender.send(new SendInvite("hop-1", "sip:alice@ims.lab",
+                "sip:gw@127.0.0.1", "v=0\r\n", Map.of(), "sip:icscf@127.0.0.1:5063"));
+        String wire = transport.sentMessages.get(0);
+        assertTrue(wire.startsWith("INVITE sip:alice@ims.lab SIP/2.0"));
+        assertEquals(5063, transport.targets.get(0).getPort());
+    }
+
+    @Test
     public void sendInviteForwardsWhitelistedImsHeaders() {
         sender.send(new SendInvite(
                 "ims-call-1",

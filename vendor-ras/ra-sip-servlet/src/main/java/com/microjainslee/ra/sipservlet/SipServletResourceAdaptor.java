@@ -137,8 +137,8 @@ public final class SipServletResourceAdaptor {
     }
 
     /**
-     * Failover priming: restore portable peers/cseq from RaSessionMeta ISPN attrs.
-     * Does not rebuild lastRequest — SendResponse still needs inbound wire (R4).
+     * Failover priming: restore portable peers/cseq (+ synthetic wire when URI/tags present)
+     * from RaSessionMeta ISPN attrs.
      *
      * @return true when peers were restored into the local DialogRegistry
      */
@@ -146,7 +146,7 @@ public final class SipServletResourceAdaptor {
         if (callId == null || callId.isBlank()) {
             return false;
         }
-        if (dialogRegistry.contains(callId)) {
+        if (dialogRegistry.contains(callId) && dialogRegistry.find(callId).lastRequest() != null) {
             return true;
         }
         RaHaSupport ha = haSupport;
@@ -156,27 +156,37 @@ public final class SipServletResourceAdaptor {
         return ha.lookupMeta(callId).map(meta -> {
             DialogRegistry.PortableDialogMeta portable =
                     DialogRegistry.PortableDialogMeta.fromAttrs(callId, meta.attrs());
-            if (portable == null) {
-                return false;
+            return restoreDialog(portable);
+        }).orElse(false);
+    }
+
+    /**
+     * Restore DialogRegistry from portable meta (Elisa DialogCheckpoint / sticky attrs).
+     * Lab-grade: rebuilds synthetic lastRequest/lastResponse when wire essentials present.
+     */
+    public boolean restoreDialog(DialogRegistry.PortableDialogMeta portable) {
+        if (portable == null || portable.callId() == null || portable.callId().isBlank()) {
+            return false;
+        }
+        String callId = portable.callId();
+        ActivityHandle handle = dialogs.computeIfAbsent(callId, id -> {
+            if (bootstrapPort != null) {
+                return bootstrapPort.createActivityHandle(id);
             }
-            ActivityHandle handle = dialogs.computeIfAbsent(callId, id -> {
-                if (bootstrapPort != null) {
-                    return bootstrapPort.createActivityHandle(id);
-                }
-                return () -> id;
-            });
-            dialogRegistry.restorePortable(portable, handle);
-            // Claim sticky ownership after fence win (manager already claimed app fence).
-            if (ha.lookupOwner(callId).isEmpty()
-                    || !ha.isLocalOwner(callId)) {
+            return () -> id;
+        });
+        dialogRegistry.restorePortable(portable, handle);
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            if (ha.lookupOwner(callId).isEmpty() || !ha.isLocalOwner(callId)) {
                 ha.onOpened(callId, "Recovered", portable.toAttrs());
             } else {
                 ha.onTouched(callId, "Recovered", portable.toAttrs());
             }
-            LOG.info("[ra-sip-servlet] restored portable dialog peers callId={} peer={}",
-                    callId, portable.peerHost());
-            return true;
-        }).orElse(false);
+        }
+        LOG.info("[ra-sip-servlet] restored portable dialog callId={} peer={} wire={}",
+                callId, portable.peerHost(), portable.hasWireEssentials());
+        return dialogRegistry.contains(callId);
     }
 
     // ---- Lifecycle ----
@@ -363,7 +373,11 @@ public final class SipServletResourceAdaptor {
             return;
         }
         SIPRequest last = dialog.lastRequest();
-        if (last != null && Request.BYE.equals(last.getMethod())) {
+        if (last == null) {
+            return;
+        }
+        if (Request.BYE.equals(last.getMethod())
+                || (Request.INVITE.equals(last.getMethod()) && statusCode >= 300)) {
             endDialog(callId);
         }
     }
@@ -440,13 +454,16 @@ public final class SipServletResourceAdaptor {
                 attrs.put("transport", transport);
             }
         }
-        if (ha.lookupOwner(callId).isEmpty()) {
-            ha.onOpened(callId, "Active", attrs);
-        } else {
-            ha.onTouched(callId, "Active", attrs);
+        try {
+            if (ha.lookupOwner(callId).isEmpty()) {
+                ha.onOpened(callId, "Active", attrs);
+            } else {
+                ha.onTouched(callId, "Active", attrs);
+            }
+            ha.checkpointSbb(callId);
+        } catch (RuntimeException ex) {
+            LOG.warn("[ra-sip-servlet] HA publish failed callId={}: {}", callId, ex.toString());
         }
-        // Gate A: RA checkpoints SBB entity keyed by Call-ID / activity id.
-        ha.checkpointSbb(callId);
     }
 
     /** BYE requests and final non-2xx INVITE responses terminate the dialog. */
@@ -461,7 +478,8 @@ public final class SipServletResourceAdaptor {
             if (Request.BYE.equals(method) && status >= 200) {
                 return true;
             }
-            return Request.INVITE.equals(method) && status >= 300;
+            // INVITE 3xx–6xx must be relayed by P/I before teardown (REGISTER 401 is not INVITE).
+            return false;
         }
         return false;
     }

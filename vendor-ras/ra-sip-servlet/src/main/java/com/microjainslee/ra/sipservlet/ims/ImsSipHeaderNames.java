@@ -44,6 +44,12 @@ public final class ImsSipHeaderNames {
     /** Elisa lab correlates (ISC → FreeSWITCH dialplan / CDR). */
     public static final String X_ELISA_SIP_CALL_ID = "X-Elisa-Sip-Call-Id";
     public static final String X_ELISA_ICID = "X-Elisa-Icid";
+    public static final String X_ELISA_IMPI = "X-Elisa-Impi";
+    public static final String X_ELISA_IMPU = "X-Elisa-Impu";
+    public static final String X_ELISA_CSCF_ROLE = "X-Elisa-Cscf-Role";
+
+    /** RFC 3323 privacy (OIR / MMTel-lite). */
+    public static final String PRIVACY = "Privacy";
 
     /**
      * Ordered whitelist extracted from inbound INVITE and eligible for
@@ -66,8 +72,12 @@ public final class ImsSipHeaderNames {
             SECURITY_VERIFY,
             REQUIRE,
             SUPPORTED,
+            PRIVACY,
             X_ELISA_SIP_CALL_ID,
-            X_ELISA_ICID
+            X_ELISA_ICID,
+            X_ELISA_IMPI,
+            X_ELISA_IMPU,
+            X_ELISA_CSCF_ROLE
             // Proxy-Require intentionally omitted — proxy must 420 if unsatisfied (RFC 3261 §16.3)
     );
 

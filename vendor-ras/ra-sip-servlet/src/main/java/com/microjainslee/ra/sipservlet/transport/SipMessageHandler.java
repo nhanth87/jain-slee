@@ -71,8 +71,11 @@ final class SipMessageHandler extends SimpleChannelInboundHandler<Object> {
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        LOG.warn("SIP transport error", cause);
-        ctx.close();
+        LOG.warn("SIP transport error proto={}", protocol, cause);
+        // UDP is connectionless — closing the datagram channel unbinds :5060.
+        if (protocol == null || !"UDP".equalsIgnoreCase(protocol)) {
+            ctx.close();
+        }
     }
 
     private void registerPeer(Channel ch) {

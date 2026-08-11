@@ -175,27 +175,31 @@ public final class VirtualThreadSbbEntityPool {
     /**
      * Scan the SBB instance for {@code @InjectRa} fields and inject
      * the matching {@link RaCommandPort} from the container.
+     * Walks superclasses so CMP {@code $Concrete} subclasses still receive
+     * ports declared on the abstract SBB (getDeclaredFields is not inherited).
      */
     private void injectRaPorts(Sbb sbb) {
         MicroSleeContainer c = this.container;
         if (c == null || sbb == null) {
             return;
         }
-        for (Field field : sbb.getClass().getDeclaredFields()) {
-            InjectRa injectRa = field.getAnnotation(InjectRa.class);
-            if (injectRa == null) {
-                continue;
-            }
-            String raName = injectRa.name();
-            RaCommandPort port = (raName == null || raName.isEmpty())
-                    ? c.getDefaultRaCommandPort()
-                    : c.getRaCommandPort(raName);
-            if (port != null) {
-                field.setAccessible(true);
-                try {
-                    field.set(sbb, port);
-                } catch (IllegalAccessException e) {
-                    // Should not happen after setAccessible(true)
+        for (Class<?> type = sbb.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
+            for (Field field : type.getDeclaredFields()) {
+                InjectRa injectRa = field.getAnnotation(InjectRa.class);
+                if (injectRa == null) {
+                    continue;
+                }
+                String raName = injectRa.name();
+                RaCommandPort port = (raName == null || raName.isEmpty())
+                        ? c.getDefaultRaCommandPort()
+                        : c.getRaCommandPort(raName);
+                if (port != null) {
+                    field.setAccessible(true);
+                    try {
+                        field.set(sbb, port);
+                    } catch (IllegalAccessException e) {
+                        // Should not happen after setAccessible(true)
+                    }
                 }
             }
         }

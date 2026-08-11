@@ -10,7 +10,6 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /** Portable DialogRegistry meta export/restore for N–N failover priming. */
@@ -44,8 +43,9 @@ public class DialogRegistryPortableHaTest {
         assertTrue(peerNode.contains("c1"));
         assertEquals(UA, peerNode.find("c1").peer());
         assertEquals(FS, peerNode.find("c1").remotePeer());
-        // No SIPRequest — honest HA limit
-        assertNull(peerNode.find("c1").lastRequest());
+        // Wire essentials present → synthetic lastRequest for lab Send*
+        assertNotNull(peerNode.find("c1").lastRequest());
+        assertEquals("INVITE", peerNode.find("c1").lastRequest().getMethod());
     }
 
     private static byte[] inviteBytes() {

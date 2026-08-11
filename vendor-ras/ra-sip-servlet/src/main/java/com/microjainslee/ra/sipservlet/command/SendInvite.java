@@ -21,17 +21,25 @@ public record SendInvite(
         String toUri,
         String fromUri,
         String sdp,
-        Map<String, List<String>> extensionHeaders
+        Map<String, List<String>> extensionHeaders,
+        String nextHopUri
 ) implements SipOutboundCommand {
 
     public SendInvite {
         sdp = sdp == null ? "" : sdp;
         extensionHeaders = copyExt(extensionHeaders);
+        nextHopUri = nextHopUri == null || nextHopUri.isBlank() ? null : nextHopUri.trim();
     }
 
     /** Lab / legacy: no IMS extension headers. */
     public SendInvite(String callId, String toUri, String fromUri, String sdp) {
-        this(callId, toUri, fromUri, sdp, Map.of());
+        this(callId, toUri, fromUri, sdp, Map.of(), null);
+    }
+
+    /** Next hop = {@code toUri} host (legacy). */
+    public SendInvite(String callId, String toUri, String fromUri, String sdp,
+                      Map<String, List<String>> extensionHeaders) {
+        this(callId, toUri, fromUri, sdp, extensionHeaders, null);
     }
 
     private static Map<String, List<String>> copyExt(Map<String, List<String>> src) {

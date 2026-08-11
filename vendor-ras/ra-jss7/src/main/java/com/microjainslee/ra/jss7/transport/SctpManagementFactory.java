@@ -7,37 +7,27 @@
 package com.microjainslee.ra.jss7.transport;
 
 import org.mobicents.protocols.api.Management;
+import org.mobicents.protocols.sctp.spi.SctpBackend;
+import org.mobicents.protocols.sctp.spi.SctpProvider;
 
 /**
- * The single isolation point for the concrete SCTP transport implementation.
- *
- * <p>The rest of the RA programs exclusively against the SCTP project's
- * {@link org.mobicents.protocols.api.Management} abstraction; only this factory
- * knows the concrete provider, so swapping the SCTP implementation (or bumping
- * its version) is a one-line change here rather than a change scattered across
- * the transport code.</p>
- *
- * <p>The concrete class is resolved reflectively so no transport/impl class is
- * referenced (imported) directly by the RA; the SCTP jar remains a runtime
- * dependency of the {@code sctp} project only.</p>
+ * Isolation point for the SCTP transport. Default is F-Stack/DPDK (native-safe).
+ * {@code NETTY_KERNEL} remains a JVM-only oracle and is refused inside a native image.
  */
 final class SctpManagementFactory {
 
-    /** Default SCTP provider (mobicents Netty-based impl). */
-    private static final String DEFAULT_IMPL =
-            "org.mobicents.protocols.sctp.netty.NettySctpManagementImpl";
-
     private SctpManagementFactory() { }
 
-    /**
-     * Create an SCTP {@link Management} instance from the SCTP project.
-     *
-     * @param name management/stack name
-     * @return a not-yet-started {@link Management}
-     */
     static Management create(String name) throws Exception {
-        String impl = System.getProperty("ra.jss7.sctp.impl", DEFAULT_IMPL);
-        Class<?> clazz = Class.forName(impl);
-        return (Management) clazz.getConstructor(String.class).newInstance(name);
+        String override = System.getProperty("ra.jss7.sctp.impl");
+        if (override != null && !override.isBlank()) {
+            if (override.contains("netty") && SctpProvider.isNativeImage()) {
+                throw new IllegalStateException("Netty/JDK SCTP is forbidden in GraalVM native images");
+            }
+            Class<?> clazz = Class.forName(override);
+            return (Management) clazz.getConstructor(String.class).newInstance(name);
+        }
+        SctpBackend backend = SctpBackend.from(System.getProperty("sctp.backend", "FSTACK_DPDK"));
+        return SctpProvider.create(name, backend);
     }
 }

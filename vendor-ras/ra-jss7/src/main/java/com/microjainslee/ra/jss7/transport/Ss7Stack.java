@@ -19,6 +19,9 @@ import org.restcomm.protocols.ss7.tcap.api.TCAPProvider;
 
 import org.mobicents.protocols.api.Association;
 import org.mobicents.protocols.api.Management;
+import org.mobicents.protocols.sctp.fstack.FstackSctpManagementImpl;
+import org.mobicents.protocols.sctp.spi.AdaptiveSendController;
+import org.mobicents.protocols.sctp.spi.SctpCongestionSample;
 import org.restcomm.protocols.ss7.m3ua.As;
 import org.restcomm.protocols.ss7.m3ua.impl.M3UAManagementImpl;
 
@@ -26,7 +29,7 @@ import java.util.List;
 
 /**
  * Bootstraps and owns the full RestComm jSS7 protocol stack for the RA:
- * <pre>SCTP (Netty) → M3UA → SCCP (+ext) → TCAP → MAP / CAP</pre>
+ * <pre>SCTP (F-Stack default / Netty JVM oracle) → M3UA → SCCP (+ext) → TCAP → MAP / CAP</pre>
  *
  * <p>Delegates the actual bootstrap to jSS7's {@code ss7-config} module
  * ({@link Ss7StackBuilder}) — the same JSON-config-driven compiler proven by
@@ -67,6 +70,7 @@ public final class Ss7Stack {
 
     private org.restcomm.protocols.ss7.config.Ss7Stack delegate;
     private volatile boolean started;
+    private volatile AdaptiveSendController congestion = AdaptiveSendController.disabled();
 
     public Ss7Stack(Ss7RaConfig cfg) {
         this.flatCfg = cfg;
@@ -126,9 +130,57 @@ public final class Ss7Stack {
         }
     }
 
+    public boolean isSctpAssociationUp() {
+        if (!started || delegate == null) {
+            return false;
+        }
+        try {
+            Management sctp = delegate.sctpManagement();
+            if (sctp == null) {
+                return false;
+            }
+            for (Association a : sctp.getAssociations().values()) {
+                if (a.isConnected() || a.isUp()) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    public boolean isM3uaAsActive() {
+        if (!started || delegate == null) {
+            return false;
+        }
+        try {
+            M3UAManagementImpl m3ua = delegate.m3uaManagement();
+            if (m3ua == null) {
+                return false;
+            }
+            for (As as : m3ua.getAppServers()) {
+                if (as.getState() != null && "ACTIVE".equalsIgnoreCase(as.getState().getName())) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
     /** Underlying ss7-config stack — for admin status (SCTP/M3UA). Null if not started. */
     public org.restcomm.protocols.ss7.config.Ss7Stack underlying() {
         return delegate;
+    }
+
+    /**
+     * Shared AIMD controller (SCTP ring + M3UA SCON). Never null; disabled before
+     * {@link #start()} and after {@link #stop()}.
+     */
+    public AdaptiveSendController congestionController() {
+        return congestion;
     }
 
     // ── lifecycle ─────────────────────────────────────────────
@@ -138,6 +190,7 @@ public final class Ss7Stack {
         LOG.info("[ra-jss7] bootstrapping jSS7 stack: {}",
                 fullCfg != null ? "Ss7Config stackName=" + built.stackName() : flatCfg);
         delegate = Ss7StackBuilder.build(built);
+        wireCongestionAdaptation(delegate);
         started = true;
         boolean map = built.protocols() != null && Boolean.TRUE.equals(built.protocols().map());
         boolean cap = built.protocols() != null && Boolean.TRUE.equals(built.protocols().cap());
@@ -147,8 +200,29 @@ public final class Ss7Stack {
     public synchronized void stop() {
         if (!started) return;
         started = false;
+        congestion = AdaptiveSendController.disabled();
         if (delegate != null) delegate.stop();
         LOG.info("[ra-jss7] jSS7 stack STOPPED");
+    }
+
+    private void wireCongestionAdaptation(org.restcomm.protocols.ss7.config.Ss7Stack stack) {
+        Management sctp = stack.sctpManagement();
+        AdaptiveSendController ctl;
+        if (sctp instanceof FstackSctpManagementImpl fs) {
+            ctl = fs.adaptiveController();
+        } else {
+            ctl = AdaptiveSendController.createDefault();
+            if (sctp != null) {
+                sctp.addCongestionListener((assoc, oldLevel, newLevel) ->
+                        ctl.noteSample(SctpCongestionSample.ringLevel(0, 0, newLevel)));
+            }
+        }
+        ctl.addReporter(new Log4jCongestionReporter());
+        M3UAManagementImpl m3ua = stack.m3uaManagement();
+        if (m3ua != null) {
+            m3ua.addMtp3UserPartListener(new StpCongestionBridge(ctl));
+        }
+        this.congestion = ctl;
     }
 
     // ── Ss7RaConfig -> Ss7Config translation ───────────────────
@@ -180,7 +254,6 @@ public final class Ss7Stack {
                 cfg.ipspClient() ? "client" : null,
                 "se",
                 cfg.routingContext(),
-                null, // routingContexts — prefer single routingContext for RA props path
                 cfg.networkAppearance(),
                 1,
                 List.of(linkName));

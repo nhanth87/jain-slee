@@ -159,6 +159,24 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         return active.get() && s != null && s.isSignalingRouteReady();
     }
 
+    public boolean isSctpAssociationUp() {
+        Ss7Stack s = stack;
+        return active.get() && s != null && s.isSctpAssociationUp();
+    }
+
+    public boolean isM3uaAsActive() {
+        Ss7Stack s = stack;
+        return active.get() && s != null && s.isM3uaAsActive();
+    }
+
+    /** Shared SCTP/M3UA AIMD controller. Disabled when the stack is down. */
+    public org.mobicents.protocols.sctp.spi.AdaptiveSendController congestionController() {
+        Ss7Stack s = stack;
+        return s == null
+                ? org.mobicents.protocols.sctp.spi.AdaptiveSendController.disabled()
+                : s.congestionController();
+    }
+
     // ── lifecycle ────────────────────────────────────────────
     public void raActive() {
         if (!active.compareAndSet(false, true)) return;

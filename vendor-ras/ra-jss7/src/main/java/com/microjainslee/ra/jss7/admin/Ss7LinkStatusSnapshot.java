@@ -101,6 +101,7 @@ public final class Ss7LinkStatusSnapshot {
         // ADR 0001 P2 — scrapeable failover / sticky-miss / import-fail counters
         if (ra != null) {
             m.put("failoverMetrics", ra.failoverMetrics().snapshot());
+            ra.congestionController().snapshot().writeAdmin(m);
         } else {
             m.put("failoverMetrics", Map.of());
         }

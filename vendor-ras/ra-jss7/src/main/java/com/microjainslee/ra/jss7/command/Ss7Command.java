@@ -75,9 +75,10 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             String serviceCentreAddress,
             int networkId,
             String preferredAspName,
-            int remotePc
+            int remotePc,
+            int mapVersion
     ) implements Ss7Command {
-        /** No sticky ASP pin (classic SLS among ACTIVE of N). */
+        /** No sticky ASP pin (classic SLS among ACTIVE of N). Defaults MAP v3. */
         public MapSendRoutingInfoForSm(
                 String dialogId,
                 Ss7Address targetAddress,
@@ -85,7 +86,21 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 String msisdn,
                 String serviceCentreAddress,
                 int networkId) {
-            this(dialogId, targetAddress, localAddress, msisdn, serviceCentreAddress, networkId, null, -1);
+            this(dialogId, targetAddress, localAddress, msisdn, serviceCentreAddress,
+                    networkId, null, -1, 3);
+        }
+
+        public MapSendRoutingInfoForSm(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String msisdn,
+                String serviceCentreAddress,
+                int networkId,
+                String preferredAspName,
+                int remotePc) {
+            this(dialogId, targetAddress, localAddress, msisdn, serviceCentreAddress,
+                    networkId, preferredAspName, remotePc, 3);
         }
     }
 
@@ -181,6 +196,159 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                     dataCoding, protocolId, udhi, networkId, lmsi, null, -1);
         }
     }
+
+    /**
+     * MAP reportSM-DeliveryStatus toward HLR ({@code targetAddress}) — SC reports
+     * memory-full / absent / successful after MT outcome (TS 29.002).
+     *
+     * @param outcome  {@link org.restcomm.protocols.ss7.map.api.service.sms.SMDeliveryOutcome}
+     *                 enum name ({@code absentSubscriber}, {@code memoryCapacityExceeded},
+     *                 {@code successfulTransfer})
+     */
+    record MapReportSMDeliveryStatus(
+            String dialogId,
+            Ss7Address targetAddress,
+            Ss7Address localAddress,
+            String msisdn,
+            String serviceCentreAddress,
+            String outcome,
+            int networkId,
+            String preferredAspName,
+            int remotePc
+    ) implements Ss7Command {
+        public MapReportSMDeliveryStatus(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String msisdn,
+                String serviceCentreAddress,
+                String outcome,
+                int networkId) {
+            this(dialogId, targetAddress, localAddress, msisdn, serviceCentreAddress,
+                    outcome, networkId, null, -1);
+        }
+    }
+
+    // ── MAP GMLC (mobility / call handling / LCS) ────────────
+
+    /** MAP AnyTimeInterrogation toward the subscriber HLR. */
+    record MapAtiRequest(
+            String dialogId,
+            Ss7Address targetAddress,
+            Ss7Address localAddress,
+            String msisdn,
+            String gsmScfAddress,
+            String requestedDomain,
+            boolean requestLocationInformation,
+            boolean requestSubscriberState,
+            boolean requestCurrentLocation,
+            boolean requestImei,
+            boolean requestMsClassmark,
+            boolean requestMnpInfo,
+            boolean requestEpsLocationInformation,
+            int networkId,
+            String preferredAspName,
+            int remotePc
+    ) implements Ss7Command {}
+
+    /** MAP call-handling SendRoutingInformation (locationInfoRetrievalContext v2/v3). */
+    record MapSendRoutingInformation(
+            String dialogId,
+            Ss7Address targetAddress,
+            Ss7Address localAddress,
+            String msisdn,
+            int networkId,
+            String preferredAspName,
+            int remotePc,
+            int mapVersion
+    ) implements Ss7Command {
+        /** Defaults MAP v3 (classic first attempt). */
+        public MapSendRoutingInformation(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String msisdn,
+                int networkId,
+                String preferredAspName,
+                int remotePc) {
+            this(dialogId, targetAddress, localAddress, msisdn, networkId,
+                    preferredAspName, remotePc, 3);
+        }
+    }
+
+    /** MAP ProvideSubscriberInfo toward a serving VLR/SGSN. */
+    record MapProvideSubscriberInfo(
+            String dialogId,
+            Ss7Address targetAddress,
+            Ss7Address localAddress,
+            String imsi,
+            byte[] lmsi,
+            String requestedDomain,
+            boolean requestLocationInformation,
+            boolean requestSubscriberState,
+            boolean requestCurrentLocation,
+            boolean requestImei,
+            boolean requestMsClassmark,
+            boolean requestMnpInfo,
+            boolean requestEpsLocationInformation,
+            int networkId,
+            String preferredAspName,
+            int remotePc
+    ) implements Ss7Command {}
+
+    /** MAP SendRoutingInfoForLCS toward the subscriber HLR. */
+    record MapSendRoutingInfoForLcs(
+            String dialogId,
+            Ss7Address targetAddress,
+            Ss7Address localAddress,
+            String mlcNumber,
+            String imsi,
+            String msisdn,
+            int networkId,
+            String preferredAspName,
+            int remotePc
+    ) implements Ss7Command {}
+
+    /**
+     * MAP ProvideSubscriberLocation toward the serving MSC/SGSN.
+     * Enum-valued fields use their jSS7 enum names and are rejected when unknown.
+     */
+    record MapProvideSubscriberLocation(
+            String dialogId,
+            Ss7Address targetAddress,
+            Ss7Address localAddress,
+            String locationEstimateType,
+            String mlcNumber,
+            String lcsClientType,
+            boolean privacyOverride,
+            String imsi,
+            String msisdn,
+            byte[] lmsi,
+            String imei,
+            String lcsPriority,
+            Integer horizontalAccuracy,
+            Integer verticalAccuracy,
+            boolean verticalCoordinateRequested,
+            String responseTimeCategory,
+            boolean velocityRequested,
+            String lcsQosClass,
+            Integer lcsReferenceNumber,
+            Integer lcsServiceTypeId,
+            int networkId,
+            String preferredAspName,
+            int remotePc
+    ) implements Ss7Command {}
+
+    /** ReturnResult for an inbound SubscriberLocationReport on its existing LCS dialog. */
+    record MapSubscriberLocationReportResponse(
+            String dialogId,
+            Ss7Address targetAddress,
+            long invokeId,
+            String naEsrd,
+            String naEsrk,
+            Integer lcsReferenceNumber,
+            int networkId
+    ) implements Ss7Command {}
 
     // ── MAP USSD (supplementary) ─────────────────────────────
 

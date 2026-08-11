@@ -29,6 +29,7 @@ import org.restcomm.protocols.ss7.map.api.primitives.LMSI;
 import org.restcomm.protocols.ss7.map.api.primitives.NumberingPlan;
 import org.restcomm.protocols.ss7.map.api.service.sms.LocationInfoWithLMSI;
 import org.restcomm.protocols.ss7.map.api.service.sms.MAPDialogSms;
+import org.restcomm.protocols.ss7.map.api.service.sms.SMDeliveryOutcome;
 import org.restcomm.protocols.ss7.map.api.service.sms.SM_RP_DA;
 import org.restcomm.protocols.ss7.map.api.service.sms.SM_RP_OA;
 import org.restcomm.protocols.ss7.map.api.service.sms.SmsSignalInfo;
@@ -54,7 +55,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Outbound MAP SMS (SRI-SM + MT-ForwardSM) for OTA SMSC-GW.
+ * Outbound MAP SMS (SRI-SM + MT-ForwardSM + ReportSM-DeliveryStatus) for OTA SMSC-GW.
  * Keeps correlation dialogId ↔ local MAP dialog id for event republish.
  */
 final class MapSmsOutbound {
@@ -91,6 +92,10 @@ final class MapSmsOutbound {
             }
             case Ss7Command.MapMtForwardSm mt -> {
                 sendMt(mt);
+                yield true;
+            }
+            case Ss7Command.MapReportSMDeliveryStatus report -> {
+                sendReportSm(report);
                 yield true;
             }
             default -> false;
@@ -157,7 +162,7 @@ final class MapSmsOutbound {
         try {
             MAPApplicationContext ac = MAPApplicationContext.getInstance(
                     MAPApplicationContextName.shortMsgGatewayContext,
-                    MAPApplicationContextVersion.version3);
+                    mapVersion(cmd.mapVersion()));
             SccpAddress dest = toSccp(cmd.targetAddress());
             SccpAddress orig = toSccp(cmd.localAddress());
             dialog = provider.getMAPServiceSms()
@@ -186,6 +191,62 @@ final class MapSmsOutbound {
             }
             LOG.error("[ra-jss7] SRI-SM failed corr={}: {}", cmd.dialogId(), e.toString());
             throw new IllegalStateException("MAP SRI-SM failed: " + e.getMessage(), e);
+        }
+    }
+
+    private void sendReportSm(Ss7Command.MapReportSMDeliveryStatus cmd) {
+        MAPDialogSms dialog = null;
+        boolean sent = false;
+        try {
+            MAPApplicationContext ac = MAPApplicationContext.getInstance(
+                    MAPApplicationContextName.shortMsgGatewayContext,
+                    MAPApplicationContextVersion.version3);
+            SccpAddress dest = toSccp(cmd.targetAddress());
+            SccpAddress orig = toSccp(cmd.localAddress());
+            dialog = provider.getMAPServiceSms()
+                    .createNewDialog(ac, orig, null, dest, null);
+            dialog.setNetworkId(cmd.networkId());
+            DialogRoutePin.apply(dialog, cmd.preferredAspName(), cmd.remotePc());
+            remember(dialog.getLocalDialogId(), cmd.dialogId());
+
+            MAPParameterFactory pf = provider.getMAPParameterFactory();
+            ISDNAddressString msisdn = pf.createISDNAddressString(
+                    AddressNature.international_number, NumberingPlan.ISDN, digits(cmd.msisdn()));
+            AddressString sc = pf.createAddressString(
+                    AddressNature.international_number, NumberingPlan.ISDN,
+                    digits(cmd.serviceCentreAddress()));
+            SMDeliveryOutcome outcome = parseOutcome(cmd.outcome());
+
+            dialog.addReportSMDeliveryStatusRequest(
+                    msisdn, sc, outcome,
+                    null, null, false, false,
+                    null, null, false, null, null,
+                    null, false, null, false,
+                    null, null, false, null, null);
+            dialog.send();
+            sent = true;
+            LOG.info("[ra-jss7] ReportSM-DeliveryStatus sent corr={} localDialog={} msisdn={} outcome={}",
+                    cmd.dialogId(), dialog.getLocalDialogId(), cmd.msisdn(), outcome);
+        } catch (MAPException | RuntimeException e) {
+            if (!sent) {
+                releaseUnsent(dialog, cmd.dialogId());
+            }
+            LOG.error("[ra-jss7] ReportSM-DeliveryStatus failed corr={}: {}",
+                    cmd.dialogId(), e.toString());
+            throw new IllegalStateException(
+                    "MAP ReportSM-DeliveryStatus failed: " + e.getMessage(), e);
+        }
+    }
+
+    private static SMDeliveryOutcome parseOutcome(String name) {
+        if (name == null || name.isBlank()) {
+            return SMDeliveryOutcome.absentSubscriber;
+        }
+        try {
+            return SMDeliveryOutcome.valueOf(name.trim());
+        } catch (IllegalArgumentException ex) {
+            LOG.warn("[ra-jss7] unknown SMDeliveryOutcome '{}' — using absentSubscriber", name);
+            return SMDeliveryOutcome.absentSubscriber;
         }
     }
 
@@ -338,6 +399,15 @@ final class MapSmsOutbound {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    private static MAPApplicationContextVersion mapVersion(int version) {
+        return switch (version) {
+            case 2 -> MAPApplicationContextVersion.version2;
+            case 3 -> MAPApplicationContextVersion.version3;
+            default -> throw new IllegalArgumentException(
+                    "MAP version must be 2 or 3, got " + version);
+        };
     }
 
     private static String digits(String s) {

@@ -2,6 +2,8 @@
 
 Short memory for **runtime / RA** footguns shared with Digicom hosts. App-product detail (USSD NI park, OTA CAP saga, admin HTML) stays in the consumer trees — link out, do not paste wholesale.
 
+**Shared merge:** workspace [`docs/agents/lessons.md`](../../../docs/agents/lessons.md) · skill `digicom-et-host`.
+
 Peer hosts: ussdgw [`docs/agents/lessons.md`](../../../../worktrees/ussd-service/ussd-microjainslee/docs/agents/lessons.md) · OTA [`docs/agents/lessons.md`](../../../../worktrees/ota-service/ota-sim-push/docs/agents/lessons.md).
 
 ## Do not

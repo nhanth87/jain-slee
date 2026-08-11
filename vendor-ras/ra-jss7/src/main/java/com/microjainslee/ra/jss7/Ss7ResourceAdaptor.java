@@ -543,6 +543,20 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     LOG.warn("MAP SRI response not handled by any adapter: {}", sriRsp.dialogId());
             case Ss7Command.MapMtForwardSm mt ->
                     LOG.warn("MAP MT not handled by any adapter: {}", mt.dialogId());
+            case Ss7Command.MapReportSMDeliveryStatus report ->
+                    LOG.warn("MAP ReportSM not handled by any adapter: {}", report.dialogId());
+            case Ss7Command.MapAtiRequest ati ->
+                    LOG.warn("MAP ATI not handled by any adapter: {}", ati.dialogId());
+            case Ss7Command.MapSendRoutingInformation sri ->
+                    LOG.warn("MAP call-handling SRI not handled by any adapter: {}", sri.dialogId());
+            case Ss7Command.MapProvideSubscriberInfo psi ->
+                    LOG.warn("MAP PSI not handled by any adapter: {}", psi.dialogId());
+            case Ss7Command.MapSendRoutingInfoForLcs sriLcs ->
+                    LOG.warn("MAP SRI-LCS not handled by any adapter: {}", sriLcs.dialogId());
+            case Ss7Command.MapProvideSubscriberLocation psl ->
+                    LOG.warn("MAP PSL not handled by any adapter: {}", psl.dialogId());
+            case Ss7Command.MapSubscriberLocationReportResponse slr ->
+                    LOG.warn("MAP SLR response not handled by any adapter: {}", slr.dialogId());
             case Ss7Command.MapProcessUnstructuredSsResponse ussdRsp ->
                     LOG.warn("MAP USSD MO reply not handled by any adapter: {}", ussdRsp.dialogId());
             case Ss7Command.MapUnstructuredSsRequest ussdNi ->

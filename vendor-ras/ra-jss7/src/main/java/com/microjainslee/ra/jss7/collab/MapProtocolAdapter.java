@@ -29,6 +29,7 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     private MAPProvider provider;
     private Ss7EventPublisher publisher;
     private MapSmsOutbound outbound;
+    private MapGmlcOutbound gmlcOutbound;
     private MapUssdOutbound ussdOutbound;
 
     @Override public String protocol() { return "MAP"; }
@@ -42,6 +43,7 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
             return;
         }
         this.outbound = new MapSmsOutbound(provider, stack);
+        this.gmlcOutbound = new MapGmlcOutbound(provider, stack);
         this.ussdOutbound = new MapUssdOutbound(provider, stack);
         provider.addMAPDialogListener(this);
         try { var s = provider.getMAPServiceMobility(); s.addMAPServiceListener(this); s.activate(); } catch (Exception e) { LOG.warn("[ra-jss7] MAP service getMAPServiceMobility activate failed: {}", e.toString()); }
@@ -103,11 +105,16 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
         if (sms != null) {
             sms.clearAll();
         }
+        MapGmlcOutbound gmlc = gmlcOutbound;
+        if (gmlc != null) {
+            gmlc.clearAll();
+        }
         MapUssdOutbound ussd = ussdOutbound;
         if (ussd != null) {
             ussd.clearAll();
         }
         outbound = null;
+        gmlcOutbound = null;
         ussdOutbound = null;
         publisher = null;
         provider = null;
@@ -126,6 +133,10 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     public boolean sendOutbound(com.microjainslee.api.OutboundCommand command) {
         MapSmsOutbound sms = this.outbound;
         if (sms != null && sms.send(command)) {
+            return true;
+        }
+        MapGmlcOutbound gmlc = this.gmlcOutbound;
+        if (gmlc != null && gmlc.send(command)) {
             return true;
         }
         MapUssdOutbound ussd = this.ussdOutbound;
@@ -153,6 +164,10 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
                 if (sms != null) {
                     sms.forget(lid);
                 }
+                MapGmlcOutbound gmlc = this.gmlcOutbound;
+                if (gmlc != null) {
+                    gmlc.forget(lid);
+                }
                 MapUssdOutbound ussd = this.ussdOutbound;
                 if (ussd != null) {
                     ussd.forget(lid);
@@ -173,6 +188,13 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
                 return viaSms;
             }
         }
+        MapGmlcOutbound gmlc = this.gmlcOutbound;
+        if (gmlc != null) {
+            String viaGmlc = gmlc.correlate(d.getLocalDialogId(), null);
+            if (viaGmlc != null) {
+                return viaGmlc;
+            }
+        }
         MapUssdOutbound ussd = this.ussdOutbound;
         if (ussd != null) {
             String viaUssd = ussd.correlate(d.getLocalDialogId(), null);
@@ -183,12 +205,34 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
         return fallback;
     }
 
+    /**
+     * SC must answer AlertServiceCentre (TS 29.002). Publish the indication first so
+     * the app can wake parked segments, then ReturnResult + close.
+     */
+    private void autoAckAlertServiceCentre(
+            org.restcomm.protocols.ss7.map.api.service.sms.AlertServiceCentreRequest ind) {
+        if (ind == null || ind.getMAPDialog() == null) {
+            return;
+        }
+        try {
+            if (ind.getMAPDialog()
+                    instanceof org.restcomm.protocols.ss7.map.api.service.sms.MAPDialogSms sms) {
+                sms.addAlertServiceCentreResponse(ind.getInvokeId());
+                sms.close(false);
+                LOG.info("[ra-jss7] AlertSC auto-ack invokeId={} dialog={}",
+                        ind.getInvokeId(), did(sms));
+            }
+        } catch (Exception e) {
+            LOG.warn("[ra-jss7] AlertSC auto-ack failed: {}", e.toString());
+        }
+    }
+
     // ── generated MAP listener coverage ──────────────────
     @Override public void onDialogDelimiter(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog) { dialog(mapDialog, Ss7MapEvent.Kind.DELIMITER, null); }
     @Override public void onDialogRequest(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, org.restcomm.protocols.ss7.map.api.primitives.AddressString destReference, org.restcomm.protocols.ss7.map.api.primitives.AddressString origReference, org.restcomm.protocols.ss7.map.api.primitives.MAPExtensionContainer extensionContainer) { dialog(mapDialog, Ss7MapEvent.Kind.REQUEST, null); }
     @Override public void onDialogRequestEricsson(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, org.restcomm.protocols.ss7.map.api.primitives.AddressString destReference, org.restcomm.protocols.ss7.map.api.primitives.AddressString origReference, org.restcomm.protocols.ss7.map.api.primitives.AddressString ericssonMsisdn, org.restcomm.protocols.ss7.map.api.primitives.AddressString ericssonVlrNo) { dialog(mapDialog, Ss7MapEvent.Kind.REQUEST, null); }
     @Override public void onDialogAccept(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, org.restcomm.protocols.ss7.map.api.primitives.MAPExtensionContainer extensionContainer) { dialog(mapDialog, Ss7MapEvent.Kind.ACCEPT, null); }
-    @Override public void onDialogReject(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, org.restcomm.protocols.ss7.map.api.dialog.MAPRefuseReason refuseReason, org.restcomm.protocols.ss7.tcap.asn.ApplicationContextName alternativeApplicationContext, org.restcomm.protocols.ss7.map.api.primitives.MAPExtensionContainer extensionContainer) { dialog(mapDialog, Ss7MapEvent.Kind.REJECT, null); }
+    @Override public void onDialogReject(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, org.restcomm.protocols.ss7.map.api.dialog.MAPRefuseReason refuseReason, org.restcomm.protocols.ss7.tcap.asn.ApplicationContextName alternativeApplicationContext, org.restcomm.protocols.ss7.map.api.primitives.MAPExtensionContainer extensionContainer) { dialog(mapDialog, Ss7MapEvent.Kind.REJECT, refuseReason == null ? null : refuseReason.name()); }
     @Override public void onDialogUserAbort(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, org.restcomm.protocols.ss7.map.api.dialog.MAPUserAbortChoice userReason, org.restcomm.protocols.ss7.map.api.primitives.MAPExtensionContainer extensionContainer) { dialog(mapDialog, Ss7MapEvent.Kind.USER_ABORT, null); }
     @Override public void onDialogProviderAbort(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, org.restcomm.protocols.ss7.map.api.dialog.MAPAbortProviderReason abortProviderReason, org.restcomm.protocols.ss7.map.api.dialog.MAPAbortSource abortSource, org.restcomm.protocols.ss7.map.api.primitives.MAPExtensionContainer extensionContainer) { dialog(mapDialog, Ss7MapEvent.Kind.PROVIDER_ABORT, null); }
     @Override public void onDialogClose(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog) { dialog(mapDialog, Ss7MapEvent.Kind.CLOSE, null); }
@@ -244,7 +288,10 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     @Override public void onReportSMDeliveryStatusRequest(org.restcomm.protocols.ss7.map.api.service.sms.ReportSMDeliveryStatusRequest reportSMDeliveryStatusRequestIndication) { service(reportSMDeliveryStatusRequestIndication); }
     @Override public void onReportSMDeliveryStatusResponse(org.restcomm.protocols.ss7.map.api.service.sms.ReportSMDeliveryStatusResponse reportSMDeliveryStatusResponseIndication) { service(reportSMDeliveryStatusResponseIndication); }
     @Override public void onInformServiceCentreRequest(org.restcomm.protocols.ss7.map.api.service.sms.InformServiceCentreRequest informServiceCentreRequestIndication) { service(informServiceCentreRequestIndication); }
-    @Override public void onAlertServiceCentreRequest(org.restcomm.protocols.ss7.map.api.service.sms.AlertServiceCentreRequest alertServiceCentreRequestIndication) { service(alertServiceCentreRequestIndication); }
+    @Override public void onAlertServiceCentreRequest(org.restcomm.protocols.ss7.map.api.service.sms.AlertServiceCentreRequest alertServiceCentreRequestIndication) {
+        service(alertServiceCentreRequestIndication);
+        autoAckAlertServiceCentre(alertServiceCentreRequestIndication);
+    }
     @Override public void onAlertServiceCentreResponse(org.restcomm.protocols.ss7.map.api.service.sms.AlertServiceCentreResponse alertServiceCentreResponseIndication) { service(alertServiceCentreResponseIndication); }
     @Override public void onReadyForSMRequest(org.restcomm.protocols.ss7.map.api.service.sms.ReadyForSMRequest readyForSMRequest) { service(readyForSMRequest); }
     @Override public void onReadyForSMResponse(org.restcomm.protocols.ss7.map.api.service.sms.ReadyForSMResponse readyForSMResponse) { service(readyForSMResponse); }

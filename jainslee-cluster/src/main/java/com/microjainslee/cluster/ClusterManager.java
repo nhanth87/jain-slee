@@ -96,6 +96,7 @@ public class ClusterManager {
     private final String nodeId;
     private final boolean clusterMode;
     private final EmbeddedCacheManager cacheManager;
+    private final boolean ownsCacheManager;
     private final ConcurrentMap<String, Cache<?, ?>> declaredCaches = new ConcurrentHashMap<>();
 
     /**
@@ -119,9 +120,30 @@ public class ClusterManager {
         this.clusterMode = configuration.isClusterEnabled();
         this.nodeId = resolveNodeId(configuration, nodeIdOverride);
         this.cacheManager = new DefaultCacheManager(buildGlobalConfiguration());
+        this.ownsCacheManager = true;
         LOG.info("ClusterManager created: nodeId={} clusterMode={} stack={} initialHosts={}",
                 nodeId, clusterMode, configuration.getClusterStack(),
                 configuration.getClusterInitialHosts());
+    }
+
+    /**
+     * Share an existing {@link EmbeddedCacheManager} (one JGroups view).
+     * {@link #stop()} does <em>not</em> stop the adopted manager — the owner does.
+     */
+    public static ClusterManager adopt(EmbeddedCacheManager manager, String nodeId, boolean clusterMode) {
+        return new ClusterManager(manager, nodeId, clusterMode);
+    }
+
+    private ClusterManager(EmbeddedCacheManager manager, String nodeId, boolean clusterMode) {
+        this.configuration = null;
+        this.cacheManager = Objects.requireNonNull(manager, "cacheManager");
+        this.nodeId = (nodeId == null || nodeId.isBlank())
+                ? "node-" + UUID.randomUUID().toString().substring(0, 8)
+                : nodeId;
+        this.clusterMode = clusterMode;
+        this.ownsCacheManager = false;
+        LOG.info("ClusterManager adopted existing manager: nodeId={} clusterMode={}",
+                this.nodeId, clusterMode);
     }
 
     private static String resolveNodeId(MicroSleeConfiguration cfg, String override) {
@@ -314,7 +336,7 @@ public class ClusterManager {
      */
     public void stop() {
         try {
-            if (cacheManager.getStatus() == ComponentStatus.RUNNING) {
+            if (ownsCacheManager && cacheManager.getStatus() == ComponentStatus.RUNNING) {
                 cacheManager.stop();
             }
         } catch (RuntimeException re) {
@@ -325,6 +347,6 @@ public class ClusterManager {
         } finally {
             declaredCaches.clear();
         }
-        LOG.info("ClusterManager stopped: nodeId={}", nodeId);
+        LOG.info("ClusterManager stopped: nodeId={} adopted={}", nodeId, !ownsCacheManager);
     }
 }

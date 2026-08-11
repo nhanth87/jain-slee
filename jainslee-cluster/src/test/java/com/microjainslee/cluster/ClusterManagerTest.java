@@ -109,6 +109,25 @@ class ClusterManagerTest {
     }
 
     @Test
+    @DisplayName("adopt: shares manager and stop() does not shut it down")
+    void adoptDoesNotStopUnderlyingManager() {
+        ClusterManager owner = new ClusterManager(localConfig(), "owner-node");
+        try {
+            var manager = owner.getCacheManager();
+            ClusterManager adopted = ClusterManager.adopt(manager, "elisa-scscf-2", true);
+            assertThat(adopted.getNodeId()).isEqualTo("elisa-scscf-2");
+            assertThat(adopted.isClusterMode()).isTrue();
+            assertThat(adopted.getCacheManager()).isSameAs(manager);
+            adopted.getCache("ra-sip-servlet-meta", CacheMode.LOCAL).put("k", "v");
+            adopted.stop();
+            assertThat(manager.getStatus().toString()).isEqualTo("RUNNING");
+            assertThat(manager.getCache("ra-sip-servlet-meta").get("k")).isEqualTo("v");
+        } finally {
+            owner.stop();
+        }
+    }
+
+    @Test
     @DisplayName("local mode: stop() releases resources without error")
     void localStopReleasesResources() {
         clusterManager = new ClusterManager(localConfig(), "test-stop-node");

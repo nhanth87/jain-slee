@@ -29,6 +29,7 @@ import org.restcomm.protocols.ss7.map.api.primitives.ISDNAddressString;
 import org.restcomm.protocols.ss7.map.api.primitives.LMSI;
 import org.restcomm.protocols.ss7.map.api.primitives.NumberingPlan;
 import org.restcomm.protocols.ss7.map.api.primitives.SubscriberIdentity;
+import org.restcomm.protocols.ss7.map.api.service.callhandling.InterrogationType;
 import org.restcomm.protocols.ss7.map.api.service.callhandling.MAPDialogCallHandling;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSClientID;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSClientType;
@@ -174,8 +175,21 @@ final class MapGmlcOutbound {
                     applicationContextFor(cmd), toSccp(cmd.localAddress()), null,
                     toSccp(cmd.targetAddress()), null);
             prepare(dialog, cmd);
-            dialog.addSendRoutingInformationRequest(
-                    isdn(pf, cmd.msisdn(), "SRI msisdn"), null, null, null);
+            ISDNAddressString msisdn = isdn(pf, cmd.msisdn(), "SRI msisdn");
+            // V3 requires InterrogationType + gmsc-OrGsmSCF-Address (classic GMLC oracle).
+            // The 4-arg short overload leaves interrogationType null and fails encode on V3.
+            if (cmd.mapVersion() <= 2) {
+                dialog.addSendRoutingInformationRequest(msisdn, null, null, null);
+            } else {
+                ISDNAddressString gmsc = isdn(pf, cmd.localAddress().globalTitle(), "SRI gmscAddress");
+                dialog.addSendRoutingInformationRequest(
+                        msisdn, null, null,
+                        InterrogationType.basicCall, false, null, gmsc, null,
+                        null, null, null, null, false,
+                        null, null, false, null, null,
+                        null, false, null, false, false, false,
+                        false, null, null, null, false, null);
+            }
             sendOnce(dialog, cmd.dialogId(), "SRI");
         } catch (MAPException | RuntimeException e) {
             failUnsent(dialog, cmd.dialogId(), "SRI", e);

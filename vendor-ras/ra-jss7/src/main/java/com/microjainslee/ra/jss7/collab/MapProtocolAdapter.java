@@ -242,7 +242,9 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     @Override public void onErrorComponent(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, Long invokeId, org.restcomm.protocols.ss7.map.api.errors.MAPErrorMessage mapErrorMessage) { dialog(mapDialog, Ss7MapEvent.Kind.NOTICE, "onErrorComponent"); }
     @Override public void onRejectComponent(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, Long invokeId, org.restcomm.protocols.ss7.tcap.asn.comp.Problem problem, boolean isLocalOriginated) { dialog(mapDialog, Ss7MapEvent.Kind.NOTICE, "onRejectComponent"); }
     @Override public void onInvokeTimeout(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, Long invokeId) { dialog(mapDialog, Ss7MapEvent.Kind.NOTICE, "onInvokeTimeout"); }
-    @Override public void onMAPMessage(org.restcomm.protocols.ss7.map.api.MAPMessage mapMessage) { service(mapMessage); }
+    // jSS7 MAP services always call onMAPMessage *and* the typed listener for the
+    // same indication. Handling both doubles every Service event (double PSI/PSL).
+    @Override public void onMAPMessage(org.restcomm.protocols.ss7.map.api.MAPMessage mapMessage) { /* typed only */ }
     @Override public void onUpdateLocationRequest(org.restcomm.protocols.ss7.map.api.service.mobility.locationManagement.UpdateLocationRequest updateLocationRequestIndication) { service(updateLocationRequestIndication); }
     @Override public void onUpdateLocationResponse(org.restcomm.protocols.ss7.map.api.service.mobility.locationManagement.UpdateLocationResponse updateLocationResponseIndication) { service(updateLocationResponseIndication); }
     @Override public void onCancelLocationRequest(org.restcomm.protocols.ss7.map.api.service.mobility.locationManagement.CancelLocationRequest cancelLocationRequest) { service(cancelLocationRequest); }

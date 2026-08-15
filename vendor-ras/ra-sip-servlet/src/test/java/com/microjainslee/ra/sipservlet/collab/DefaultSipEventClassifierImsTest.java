@@ -46,4 +46,25 @@ public class DefaultSipEventClassifierImsTest {
         assertTrue("fromUri must not be a full From header", !e.fromUri().contains("From:"));
         assertTrue("non-whitelist must not appear", !e.imsHeaders().containsKey("X-Ignored"));
     }
+
+    @Test
+    public void register401ExtractsWwwAuthenticateForRelay() throws Exception {
+        String raw = """
+                SIP/2.0 401 Unauthorized\r
+                Via: SIP/2.0/UDP 10.0.0.9:5060;branch=z9hG4bKreg1\r
+                From: <sip:alice@ims.lab>;tag=t1\r
+                To: <sip:alice@ims.lab>;tag=s1\r
+                Call-ID: digest-401@10.0.0.9\r
+                CSeq: 1 REGISTER\r
+                WWW-Authenticate: Digest realm="ims.lab", nonce="abc", algorithm=MD5, qop="auth"\r
+                Content-Length: 0\r
+                \r
+                """;
+        var msg = new StringMsgParser().parseSIPMessage(raw.getBytes(StandardCharsets.US_ASCII), true, false, null);
+        var e = (com.microjainslee.ra.sipservlet.events.SipResponseEvent)
+                new DefaultSipEventClassifier().classify(msg, "digest-401@10.0.0.9");
+        assertEquals(401, e.statusCode());
+        assertTrue(e.extraHeaders().get("WWW-Authenticate").contains("algorithm=MD5"));
+        assertTrue(e.extraHeaders().get("WWW-Authenticate").contains("ims.lab"));
+    }
 }

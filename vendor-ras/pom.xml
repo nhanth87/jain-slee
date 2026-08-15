@@ -52,6 +52,9 @@
         <module>ra-grpc-server</module>
         <module>ra-sip-servlet</module>
         <module>ra-diameter</module>
+        <module>ra-gtpv2c</module>
+        <module>ra-pfcp</module>
+        <module>ra-freeswitch</module>
         <module>ra-camel</module>
         <!-- Phase 3+: <module>ra-map-jss7</module> -->
         <module>ra-jss7</module>

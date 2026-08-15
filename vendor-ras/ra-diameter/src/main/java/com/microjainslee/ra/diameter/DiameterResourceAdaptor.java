@@ -19,6 +19,7 @@ import com.microjainslee.ra.diameter.collab.DiameterPeerTracker;
 import com.microjainslee.ra.diameter.collab.DiameterPeerTracker.BaseAction;
 import com.microjainslee.ra.diameter.command.DiameterCommand;
 import com.microjainslee.ra.diameter.events.DiameterEvent;
+import com.microjainslee.ra.diameter.transport.CorsacDiameterTransport;
 import com.microjainslee.ra.diameter.transport.DiameterTransport;
 import com.microjainslee.ra.diameter.transport.DiameterTransportCallbacks;
 import com.microjainslee.ra.diameter.transport.TcpDiameterTransport;
@@ -66,6 +67,7 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
     private volatile ClusterManager clusterManager;
     private volatile RaHaSupport haSupport;
     private volatile Object pendingCheckpointContainer;
+    private volatile CorsacDiameterTransport corsac;
 
     // ---- collaborator injection ----
 
@@ -112,6 +114,9 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
      * Distinct from {@link #isActive()} (local listen) and {@link #isPeerReady()}.
      */
     public boolean isPeerConnected() {
+        if (corsac != null && corsac.linkConnected()) {
+            return true;
+        }
         return active.get() && peerTracker.isPeerConnected();
     }
 
@@ -121,6 +126,9 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
      * This is the honest “Diameter link UP / traffic-ready” primitive.
      */
     public boolean isPeerReady() {
+        if (corsac != null && corsac.linkUp()) {
+            return true;
+        }
         return active.get() && peerTracker.isPeerReady();
     }
 
@@ -142,15 +150,21 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
 
     public void raActive() {
         if (!active.compareAndSet(false, true)) return;
-        if (config.tcpEnabled()) {
+        if (config.sctpEnabled()) {
+            CorsacDiameterTransport c = new CorsacDiameterTransport(config, this);
+            c.setBootstrap(bootstrapPort);
+            corsac = c;
+            setOutboundSender(c);
+            transports.add(c);
+        } else if (config.tcpEnabled()) {
             TcpDiameterTransport tcp = new TcpDiameterTransport(config, this);
             baseParser = tcp.parser();
             transports.add(tcp);
         }
         transports.forEach(DiameterTransport::start);
         initHa();
-        LOG.info("[ra-diameter] ACTIVE transports={} (LISTEN ≠ peer UP; use isPeerReady())",
-                transports.size());
+        LOG.info("[ra-diameter] ACTIVE transports={} sctp={} (LISTEN ≠ peer UP; use isPeerReady())",
+                transports.size(), config.sctpEnabled());
     }
 
     public void raInactive() {
@@ -158,6 +172,7 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
         teardownHa();
         transports.forEach(DiameterTransport::stop);
         transports.clear();
+        corsac = null;
         sessions.clear();
         peerTracker.clear();
         LOG.info("[ra-diameter] INACTIVE");

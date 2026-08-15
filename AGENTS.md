@@ -62,7 +62,9 @@ jainslee-apt        ← APT index (@SbbAnnotation / @OffHeap meta), GeneratedEve
 adapter-quarkus     ← Quarkus/CDI/GraalVM adapter (OTA host stays here)
 adapter-springboot  ← Spring Boot adapter
 adapter-jakartaee   ← Jakarta EE adapter (directory dist, no WAR)
-vendor-ras/         ← ra-jss7, ra-http-server, ra-openapi (5GC SBI H2/H3), …
+vendor-ras/         ← ra-jss7, ra-http-server, ra-openapi (5GC SBI H2/H3),
+                       ra-sip-servlet, ra-diameter, ra-gtpv2c, ra-pfcp,
+                       ra-freeswitch, …
 ```
 
 ## TARGET STATE — what needs to change in the RUNTIME

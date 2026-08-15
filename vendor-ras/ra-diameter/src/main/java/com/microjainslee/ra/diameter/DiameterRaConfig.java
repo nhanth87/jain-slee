@@ -16,6 +16,10 @@ public final class DiameterRaConfig {
     private long vendorId = 0;
     private boolean tcpEnabled = true;
     private boolean sctpEnabled = false;
+    private String peerHost = "127.0.0.1";
+    private int peerPort = 3868;
+    private String destinationHost = "peer.epc.lab";
+    private String destinationRealm = "epc.lab";
     /** Tw-style silence limit for peer-ready (0 = no expiry after CER/CEA). Default 30s. */
     private long watchdogTimeoutMs = 30_000L;
 
@@ -38,6 +42,14 @@ public final class DiameterRaConfig {
     public void setTcpEnabled(boolean v) { tcpEnabled = v; }
     public boolean sctpEnabled() { return sctpEnabled; }
     public void setSctpEnabled(boolean v) { sctpEnabled = v; }
+    public String peerHost() { return peerHost; }
+    public void setPeerHost(String v) { peerHost = v; }
+    public int peerPort() { return peerPort; }
+    public void setPeerPort(int v) { peerPort = v; }
+    public String destinationHost() { return destinationHost; }
+    public void setDestinationHost(String v) { destinationHost = v; }
+    public String destinationRealm() { return destinationRealm; }
+    public void setDestinationRealm(String v) { destinationRealm = v; }
     public long watchdogTimeoutMs() { return watchdogTimeoutMs; }
     public void setWatchdogTimeoutMs(long v) { watchdogTimeoutMs = v; }
 }

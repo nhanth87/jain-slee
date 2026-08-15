@@ -97,6 +97,18 @@ public final class ImsSipHeaderNames {
             SUPPORTED
     );
 
+    /**
+     * Headers P/I must copy when relaying 401/200 REGISTER (Digest/AKA + Path).
+     * Contact is hop-local — not relayed.
+     */
+    public static final List<String> RESPONSE_RELAY = List.of(
+            "WWW-Authenticate",
+            "Authentication-Info",
+            "Service-Route",
+            "Path",
+            P_ASSOCIATED_URI
+    );
+
     private ImsSipHeaderNames() {
     }
 }

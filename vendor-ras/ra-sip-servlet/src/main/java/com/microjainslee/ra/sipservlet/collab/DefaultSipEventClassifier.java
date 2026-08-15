@@ -93,7 +93,8 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
         return new SipResponseEvent(callId,
                 resp.getStatusCode(), resp.getReasonPhrase(),
                 extractBody(resp), extractContentType(resp),
-                extractViaHeaders(resp));
+                extractViaHeaders(resp),
+                extractResponseRelayHeaders(resp));
     }
 
     // --- Header extraction (all javax.sip.* API, no NIST internals) ---
@@ -242,6 +243,29 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
             }
             if (!values.isEmpty()) {
                 out.put(name, List.copyOf(values));
+            }
+        }
+        return out.isEmpty() ? Map.of() : Map.copyOf(out);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, String> extractResponseRelayHeaders(Response resp) {
+        LinkedHashMap<String, String> out = new LinkedHashMap<>();
+        for (String name : ImsSipHeaderNames.RESPONSE_RELAY) {
+            ListIterator it = resp.getHeaders(name);
+            if (it == null) {
+                continue;
+            }
+            List<String> values = new ArrayList<>();
+            while (it.hasNext()) {
+                Object h = it.next();
+                String value = stripHeaderName(h != null ? h.toString() : "", name);
+                if (!value.isEmpty()) {
+                    values.add(value);
+                }
+            }
+            if (!values.isEmpty()) {
+                out.put(name, String.join(",", values));
             }
         }
         return out.isEmpty() ? Map.of() : Map.copyOf(out);

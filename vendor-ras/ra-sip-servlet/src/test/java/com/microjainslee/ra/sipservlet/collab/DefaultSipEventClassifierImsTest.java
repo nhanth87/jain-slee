@@ -67,4 +67,29 @@ public class DefaultSipEventClassifierImsTest {
         assertTrue(e.extraHeaders().get("WWW-Authenticate").contains("algorithm=MD5"));
         assertTrue(e.extraHeaders().get("WWW-Authenticate").contains("ims.lab"));
     }
+
+    @Test
+    public void registerStampsReceivedPeerSeparateFromContact() throws Exception {
+        String raw = """
+                REGISTER sip:ims.lab SIP/2.0\r
+                Via: SIP/2.0/UDP 172.21.0.1:5060;branch=z9hG4bKreg-nat\r
+                Max-Forwards: 70\r
+                To: <sip:alice@ims.lab>\r
+                From: <sip:alice@ims.lab>;tag=t1\r
+                Call-ID: nat-reg@172.21.0.1\r
+                CSeq: 1 REGISTER\r
+                Contact: <sip:alice@172.21.0.1:5060>\r
+                Expires: 3600\r
+                Content-Length: 0\r
+                \r
+                """;
+        var msg = new StringMsgParser().parseSIPMessage(raw.getBytes(StandardCharsets.US_ASCII), true, false, null);
+        var peer = new java.net.InetSocketAddress("192.0.2.80", 5060);
+        var e = (com.microjainslee.ra.sipservlet.events.SipRegisterEvent)
+                new DefaultSipEventClassifier().classify(msg, "nat-reg@172.21.0.1", peer, "UDP");
+        assertEquals("sip:alice@172.21.0.1:5060", e.contactUri());
+        assertEquals("192.0.2.80", e.receivedHost());
+        assertEquals(Integer.valueOf(5060), e.receivedPort());
+        assertEquals("UDP", e.receivedTransport());
+    }
 }

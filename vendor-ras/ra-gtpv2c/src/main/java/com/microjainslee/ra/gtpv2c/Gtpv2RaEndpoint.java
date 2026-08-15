@@ -24,13 +24,22 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
- * JAINSLEE 3-port GTPv2-C RA. Connection only: UDP, codec, Echo, T3 duplicate
- * replay. Create/Modify/Delete Session are fired to an SBB — never handled here.
+ * JAINSLEE 3-port GTPv2-C RA. Connection only: UDP, codec, Echo,
+ * ingress §7.6 response replay, outbound T3/N3 retransmit of requests we sent.
+ * Create/Modify/Delete Session are fired to an SBB — never handled here.
  * Peer live = Echo Response only — bind/LISTEN is never live.
+ *
+ * <p>T3 default {@value #DEFAULT_T3_MS} ms, N3 default {@value #DEFAULT_N3}
+ * retransmissions after the initial send (TS 29.274). Override via
+ * {@link #Gtpv2RaEndpoint(byte, long, int)}. Responses are never retransmitted.
  */
 public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
 
     public static final String RA_NAME = "gtpv2c-ra";
+    /** TS 29.274 retransmission timer — 3 seconds. */
+    public static final long DEFAULT_T3_MS = Gtpv2T3N3.DEFAULT_T3_MS;
+    /** TS 29.274 max retransmissions after the initial send — 3. */
+    public static final int DEFAULT_N3 = Gtpv2T3N3.DEFAULT_N3;
     private static final Logger LOG = LogManager.getLogger(Gtpv2RaEndpoint.class);
 
     private final byte recovery;
@@ -39,17 +48,44 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
     private final Map<String, byte[]> responseCache = new ConcurrentHashMap<>();
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
     private final Map<String, PeerState> peers = new ConcurrentHashMap<>();
+    private final Gtpv2T3N3 t3n3;
     private volatile RaBootstrapPort bootstrap;
     private volatile boolean listening;
     private volatile OutboundSink sink = OutboundSink.NOOP;
     private volatile DatagramSocket socket;
 
     public Gtpv2RaEndpoint(byte recovery) {
-        this.recovery = recovery;
+        this(recovery, DEFAULT_T3_MS, DEFAULT_N3);
     }
 
     public Gtpv2RaEndpoint() {
         this((byte) 1);
+    }
+
+    /**
+     * @param t3Ms retransmission timer (default {@value #DEFAULT_T3_MS})
+     * @param n3 max retransmits after initial send (default {@value #DEFAULT_N3})
+     */
+    public Gtpv2RaEndpoint(byte recovery, long t3Ms, int n3) {
+        this.recovery = recovery;
+        this.t3n3 = new Gtpv2T3N3(t3Ms, n3, new Gtpv2T3N3.Handler() {
+            @Override
+            public void resend(byte[] wire, InetSocketAddress peer) {
+                if (listening) {
+                    emit(wire, peer);
+                }
+            }
+
+            @Override
+            public void echoExhausted(InetSocketAddress peer) {
+                markPeerDown(peer, "t3-n3-exhausted");
+            }
+
+            @Override
+            public void procedureExhausted(Gtpv2MessageType type, int sequence, InetSocketAddress peer) {
+                LOG.debug("gtpv2c-ra T3/N3 exhausted type={} seq={} peer={}", type, sequence, peer);
+            }
+        });
     }
 
     public void setSink(OutboundSink sink) {
@@ -92,6 +128,7 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         peers.clear();
         responseCache.clear();
         inFlight.clear();
+        t3n3.cancelAll();
         LOG.info("gtpv2c-ra INACTIVE");
     }
 
@@ -105,11 +142,18 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
             case GtpEchoCommand echo -> {
                 int s = seq.getAndIncrement() & 0xff_ffff;
                 Gtpv2Message req = Gtpv2Message.echoRequest(s, recovery);
-                emit(Gtpv2Codec.encode(req), echo.peer());
+                byte[] wire = Gtpv2Codec.encode(req);
+                t3n3.track(echo.peer(), s, req.type(), wire);
+                emit(wire, echo.peer());
             }
             case SendGtpv2Message send -> {
-                byte[] wire = Gtpv2Codec.encode(send.message());
-                cacheResponse(send.peer(), send.message().sequence(), wire);
+                Gtpv2Message msg = send.message();
+                byte[] wire = Gtpv2Codec.encode(msg);
+                if (msg.type().isRequest()) {
+                    t3n3.track(send.peer(), msg.sequence(), msg.type(), wire);
+                } else {
+                    cacheResponse(send.peer(), msg.sequence(), wire);
+                }
                 emit(wire, send.peer());
             }
         }
@@ -120,7 +164,30 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
      * messages fire {@link Gtpv2MessageEvent} to the SLEE.
      */
     public void receive(byte[] wire, InetSocketAddress peer) {
-        Gtpv2Message msg = Gtpv2Codec.decode(wire);
+        if (wire == null || wire.length < 8) {
+            LOG.debug("gtpv2c-ra truncated");
+            return;
+        }
+        int version = (wire[0] >> 5) & 0x07;
+        if (version != 2) {
+            emit(Gtpv2Codec.encode(Gtpv2Message.versionNotSupported(0)), peer);
+            return;
+        }
+        Gtpv2Message msg;
+        try {
+            msg = Gtpv2Codec.decode(wire);
+        } catch (IllegalArgumentException e) {
+            LOG.debug("gtpv2c-ra decode {}", e.toString());
+            return;
+        }
+        if (msg.type().isResponse()) {
+            t3n3.complete(peer, msg.sequence());
+        }
+        if (msg.type() == Gtpv2MessageType.UNKNOWN
+                || msg.type() == Gtpv2MessageType.VERSION_NOT_SUPPORTED) {
+            LOG.debug("gtpv2c-ra ignore {}", msg.type());
+            return;
+        }
         String txKey = txKey(peer, msg.sequence());
         byte[] cached = responseCache.get(txKey);
         if (cached != null) {
@@ -159,6 +226,18 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
 
     public byte recovery() {
         return recovery;
+    }
+
+    public long t3Millis() {
+        return t3n3.t3Millis();
+    }
+
+    public int n3() {
+        return t3n3.n3();
+    }
+
+    public int outstandingCount() {
+        return t3n3.size();
     }
 
     private void cacheResponse(InetSocketAddress peer, int sequence, byte[] wire) {

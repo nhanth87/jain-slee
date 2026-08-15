@@ -8,11 +8,24 @@ public record SipRegisterEvent(
     String contactUri,
     int expires,
     String authorization,
-    String pathHeader
+    String pathHeader,
+    String receivedHost,
+    Integer receivedPort,
+    String receivedTransport
 ) implements SipEvent {
     public SipRegisterEvent(String callId, String fromUri, String toUri, String contactUri, int expires) {
-        this(callId, fromUri, toUri, contactUri, expires, null, null);
+        this(callId, fromUri, toUri, contactUri, expires, null, null, null, null, null);
+    }
+
+    /** Compact constructor used by Digest/AKA tests (no transport source). */
+    public SipRegisterEvent(String callId, String fromUri, String toUri, String contactUri, int expires,
+                            String authorization, String pathHeader) {
+        this(callId, fromUri, toUri, contactUri, expires, authorization, pathHeader, null, null, null);
     }
 
     @Override public String method() { return "REGISTER"; }
+
+    public boolean hasReceivedFlow() {
+        return receivedHost != null && !receivedHost.isBlank();
+    }
 }

@@ -14,6 +14,7 @@ public record Gtpv2Ie(int type, int instance, byte[] value) {
     public static final int CAUSE = 2;
     public static final int RECOVERY = 3;
     public static final int APN = 71;
+    public static final int EBI = 73;
     public static final int FTEID = 87;
     public static final int BEARER_CONTEXT = 93;
     public static final int CHARGING_ID = 94;

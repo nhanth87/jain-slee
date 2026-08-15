@@ -3,11 +3,18 @@ package com.microjainslee.ra.gtpv2c;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 
 /** TS 29.274 IE helpers. Codec lives in the RA; SBBs use these to read/write IEs. */
 public final class Gtpv2Ies {
 
     public static final int CAUSE_REQUEST_ACCEPTED = 16;
+    /** TS 29.274 Cause: Context not found. */
+    public static final int CAUSE_CONTEXT_NOT_FOUND = 64;
+    /** Default bearer EBI (TS 24.007 — first dedicated/default is 5). */
+    public static final byte DEFAULT_BEARER_EBI = 5;
 
     private Gtpv2Ies() {}
 
@@ -124,6 +131,61 @@ public final class Gtpv2Ies {
         return decodeFteid(ie.value());
     }
 
+    /**
+     * TS 29.274 IE 93 — grouped Bearer Context: concatenated inner TLVs
+     * (EBI + F-TEID + optional extras such as Cause).
+     */
+    public static byte[] encodeBearerContext(byte ebi, GtpFteid s1u, Gtpv2Ie... extra) {
+        Objects.requireNonNull(s1u, "s1u");
+        List<Gtpv2Ie> inner = new ArrayList<>();
+        inner.add(new Gtpv2Ie(Gtpv2Ie.EBI, 0, new byte[] {ebi}));
+        inner.add(new Gtpv2Ie(Gtpv2Ie.FTEID, 0, encodeFteid(s1u)));
+        if (extra != null) {
+            inner.addAll(List.of(extra));
+        }
+        return Gtpv2Codec.encodeIes(inner);
+    }
+
+    /** Same TLV walk as the outer GTPv2 IE list. */
+    public static List<Gtpv2Ie> decodeGrouped(byte[] raw) {
+        if (raw == null || raw.length == 0) {
+            return List.of();
+        }
+        return Gtpv2Codec.decodeIes(raw);
+    }
+
+    /**
+     * S1-U F-TEID from grouped Bearer Context. Legacy lab messages that stuffed a
+     * bare F-TEID into IE 93 still decode. Falls back to the top-level F-TEID.
+     */
+    public static GtpFteid s1uFromBearerContext(Gtpv2Message msg) {
+        Gtpv2Ie bc = msg.first(Gtpv2Ie.BEARER_CONTEXT);
+        if (bc != null) {
+            List<Gtpv2Ie> inner = decodeGrouped(bc.value());
+            Gtpv2Ie nested = inner.stream().filter(i -> i.type() == Gtpv2Ie.FTEID).findFirst().orElse(null);
+            if (nested != null) {
+                return decodeFteid(nested.value());
+            }
+            boolean grouped = inner.stream().anyMatch(i -> i.type() == Gtpv2Ie.EBI || i.type() == Gtpv2Ie.CAUSE);
+            if (!grouped && looksLikeBareFteid(bc.value())) {
+                return decodeFteid(bc.value());
+            }
+        }
+        return senderFteid(msg);
+    }
+
+    private static boolean looksLikeBareFteid(byte[] raw) {
+        if (raw == null || raw.length < 9) {
+            return false;
+        }
+        try {
+            decodeFteid(raw);
+            return true;
+        } catch (IllegalArgumentException _) {
+            return false;
+        }
+    }
+
     public static byte[] encodePaa(InetAddress ipv4) {
         byte[] addr = ipv4.getAddress();
         byte[] out = new byte[1 + addr.length];
@@ -133,6 +195,10 @@ public final class Gtpv2Ies {
     }
 
     public static Gtpv2Ie causeAccepted() {
-        return new Gtpv2Ie(Gtpv2Ie.CAUSE, 0, new byte[] {(byte) CAUSE_REQUEST_ACCEPTED, 0});
+        return cause(CAUSE_REQUEST_ACCEPTED);
+    }
+
+    public static Gtpv2Ie cause(int value) {
+        return new Gtpv2Ie(Gtpv2Ie.CAUSE, 0, new byte[] {(byte) value, 0});
     }
 }

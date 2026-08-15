@@ -7,6 +7,7 @@ import javax.sip.message.Message;
 import javax.sip.message.Request;
 import javax.sip.message.Response;
 
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,8 +31,18 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
 
     @Override
     public SipEvent classify(Object msg, String callId) {
+        return classify(msg, callId, null, null);
+    }
+
+    @Override
+    public SipEvent classify(Object msg, String callId, InetSocketAddress peer) {
+        return classify(msg, callId, peer, null);
+    }
+
+    @Override
+    public SipEvent classify(Object msg, String callId, InetSocketAddress peer, String transport) {
         if (msg instanceof Request req) {
-            return classifyRequest(req, callId);
+            return classifyRequest(req, callId, peer, transport);
         } else if (msg instanceof Response resp) {
             return classifyResponse(resp, callId);
         }
@@ -39,7 +50,7 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
         return null;
     }
 
-    private SipEvent classifyRequest(Request req, String callId) {
+    private SipEvent classifyRequest(Request req, String callId, InetSocketAddress peer, String transport) {
         String method = req.getMethod();
         if (method == null) return null;
         return switch (method.toUpperCase()) {
@@ -57,7 +68,10 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
                     extractContact(req),
                     extractExpires(req),
                     extractAuthorization(req),
-                    extractPath(req));
+                    extractPath(req),
+                    peerHost(peer),
+                    peerPort(peer),
+                    receivedTransport(req, transport));
             case "OPTIONS"  -> new SipOptionsEvent(callId);
             case "SUBSCRIBE" -> new SipSubscribeEvent(callId,
                     extractFrom(req), extractTo(req),
@@ -298,5 +312,36 @@ public final class DefaultSipEventClassifier implements SipEventClassifier {
     private String extractPath(Message msg) {
         Header h = msg.getHeader("Path");
         return h == null ? null : stripHeaderName(h.toString(), "Path");
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractViaTransport(Message msg) {
+        ViaHeader via = (ViaHeader) msg.getHeader(ViaHeader.NAME);
+        if (via == null || via.getTransport() == null) {
+            return null;
+        }
+        return via.getTransport().toUpperCase();
+    }
+
+    private String receivedTransport(Request req, String socketTransport) {
+        if (socketTransport != null && !socketTransport.isBlank()) {
+            return socketTransport.toUpperCase();
+        }
+        return extractViaTransport(req);
+    }
+
+    private static String peerHost(InetSocketAddress peer) {
+        if (peer == null || peer.getAddress() == null) {
+            return null;
+        }
+        return peer.getAddress().getHostAddress();
+    }
+
+    private static Integer peerPort(InetSocketAddress peer) {
+        if (peer == null) {
+            return null;
+        }
+        int p = peer.getPort();
+        return p > 0 ? p : null;
     }
 }

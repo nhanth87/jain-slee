@@ -421,7 +421,7 @@ public final class SipServletResourceAdaptor {
         dialogRegistry.recordInbound(callId, handle, msg, peer, transport);
         publishHaOpened(callId, peer, transport);
 
-        SipEvent event = classifier.classify(msg, callId);
+        SipEvent event = classifier.classify(msg, callId, peer, transport);
         if (event != null) {
             bootstrapPort.fireEvent(event, handle, null);
         }

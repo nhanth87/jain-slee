@@ -33,6 +33,10 @@ public record Gtpv2Message(
                 new Gtpv2Ie(Gtpv2Ie.RECOVERY, 0, new byte[] {recovery})));
     }
 
+    public static Gtpv2Message versionNotSupported(int sequence) {
+        return new Gtpv2Message(Gtpv2MessageType.VERSION_NOT_SUPPORTED, 0, sequence, (byte) 0, List.of());
+    }
+
     public Gtpv2Message withIes(Gtpv2Ie... extra) {
         List<Gtpv2Ie> all = new ArrayList<>(ies);
         all.addAll(List.of(extra));

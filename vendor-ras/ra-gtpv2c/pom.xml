@@ -11,7 +11,7 @@
     <artifactId>ra-gtpv2c</artifactId>
     <packaging>jar</packaging>
     <name>micro-jainslee :: RA GTPv2-C</name>
-    <description>JAINSLEE 3-port RA for GTPv2-C (TS 29.274). UDP, codec, Echo, duplicate response replay. Procedures stay in the SBB.</description>
+    <description>JAINSLEE 3-port RA for GTPv2-C (TS 29.274). UDP, codec, Echo, §7.6 response replay, outbound T3/N3. Procedures stay in the SBB.</description>
 
     <dependencies>
         <dependency>

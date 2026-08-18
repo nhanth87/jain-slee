@@ -110,13 +110,15 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
             InetAddress local = InetAddress.getByName(listenHost());
             InetAddress remote = InetAddress.getByName(peerHost());
             boolean sctp = config.sctpEnabled();
+            boolean server = !"client".equalsIgnoreCase(config.peerRole());
+            int localPort = server ? config.port() : 0;
             stack.getNetworkManager().addLink(
                     LINK_ID,
                     remote,
                     peerPort(),
                     local,
-                    config.port(),
-                    Boolean.TRUE,
+                    localPort,
+                    server,
                     sctp,
                     config.originHost(),
                     config.realm(),
@@ -137,8 +139,8 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
                     Package.getPackage("com.mobius.software.telco.protocols.diameter.impl.commands.common"));
             stack.getNetworkManager().addNetworkListener(LINK_ID, this::onCorsacMessage);
             stack.getNetworkManager().startLink(LINK_ID);
-            LOG.info("[diameter-ra] corsac {} listen={}:{} peer={}:{} (LISTEN ≠ peer UP)",
-                    protocol(), local.getHostAddress(), config.port(),
+            LOG.info("[diameter-ra] corsac {} role={} local={}:{} peer={}:{} (LISTEN/dial ≠ peer UP)",
+                    protocol(), config.peerRole(), local.getHostAddress(), localPort,
                     remote.getHostAddress(), peerPort());
         } catch (Exception e) {
             started.set(false);

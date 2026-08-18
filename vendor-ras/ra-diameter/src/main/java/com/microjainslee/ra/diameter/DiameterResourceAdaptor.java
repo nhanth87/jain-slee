@@ -150,7 +150,7 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
 
     public void raActive() {
         if (!active.compareAndSet(false, true)) return;
-        if (config.sctpEnabled()) {
+        if (config.sctpEnabled() || config.tcpEnabled()) {
             CorsacDiameterTransport c = new CorsacDiameterTransport(config, this);
             c.setBootstrap(bootstrapPort);
             corsac = c;

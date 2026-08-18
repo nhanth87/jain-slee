@@ -20,6 +20,8 @@ public final class DiameterRaConfig {
     private int peerPort = 3868;
     private String destinationHost = "peer.epc.lab";
     private String destinationRealm = "epc.lab";
+    /** "server" = accept inbound Diameter peer (listen); "client" = dial peer + initiate CER. */
+    private String peerRole = "server";
     /** Tw-style silence limit for peer-ready (0 = no expiry after CER/CEA). Default 30s. */
     private long watchdogTimeoutMs = 30_000L;
 
@@ -50,6 +52,8 @@ public final class DiameterRaConfig {
     public void setDestinationHost(String v) { destinationHost = v; }
     public String destinationRealm() { return destinationRealm; }
     public void setDestinationRealm(String v) { destinationRealm = v; }
+    public String peerRole() { return peerRole; }
+    public void setPeerRole(String v) { peerRole = v; }
     public long watchdogTimeoutMs() { return watchdogTimeoutMs; }
     public void setWatchdogTimeoutMs(long v) { watchdogTimeoutMs = v; }
 }

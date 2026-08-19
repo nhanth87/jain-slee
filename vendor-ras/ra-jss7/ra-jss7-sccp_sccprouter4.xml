@@ -1,0 +1,23 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<RouterConfig>
+  <longMessageRules/>
+  <saps>
+    <k1>
+      <mtp3Id>1</mtp3Id>
+      <opc>1</opc>
+      <ni>2</ni>
+      <stackName>ra-jss7-sccp</stackName>
+      <networkId>0</networkId>
+      <localGtDigits/>
+      <dpcList>
+        <k1>
+          <firstDpc>2</firstDpc>
+          <lastDpc>2</lastDpc>
+          <firstSls>0</firstSls>
+          <lastSls>255</lastSls>
+          <slsMask>255</slsMask>
+        </k1>
+      </dpcList>
+    </k1>
+  </saps>
+</RouterConfig>

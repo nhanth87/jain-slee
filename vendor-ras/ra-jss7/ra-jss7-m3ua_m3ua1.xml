@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<LinkedHashMap>
+  <timeBetweenHeartbeat>10000</timeBetweenHeartbeat>
+  <statisticsEnabled>false</statisticsEnabled>
+  <statisticsTaskDelay>5000</statisticsTaskDelay>
+  <statisticsTaskPeriod>5000</statisticsTaskPeriod>
+  <routingKeyManagementEnabled>false</routingKeyManagementEnabled>
+  <useLsbForLinksetSelection>false</useLsbForLinksetSelection>
+</LinkedHashMap>

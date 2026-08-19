@@ -1,0 +1,22 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<sccpRouterExt>
+  <rulesMap/>
+  <routingAddresses>
+    <k1>
+      <translated>false</translated>
+      <signalingPointCode>1</signalingPointCode>
+      <subsystemNumber>0</subsystemNumber>
+      <addressIndicator>
+        <globalTitleIndicator>NO_GLOBAL_TITLE_INCLUDED</globalTitleIndicator>
+        <routingIndicator>ROUTING_BASED_ON_DPC_AND_SSN</routingIndicator>
+        <reservedForNationalUseBit>false</reservedForNationalUseBit>
+        <pcpresent>true</pcpresent>
+        <ssnpresent>false</ssnpresent>
+      </addressIndicator>
+      <globalTitle/>
+      <pc>1</pc>
+      <ssn>0</ssn>
+      <networkId>0</networkId>
+    </k1>
+  </routingAddresses>
+</sccpRouterExt>

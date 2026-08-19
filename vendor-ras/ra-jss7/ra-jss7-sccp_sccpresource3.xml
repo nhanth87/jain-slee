@@ -1,0 +1,27 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<ResourcesConfig>
+  <remoteSsns>
+    <k1>
+      <remoteSpc>2</remoteSpc>
+      <remoteSsn>8</remoteSsn>
+      <remoteSsnFlag>0</remoteSsnFlag>
+      <markProhibitedWhenSpcResuming>false</markProhibitedWhenSpcResuming>
+      <remoteSsnProhibited>false</remoteSsnProhibited>
+    </k1>
+  </remoteSsns>
+  <remoteSpcs>
+    <k1>
+      <remoteSpc>2</remoteSpc>
+      <remoteSpcFlag>0</remoteSpcFlag>
+      <mask>0</mask>
+      <remoteSpcProhibited>false</remoteSpcProhibited>
+      <remoteSccpProhibited>false</remoteSccpProhibited>
+      <rl>0</rl>
+      <rsl>0</rsl>
+      <currentRestrictionLevel>0</currentRestrictionLevel>
+      <remoteSignalingPointCodeExt/>
+      <currentRestrictionSubLevel>0</currentRestrictionSubLevel>
+    </k1>
+  </remoteSpcs>
+  <concernedSpcs/>
+</ResourcesConfig>

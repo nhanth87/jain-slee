@@ -85,9 +85,8 @@ What micro-jainslee does **not** protect against:
 These are explicitly tracked and not considered vulnerabilities:
 
 1. **Reflection-based VT executor** (`MicroSleeExecutors.newVirtualThreadPerTaskExecutor`)
-   — uses `Method.invoke` to keep the bytecode Java 8 compatible.
-   On Java 21+ this is the spec-blessed path. On older JVMs it falls
-   back to `Executors.newCachedThreadPool()`. The reflectively
+   — uses `Method.invoke` to keep the bytecode Java 25 compatible.
+   On Java 25 this is the spec-blessed path. The reflectively
    acquired method reference is the spec-mandated signature — no
    attacker-controlled input reaches the reflective invocation.
 2. **Dual license** — the dual-license arrangement (GPLv3 + Commercial)

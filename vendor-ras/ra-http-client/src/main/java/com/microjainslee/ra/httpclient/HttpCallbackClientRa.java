@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Outbound HTTP callback RA on <b>java.net.http.HttpClient</b> (Java 11+)
+ * Outbound HTTP callback RA on <b>java.net.http.HttpClient</b> (Java 25)
  * — non-blocking sends, GraalVM-native ready, zero third-party HTTP
  * dependencies.
  *

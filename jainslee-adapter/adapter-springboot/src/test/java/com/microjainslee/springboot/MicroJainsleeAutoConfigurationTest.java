@@ -41,19 +41,8 @@ import static org.junit.Assert.fail;
  *
  * <p><b>Why not @SpringBootTest / ApplicationContextRunner?</b> Spring Boot
  * 3.3.0's bundled ASM only reads class files up to v65 (Java 21). Our
- * jainslee-core 1.1.0 is compiled to v69 (Java 25 -- needed for
- * ScopedValue which is final there). The {@code AutoConfigurationSorter}
- * therefore fails with
- * {@code ClassFormatException: ASM ClassReader failed to parse class
- * file ... Unsupported class file major version 69} the moment it
- * tries to scan our auto-config class. Upgrading to Spring Boot 3.4+
- * (which has Java 25 v69 support in its bundled ASM) removes the
- * problem entirely -- do that, then switch this test to
- * {@code @SpringBootTest} + {@code ApplicationContextRunner}.
- *
- * <p>For now, the tests below verify the same wiring using plain
- * reflection (no ASM scanning) plus a direct standalone lifecycle
- * test of {@link MicroJainsleeLifecycle}.
+ * jainslee-core is compiled to v69 (Java 25). Upgrading to Spring Boot
+ * 3.4+ (which has Java 25 v69 support) removes the problem.
  */
 public class MicroJainsleeAutoConfigurationTest {
 

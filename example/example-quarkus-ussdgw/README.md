@@ -64,8 +64,6 @@ mvn -B -ntp test
 
 Expected: **2 tests, 0 failures**.
 
-> **Note:** Quarkus 3.15.1 ASM supports up to Java 21 bytecode. Full `@QuarkusTest` on Java 25 requires Quarkus 3.17+.
-
 ---
 
 ## Tiếng Việt — Chạy thử

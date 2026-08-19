@@ -1,5 +1,7 @@
 # AGENTS.md — Micro-JAINSLEE Runtime
 
+**JDK: Java 25 only.** See Absolute Constraint below. Workspace policy: all host Java = 25 (mise). [`../../../../../AGENTS.md`](../../../../../AGENTS.md).
+
 ## REPOSITORY INFO
 
 | Repo | Remote | Branch |
@@ -8,6 +10,37 @@
 | jSS7 (Java 25) | origin (nhanth87/jss7) | j25 |
 | jSS7 (Java 8) | origin (nhanth87/jss7) | master |
 | SCTP | local | java25-upgrade |
+
+## ⚠️ JAVA 25 ONLY — ABSOLUTE CONSTRAINT
+
+This project targets **Java 25 exclusively**. All pom.xml files must use:
+
+```xml
+<properties>
+    <maven.compiler.source>25</maven.compiler.source>
+    <maven.compiler.target>25</maven.compiler.target>
+    <maven.compiler.release>25</maven.compiler.release>
+</properties>
+
+<!-- and in maven-compiler-plugin -->
+<configuration>
+    <release>25</release>
+</configuration>
+```
+
+**DO NOT:**
+- ❌ Use `<release>21</release>` or lower in any pom.xml
+- ❌ Reference Java 8, Java 11, Java 17, Java 21 in comments as current target
+- ❌ Add `--enable-preview` flags (Java 25 features are GA)
+- ❌ Write fallback code for Java < 25 (no reflection shims for VT, no polyfills)
+
+**DO:**
+- ✅ Use Java 25 features directly: Virtual Threads, ScopedValue, switch pattern matching, records, sealed classes
+- ✅ Target bytecode v69 (Java 25 class file version)
+- ✅ Assume `Executors.newVirtualThreadPerTaskExecutor()` is always available
+
+**Why:** The project was previously compiled to bytecode v65 (Java 21) for Quarkus/Spring compatibility.
+That era is over. All dependencies (Quarkus, Spring Boot) now support Java 25 natively.
 
 ## MISSION
 Re-architect the micro-jainslee RUNTIME (not the app) to natively support
@@ -199,3 +232,14 @@ Events must be mapped before the RA fires them.
 - New module **`ss7-config`** here holds the neutral single-file JSON stack config + the
   `Ss7StackBuilder` compiler (SCTP→M3UA→SCCP→TCAP→MAP/CAP). `ra-jss7` depends on it and stays
   vendor-neutral (no per-layer jSS7 wiring).
+
+
+## Shared lab lessons (2026-08)
+
+Cross-cutting Digicom grill (canonical: `jain-slee/jain-slee/docs/agents/lessons.md` + ussdgw lessons). Digicom ussdgw is **prod-bound** (PostgreSQL `ussdgw`, live Balance Plus) — not a disposable toy lab.
+
+- **Prove on the wire**, not only logs — HTTPS → TLS/SNI; empty 200 can still fail product semantics.
+- **Bind the SSN/port the peer addresses** — `services` → TCAP `setExtraSsns`; Digicom MO peer SSN **147** needs boot `Registered SCCP listener with extra ssn 147`.
+- **Ship/dist honesty:** package before deploy; never overwrite Digicom/prod `configs/` on rsync; `db-kind` build-time; **Java 25** only.
+- **Async JDBC flusher** must persist every entity column — schema ≠ written fields.
+- **Tenant/network scoping** must match the routing plane partition key (e.g. SCCP `networkId`).

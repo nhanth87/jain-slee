@@ -41,10 +41,8 @@ import static org.junit.Assert.fail;
  * three lifecycle operations the SBB spec mandates: {@code create},
  * {@code submit} (pending work) and {@code shutdown} (cancel).</p>
  *
- * <p>Runs on Java 21+ where {@link MicroSleeExecutors} surfaces the real
- * virtual-thread executor. On older JVMs each "virtual thread" is a
- * cached platform thread; the contract still holds but memory/throughput
- * numbers will differ.</p>
+ * <p>Runs on Java 25 where {@link MicroSleeExecutors} surfaces the real
+ * virtual-thread executor.</p>
  */
 public class SbbEntityPoolStressTest {
 

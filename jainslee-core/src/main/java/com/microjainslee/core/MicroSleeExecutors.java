@@ -15,7 +15,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Creates Java 25/21 virtual-thread executors when available while keeping Java 8 bytecode.
+ * Creates Java 25 virtual-thread executors.
  */
 final class MicroSleeExecutors {
 
@@ -33,9 +33,8 @@ final class MicroSleeExecutors {
     }
 
     /**
-     * Public accessor for {@code Executors.newVirtualThreadPerTaskExecutor()} when running on Java 21+.
-     * Returns {@code null} on Java 8/11/17 where the API does not exist. Called by
-     * {@link VirtualThreadSbbEntityPool} to keep J8 source/target while still benefiting from VT on J25.
+     * Public accessor for {@code Executors.newVirtualThreadPerTaskExecutor()} when running on Java 25.
+     * Called by {@link VirtualThreadSbbEntityPool}.
      */
     static ExecutorService newVirtualThreadPerTaskExecutor() {
         return newVirtualThreadPerTaskExecutorInternal();

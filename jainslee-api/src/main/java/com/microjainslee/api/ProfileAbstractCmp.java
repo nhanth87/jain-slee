@@ -205,27 +205,38 @@ public abstract class ProfileAbstractCmp implements Profile {
             return null;
         }
         String capitalized = Character.toUpperCase(fieldName.charAt(0)) + fieldName.substring(1);
-        Class<?> klass = getClass();
         String prefix = getter ? "get" : "set";
+        String target = prefix + capitalized;
+        Class<?> klass = getClass();
         while (klass != null && klass != Object.class && klass != ProfileAbstractCmp.class) {
-            try {
-                return klass.getDeclaredMethod(prefix + capitalized);
-            } catch (NoSuchMethodException ignored) {
-                // continue up the hierarchy
+            for (Method m : klass.getDeclaredMethods()) {
+                if (m.isSynthetic() || m.isBridge() || !m.getName().equals(target)) {
+                    continue;
+                }
+                // Getters are zero-arg; setters take exactly one parameter.
+                // (getDeclaredMethod(name) can never resolve a 1-arg setter.)
+                if (getter && m.getParameterCount() == 0) {
+                    return m;
+                }
+                if (!getter && m.getParameterCount() == 1) {
+                    return m;
+                }
             }
             klass = klass.getSuperclass();
         }
         // Fall back: try isXxx for boolean getters.
         if (getter) {
+            String isTarget = "is" + capitalized;
             klass = getClass();
             while (klass != null && klass != Object.class && klass != ProfileAbstractCmp.class) {
-                try {
-                    Method m = klass.getDeclaredMethod("is" + capitalized);
+                for (Method m : klass.getDeclaredMethods()) {
+                    if (m.isSynthetic() || m.isBridge() || !m.getName().equals(isTarget)
+                            || m.getParameterCount() != 0) {
+                        continue;
+                    }
                     if (m.getReturnType() == boolean.class || m.getReturnType() == Boolean.class) {
                         return m;
                     }
-                } catch (NoSuchMethodException ignored) {
-                    // continue
                 }
                 klass = klass.getSuperclass();
             }

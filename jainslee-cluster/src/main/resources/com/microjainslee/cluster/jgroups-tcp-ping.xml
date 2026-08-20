@@ -1,0 +1,69 @@
+<config xmlns="urn:org:jgroups"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="urn:org:jgroups http://www.jgroups.org/schema/jgroups-5.3.xsd">
+   <!--
+     micro-jainslee TCP discovery stack. Mirrors Infinispan's
+     default-configs/default-jgroups-tcp.xml but replaces MPING (multicast)
+     with TCPPING (static host list), because:
+       * multicast is routinely blocked on containers/VMs/cloud networks,
+       * MicroSleeConfiguration.clusterInitialHosts() was otherwise dead
+         (the Infinispan TCP stack has no TCPPING to consume initial_hosts).
+     initial_hosts is substituted by ClusterManager from the configured
+     value before the channel is built.
+   -->
+   <TCP bind_addr="${jgroups.bind.address,jgroups.tcp.address:SITE_LOCAL}"
+        bind_port="${jgroups.bind.port,jgroups.tcp.port:7800}"
+        diag.enabled="${jgroups.diag.enabled:false}"
+        thread_naming_pattern="pl"
+        send_buf_size="640k"
+        sock_conn_timeout="300"
+        linger="${jgroups.tcp.linger:-1}"
+        bundler_type="${jgroups.bundler.type:transfer-queue}"
+        bundler.max_size="${jgroups.bundler.max_size:64000}"
+        non_blocking_sends="${jgroups.non_blocking_sends:false}"
+        port_range="${jgroups.tcp.port_range:0}"
+
+        thread_pool.min_threads="${jgroups.thread_pool.min_threads:0}"
+        thread_pool.max_threads="${jgroups.thread_pool.max_threads:200}"
+        thread_pool.keep_alive_time="60000"
+
+        thread_pool.thread_dumps_threshold="${jgroups.thread_dumps_threshold:10000}"
+        use_virtual_threads="${jgroups.thread.virtual,org.infinispan.threads.virtual:false}"
+   />
+   <TCPPING initial_hosts="${jgroups.tcpping.initial_hosts:127.0.0.1[7800]}"
+            port_range="${jgroups.tcp.port_range:0}"
+            async_discovery="true"
+   />
+   <MERGE3 min_interval="10000"
+           max_interval="30000"
+   />
+   <FD_SOCK2 offset="${jgroups.fd.port-offset:50000}"/>
+   <FD_ALL3/>
+   <VERIFY_SUSPECT2 timeout="1000"/>
+   <pbcast.NAKACK2 use_mcast_xmit="false"
+                   xmit_interval="200"
+                   xmit_table_num_rows="50"
+                   xmit_table_msgs_per_row="1024"
+                   xmit_table_max_compaction_time="30000"
+                   resend_last_seqno="true"
+   />
+   <UNICAST3 conn_close_timeout="5000"
+             xmit_interval="200"
+             xmit_table_num_rows="50"
+             xmit_table_msgs_per_row="1024"
+             xmit_table_max_compaction_time="30000"
+   />
+   <pbcast.STABLE desired_avg_gossip="5000"
+                  max_bytes="1M"
+   />
+   <pbcast.GMS print_local_addr="false"
+               join_timeout="${jgroups.join_timeout:2000}"
+   />
+   <UFC max_credits="${jgroups.max_credits:4m}"
+        min_threshold="0.40"
+   />
+   <MFC max_credits="${jgroups.max_credits:4m}"
+        min_threshold="0.40"
+   />
+   <FRAG4 frag_size="${jgroups.frag_size:60000}"/>
+</config>

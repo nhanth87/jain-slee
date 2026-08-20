@@ -25,6 +25,9 @@ import org.infinispan.configuration.global.GlobalConfigurationBuilder;
 import org.infinispan.manager.DefaultCacheManager;
 import org.infinispan.manager.EmbeddedCacheManager;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -86,6 +89,15 @@ public class ClusterManager {
      */
     private static final String DEFAULT_TCP_STACK = "default-configs/default-jgroups-tcp.xml";
     private static final String DEFAULT_UDP_STACK = "default-configs/default-jgroups-udp.xml";
+    /**
+     * TCP stack with {@code TCPPING} (static host list) instead of
+     * {@code MPING} (multicast). Multicast is routinely blocked on
+     * containers/VMs/cloud NICs, and the Infinispan-shipped TCP stack has
+     * no {@code TCPPING}, so {@link MicroSleeConfiguration#getClusterInitialHosts()}
+     * was otherwise a no-op. See {@code jgroups-tcp-ping.xml} in this module.
+     */
+    private static final String TCP_PING_STACK = "com/microjainslee/cluster/jgroups-tcp-ping.xml";
+    private static final String TCP_PING_INITIAL_HOSTS_TOKEN = "${jgroups.tcpping.initial_hosts:127.0.0.1[7800]}";
 
     /**
      * Java-serialization allow-list — see {@link MarshallingAllowList}.
@@ -159,6 +171,34 @@ public class ClusterManager {
         return "node-" + UUID.randomUUID().toString().substring(0, 8);
     }
 
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    /**
+     * Load the bundled {@code TCPPING} stack and substitute the configured
+     * {@code initial_hosts}, so {@code clusterInitialHosts()} actually drives
+     * discovery on TCP (no multicast). Returns the XML text ready to hand to
+     * Infinispan via {@code configurationXml}.
+     */
+    private static String loadTcpPingStack(String initialHosts) {
+        try (InputStream in = ClusterManager.class.getClassLoader()
+                .getResourceAsStream(TCP_PING_STACK)) {
+            if (in == null) {
+                throw new IllegalStateException("Missing JGroups TCPPING stack resource: "
+                        + TCP_PING_STACK);
+            }
+            String xml = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            if (!xml.contains(TCP_PING_INITIAL_HOSTS_TOKEN)) {
+                throw new IllegalStateException("JGroups TCPPING stack missing initial_hosts token: "
+                        + TCP_PING_INITIAL_HOSTS_TOKEN);
+            }
+            return xml.replace(TCP_PING_INITIAL_HOSTS_TOKEN, initialHosts.trim());
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not read JGroups TCPPING stack: " + TCP_PING_STACK, e);
+        }
+    }
+
     private GlobalConfiguration buildGlobalConfiguration() {
         GlobalConfigurationBuilder global = new GlobalConfigurationBuilder();
         // Always set a node name &mdash; Infinispan requires it even in local
@@ -167,17 +207,28 @@ public class ClusterManager {
         global.cacheManagerName("micro-jainslee-" + nodeId);
         if (clusterMode) {
             String stack = configuration.getClusterStack();
-            String configFile = "tcp".equalsIgnoreCase(stack)
-                    ? DEFAULT_TCP_STACK
-                    : DEFAULT_UDP_STACK;
-            // JGroups properties (configurationFile, initial_hosts) are
-            // forwarded by the defaultTransport() builder. These are
-            // exactly the properties the JGroups XML files expect.
-            global.transport()
-                    .defaultTransport()
-                    .addProperty("configurationFile", configFile)
-                    .addProperty("initial_hosts", configuration.getClusterInitialHosts())
-                    .addProperty("jgroups.stack.config", configFile);
+            boolean tcp = "tcp".equalsIgnoreCase(stack);
+            String initialHosts = configuration.getClusterInitialHosts();
+            // JGroups properties (configurationFile/configurationXml,
+            // initial_hosts) are forwarded by the defaultTransport() builder.
+            // For the TCP stack we prefer a TCPPING-based configuration so
+            // clusterInitialHosts() is actually consumed (multicast MPING is
+            // unreliable on containers/VMs). We inline the host list into the
+            // XML and hand it to Infinispan via configurationXml; setting both
+            // configurationFile and configurationXml is ambiguous, so we pick
+            // exactly one.
+            if (tcp && !isBlank(initialHosts)) {
+                global.transport()
+                        .defaultTransport()
+                        .addProperty("configurationXml", loadTcpPingStack(initialHosts));
+            } else {
+                String configFile = tcp ? DEFAULT_TCP_STACK : DEFAULT_UDP_STACK;
+                global.transport()
+                        .defaultTransport()
+                        .addProperty("configurationFile", configFile)
+                        .addProperty("initial_hosts", initialHosts)
+                        .addProperty("jgroups.stack.config", configFile);
+            }
             // The JGroups thread pool is shared with the Infinispan
             // remote-command executor; named so it shows up clearly in
             // thread dumps.

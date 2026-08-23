@@ -15,6 +15,8 @@ import com.microjainslee.ra.diameter.collab.DiameterOutboundSender;
 import com.microjainslee.ra.diameter.command.DiameterCommand;
 import com.microjainslee.ra.diameter.command.SendDiameterAnswer;
 import com.microjainslee.ra.diameter.command.SendDiameterRequest;
+import com.microjainslee.ra.diameter.avp.DiameterAvp;
+import com.microjainslee.ra.diameter.avp.DiameterAvpEncoder;
 import com.microjainslee.ra.diameter.events.DiameterEvent;
 import com.mobius.software.common.dal.timers.WorkerPool;
 import com.mobius.software.telco.protocols.diameter.ApplicationIDs;
@@ -30,13 +32,13 @@ import com.mobius.software.telco.protocols.diameter.primitives.common.VendorSpec
 import io.netty.buffer.Unpooled;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jdiameter.api.Avp;
+import org.jdiameter.api.AvpSet;
 import org.jdiameter.api.Message;
 import org.jdiameter.client.api.IMessage;
 import org.jdiameter.client.impl.parser.MessageParser;
@@ -125,18 +127,31 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
                     config.destinationHost(),
                     config.destinationRealm(),
                     Boolean.FALSE);
-            List<Long> auth = Arrays.asList(
-                    (long) ApplicationIDs.S6A,
-                    (long) ApplicationIDs.CX_DX,
-                    (long) ApplicationIDs.GX,
-                    (long) ApplicationIDs.CREDIT_CONTROL);
-            stack.getNetworkManager().registerApplication(
-                    LINK_ID,
-                    List.<VendorSpecificApplicationId>of(),
-                    auth,
-                    List.of(),
-                    Package.getPackage("com.mobius.software.telco.protocols.diameter.commands.commons"),
-                    Package.getPackage("com.mobius.software.telco.protocols.diameter.impl.commands.common"));
+            // Command registration is per Diameter application package. The common
+            // commands (CER/DWR/DPR, app 0) are already registered in the stack
+            // constructor — re-registering commons here throws
+            // "request 271 is already registered for application 0". Order matters:
+            // impl package FIRST — the parser jar-scan loads concrete *Impl classes,
+            // then the compiler fallback must NOT re-load the API interfaces (their
+            // (code,isRequest) tuples collide with what the impls just registered).
+            // Each app keeps its own (code,isRequest) space, so S6a / CxDx / Gx /
+            // CreditControl never collide with one another.
+            //
+            // Packages are derived from LOADED classes: Package.getPackage(String)
+            // returns null for packages no class of has been loaded from yet, and
+            // DiameterLinkImpl NPEs on a null provider package (authApplicationPackages).
+            registerApp(ApplicationIDs.S6A,
+                    com.mobius.software.telco.protocols.diameter.commands.s6a.AuthenticationInformationRequest.class,
+                    com.mobius.software.telco.protocols.diameter.impl.commands.s6a.AuthenticationInformationRequestImpl.class);
+            registerApp(ApplicationIDs.CX_DX,
+                    com.mobius.software.telco.protocols.diameter.commands.cxdx.UserAuthorizationRequest.class,
+                    com.mobius.software.telco.protocols.diameter.impl.commands.cxdx.UserAuthorizationRequestImpl.class);
+            registerApp(ApplicationIDs.GX,
+                    com.mobius.software.telco.protocols.diameter.commands.gx.CreditControlRequest.class,
+                    com.mobius.software.telco.protocols.diameter.impl.commands.gx.CreditControlRequestImpl.class);
+            registerApp(ApplicationIDs.CREDIT_CONTROL,
+                    com.mobius.software.telco.protocols.diameter.commands.creditcontrol.CreditControlRequest.class,
+                    com.mobius.software.telco.protocols.diameter.impl.commands.creditcontrol.CreditControlRequestImpl.class);
             stack.getNetworkManager().addNetworkListener(LINK_ID, this::onCorsacMessage);
             stack.getNetworkManager().startLink(LINK_ID);
             LOG.info("[diameter-ra] corsac {} role={} local={}:{} peer={}:{} (LISTEN/dial ≠ peer UP)",
@@ -204,6 +219,21 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
         port.fireEvent((SleeEvent) event, handle, (Address) () -> activity);
     }
 
+    /**
+     * Register one Diameter application: {@code implMarker} selects the package of
+     * concrete command classes (registered first); {@code apiMarker} selects the
+     * provider package of API interfaces.
+     */
+    private void registerApp(int applicationId, Class<?> apiMarker, Class<?> implMarker) throws Exception {
+        stack.getNetworkManager().registerApplication(
+                LINK_ID,
+                List.<VendorSpecificApplicationId>of(),
+                List.of((long) applicationId),
+                List.of(),
+                apiMarker.getPackage(),
+                implMarker.getPackage());
+    }
+
     private DiameterLink link() {
         return stack == null ? null : stack.getNetworkManager().getLink(LINK_ID);
     }
@@ -213,6 +243,7 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
             IMessage msg = parser.createEmptyMessage(req.commandCode(), req.applicationId());
             msg.setRequest(true);
             addAvps(msg, req.sessionId(), req.avps());
+            encodeStructured(msg.getAvps(), req.avpsStructured());
             if (req.destinationHost() != null) {
                 msg.getAvps().addAvp(Avp.DESTINATION_HOST, req.destinationHost(), true, false, true);
             }
@@ -228,9 +259,17 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
             msg.setEndToEndIdentifier(ans.endToEndId());
             msg.getAvps().addAvp(Avp.RESULT_CODE, ans.resultCode(), true);
             addAvps(msg, ans.sessionId(), ans.avps());
+            encodeStructured(msg.getAvps(), ans.avpsStructured());
             return msg;
         }
         throw new IllegalArgumentException("unsupported command " + cmd);
+    }
+
+    private static void encodeStructured(AvpSet set, List<DiameterAvp> avps) {
+        if (avps == null || avps.isEmpty()) {
+            return;
+        }
+        DiameterAvpEncoder.encode(avps, set);
     }
 
     private static void addAvps(IMessage msg, String sessionId, java.util.Map<Integer, String> avps) {

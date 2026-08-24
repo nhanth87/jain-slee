@@ -65,6 +65,11 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     private volatile Ss7RaConfig config = new Ss7RaConfig();
     /** When set, preferred over flat {@link Ss7RaConfig} (multi-link JSON path). */
     private volatile Ss7Config ss7Config;
+    /**
+     * Nextgen STP transit-plane profile (canRelay / removeSpc / incoming ACL /
+     * HA mode marker). Null = terminating-end-node behavior, zero change.
+     */
+    private volatile StpTransitProfile stpTransitProfile;
     private volatile Ss7Stack stack;
     /** Optional — when null, ownership stays JVM-local only. */
     private volatile ClusterManager clusterManager;
@@ -93,6 +98,17 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     /** Full jSS7-25 JSON model — multi SCTP links / multi AS. Clears flat override. */
     public void setSs7Config(Ss7Config cfg) { this.ss7Config = cfg; }
     public Ss7Config ss7Config() { return ss7Config; }
+    /**
+     * Nextgen STP transit-plane profile. Call before {@link #raActive()}.
+     * Null (default) = no transit behavior — the stack stays a terminating node.
+     */
+    public void setStpTransitProfile(StpTransitProfile profile) { this.stpTransitProfile = profile; }
+    public StpTransitProfile stpTransitProfile() { return stpTransitProfile; }
+    /** True when this RA runs as an STP transit node (canRelay applied). */
+    public boolean isStpTransitMode() {
+        StpTransitProfile p = stpTransitProfile;
+        return p != null && p.transitEnabled();
+    }
     public void setIdleTimeoutSeconds(int s) { this.idleTimeoutSeconds = s; }
     public Ss7Stack stack() { return stack; }
 
@@ -183,6 +199,15 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         try {
             this.stack = ss7Config != null ? new Ss7Stack(ss7Config) : new Ss7Stack(config);
             this.stack.start();
+            applyStpTransitProfile(this.stack, this.stpTransitProfile);
+            if (ss7Config == null) {
+                // Flat-config path: DESIGN §10.2/P4 guardrail — override traffic mode
+                // under an active-active fabric gets a WARN (full-JSON path is
+                // operator-authored and left untouched).
+                config.warnIfOverrideTrafficMode(stpTransitProfile == null
+                        ? StpTransitProfile.HaMode.ACTIVE_ACTIVE
+                        : stpTransitProfile.haMode());
+            }
             logOtidRangeGuidance();
 
             boolean mapOn = ss7Config != null
@@ -263,6 +288,41 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                 LOG.warn("stack stop failed during RA teardown: {}", e.toString());
             }
         }
+    }
+
+    /**
+     * Apply the Nextgen STP transit-plane profile to a RUNNING jSS7 stack.
+     * Package-private static for testability; fail-fast — a misconfigured STP
+     * must never silently relay without ACL/canRelay applied (throws).
+     *
+     * @param s       started transport stack (SCCP RUNNING), never null
+     * @param profile nullable — null or {@code !transitEnabled} → no-op
+     */
+    static void applyStpTransitProfile(Ss7Stack s, StpTransitProfile profile) throws Exception {
+        if (profile == null) {
+            return;
+        }
+        profile.validate();
+        org.restcomm.protocols.ss7.config.Ss7Stack under = s.underlying();
+        org.restcomm.protocols.ss7.sccp.impl.SccpStackImpl sccp =
+                under == null ? null : under.sccpStack();
+        if (sccp == null) {
+            throw new IllegalStateException("STP transit profile requires a started SCCP stack");
+        }
+        if (profile.transitEnabled()) {
+            sccp.setCanRelay(true);
+        }
+        sccp.setRemoveSpc(profile.removeSpcOnRelay());
+
+        org.restcomm.protocols.ss7.sccp.impl.acl.SccpIncomingAcl acl = sccp.getSccpIncomingAcl();
+        if (acl != null) {
+            acl.importState(profile.toIncomingAclState());
+        } else if (profile.aclEnabled()) {
+            throw new IllegalStateException("STP transit ACL requested but stack exposes no ACL (jSS7 too old?)");
+        }
+        LOG.info("[ra-jss7] STP transit profile applied: transit={} removeSpc={} haMode={} aclEnabled={} rules={} maskGtLogs={}",
+                profile.transitEnabled(), profile.removeSpcOnRelay(), profile.haMode(),
+                profile.aclEnabled(), profile.aclRules().size(), profile.maskGtInLogs());
     }
 
     private void initOwnershipAndStickyBus() {

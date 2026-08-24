@@ -55,4 +55,19 @@ public interface RaObserver {
      * @param raName the RA entity name the command was targeted at
      */
     void onFailure(String raName);
+
+    /**
+     * An RA lifecycle/state transition happened (ADR 0004 P0-4). Fed by the
+     * container itself so telemetry never shows a permanently UNKNOWN state.
+     *
+     * <p>Default no-op keeps existing implementations source-compatible.
+     *
+     * @param raName the RA entity name
+     * @param state  lifecycle label: {@code ACTIVE}, {@code ERROR},
+     *               {@code STOPPING}, or {@code INACTIVE}
+     * @param port   bound listen port when known, else {@code 0}
+     */
+    default void onStateChange(String raName, String state, int port) {
+        // passive default — observability layers override
+    }
 }

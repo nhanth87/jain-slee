@@ -115,9 +115,68 @@ Generates a **3-port contract** Resource Adaptor (WRAPPER + DELEGATE).
 
 ---
 
+## Runtime changes 2026-08-24 — ADR 0004 wiring hardening (READ BEFORE UPGRADING)
+
+micro-jainslee runtime changed how Profile CMP binding, `@InjectRa` wiring and
+RA state telemetry work. **App source code does NOT change** — but agents
+working on consumer trees (ussdgw / OTA / GMLC / elisa / chipchipvoice /
+DRA / STP) must adapt build + ops habits:
+
+### 1. Profile CMP — split-package stub is GONE
+
+- Old bug: `jainslee-api` shipped a throwing `ProfileAccessorInvoker` stub;
+  Quarkus fast-jar loaded it before core's real class → production UOE 500s.
+- New model: api facade delegates to `ProfileAccessorBridge`, resolved via
+  explicit container install or `META-INF/services` (provided once by core).
+- **Agent action:** delete `build/shadow-profile-accessor.sh` calls from your
+  package scripts once your host consumes runtime jars built AFTER this date.
+  Verify with: `javap -cp <api-jar> com.microjainslee.api.ProfileAccessorInvoker`
+  → methods contain no `UnsupportedOperationException` throw.
+- Error signature changed: missing runtime now throws
+  `IllegalStateException("No ProfileAccessorBridge installed … Add jainslee-core")`
+  at first profile access — grep crash logs for this message instead of UOE.
+- Locator footgun closed loudly: a stray `new InMemoryProfileFacility()`
+  stealing the global CMP binding logs a WARN naming the previous owner
+  (the Digicom `ussdTx` incident class). Debug aid:
+  `ProfileFieldStoreLocator.globalOwner()`.
+
+### 2. `@InjectRa` — silent null ports are GONE
+
+- Boot (`start()`) validates every registered SBB type's `@InjectRa(name)`
+  against registered RA command ports and **fails fast** listing mismatches.
+- Ordering-safe: when NO RA exists yet (legal S5 flow: SBBs before start(),
+  `registerResourceAdaptor` after start()), validation defers; the typo is
+  then reported at injection time as a one-time ERROR naming
+  `Class#field → raName` + registered port names.
+- Escape hatch for exotic flows: `-Djainslee.inject-ra.validation=warn|off`
+  (default `strict`).
+- **Agent action:** if a consumer app suddenly fails boot with
+  `RA wiring validation failed (...)`, that is a REAL typo the old runtime
+  silently swallowed — fix the name to match `RaEndpointPort.getRaName()`.
+
+### 3. RA state telemetry — UNKNOWN states are GONE
+
+- Container feeds `RaObserver.onStateChange(raName, ACTIVE|ERROR|STOPPING|INACTIVE, port)`
+  at every transition. `TelemetryRaObserver` mirrors it into `RaCollector`,
+  so `/metrics` shows real RA lifecycle instead of permanent `UNKNOWN`.
+- Adapters Jakarta/Spring install the observer automatically; embedded apps:
+  one line `container.setRaObserver(new TelemetryRaObserver(telemetry))`.
+- The old lesson "`RaCollector.updateState` is an unfed seam" is CLOSED.
+
+### Regression gates used for this change (repeat for future runtime work)
+
+Baseline `mvn test -fae` → change → full `-fae` again; counts must match
+(same failures only). This batch: 1065→1099 tests, same single pre-existing
+SIP BYE-defer failure, 0 new errors; red-check performed by temporarily
+disabling validation.
+
+---
+
 ## References
 
 - `example/example-embedded-j25-ussdgw/` — complete working app
 - `vendor-ras/ra-http-server/` — reference RA (HttpServerRaEndpoint + HttpServerResourceAdaptor)
 - `vendor-ras/ra-grpc-client/` — reference gRPC RA
 - `docs/junior-dev-guide.md` — Phụ lục C (app pattern), Phụ lục F (RA checklist)
+- `docs/adr/0004-runtime-wiring-hardening.md` — this change set
+- `docs/improvement-proposal.md` — improvement program (P0–P3 roadmap)

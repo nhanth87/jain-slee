@@ -23,6 +23,9 @@ import com.microjainslee.core.offheap.OffHeapSlotArena;
 import com.microjainslee.core.offheap.SegmentedAgronaOffHeapArena;
 import com.microjainslee.core.removal.EntityRemovalEvent;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -42,6 +45,16 @@ import java.util.function.Supplier;
  * its parked virtual thread) is returned for reuse by a future session.
  */
 public final class VirtualThreadSbbEntityPool {
+
+    private static final Logger LOG = LogManager.getLogger(VirtualThreadSbbEntityPool.class);
+
+    /**
+     * ADR 0004 P0-3 — unresolved {@code @InjectRa} names already reported at
+     * least once (class#field → raName). Injection-time is the last line of
+     * defence for legal late-registration flows that boot-time validation
+     * deliberately defers.
+     */
+    private final java.util.Set<String> injectRaWarnings = ConcurrentHashMap.newKeySet();
 
     /** Per-SBB entity facade over a reusable {@link EntitySlot}. */
     public static final class SbbEntity {
@@ -199,6 +212,20 @@ public final class VirtualThreadSbbEntityPool {
                         field.set(sbb, port);
                     } catch (IllegalAccessException e) {
                         // Should not happen after setAccessible(true)
+                    }
+                } else {
+                    // ADR 0004 P0-3 — loud, once per class#field→name. The
+                    // pre-ADR behavior was a silent null port and dropped
+                    // commands (junior-dev-guide classic mistake #4).
+                    String key = sbb.getClass().getName() + "#" + field.getName()
+                            + "->" + (raName == null ? "" : raName);
+                    if (injectRaWarnings.add(key)) {
+                        LOG.error("Unresolved @InjectRa: {}.{} wants RA \"{}\" but no "
+                                        + "such RA command port is registered; the field stays "
+                                        + "null and commands to it will be dropped. Registered: {}",
+                                sbb.getClass().getName(), field.getName(),
+                                raName == null ? "" : raName,
+                                c.registeredRaCommandPortNames());
                     }
                 }
             }

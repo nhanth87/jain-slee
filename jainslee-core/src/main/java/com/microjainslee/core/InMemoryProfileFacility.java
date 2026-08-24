@@ -157,6 +157,18 @@ public final class InMemoryProfileFacility implements ProfileTablePort, ProfileF
     private static final long FLUSH_INTERVAL_MS = 100L;
 
     public InMemoryProfileFacility() {
+        // ADR 0004 P0-2 — constructing a facility binds it globally (kept for
+        // backwards compatibility), but binding over a DIFFERENT live store is
+        // the exact footgun that broke Digicom ussdTx CMP writes. Make it loud.
+        ProfileFieldAccess previous = ProfileFieldStoreLocator.globalOwner();
+        if (previous != null && previous != this) {
+            LOG.warn("A new InMemoryProfileFacility is replacing the JVM-global "
+                    + "profile store binding (previous={}). If this is unintended, "
+                    + "CMP writes may now target the wrong tables. Sanctioned paths: "
+                    + "MicroSleeContainer owns its default facility; swap via "
+                    + "installProfileFacility().",
+                    previous.getClass().getName());
+        }
         ProfileFieldStoreLocator.set(this);
         LOG.debug("InMemoryProfileFacility constructed and registered with ProfileFieldStoreLocator");
     }

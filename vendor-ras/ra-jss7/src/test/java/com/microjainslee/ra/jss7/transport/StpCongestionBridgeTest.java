@@ -70,4 +70,40 @@ public class StpCongestionBridgeTest {
         assertEquals(1, ctl.latestSample().level());
         assertEquals(SctpCongestionSource.M3UA_SCON, ctl.latestSample().source());
     }
+
+    @Test
+    public void countsStatusAndCongestionEventsPerAffectedDpc() {
+        AdaptiveSendController ctl = new AdaptiveSendController(
+                new AdaptiveSendPolicy(1000, 10, 2_000L, 1_000L, 50, true, 0.50, 0.25, 0.10));
+        StpCongestionBridge bridge = new StpCongestionBridge(ctl);
+
+        bridge.onMtp3StatusMessage(new Mtp3StatusPrimitive(
+                300, Mtp3StatusCause.SignallingNetworkCongested, 2, 0));
+        bridge.onMtp3StatusMessage(new Mtp3StatusPrimitive(
+                300, Mtp3StatusCause.SignallingNetworkCongested, 3, 0));
+        bridge.onMtp3StatusMessage(new Mtp3StatusPrimitive(
+                301, Mtp3StatusCause.UserPartUnavailability_Unknown, 0, 301));
+
+        // SCON counts only the congestion-cause statuses, per affected DPC
+        assertEquals(Long.valueOf(2), bridge.congestionEventsByDpc().get(300));
+        assertTrue(!bridge.congestionEventsByDpc().containsKey(301));
+        // status counts cover every MTP-STATUS cause
+        assertEquals(Long.valueOf(2), bridge.statusEventsByDpc().get(300));
+        assertEquals(Long.valueOf(1), bridge.statusEventsByDpc().get(301));
+        // snapshots are independent copies — later events do not mutate them
+        java.util.Map<Integer, Long> before = bridge.congestionEventsByDpc();
+        bridge.onMtp3StatusMessage(new Mtp3StatusPrimitive(
+                300, Mtp3StatusCause.SignallingNetworkCongested, 1, 0));
+        assertEquals(Long.valueOf(2), before.get(300));
+        assertEquals(Long.valueOf(3), bridge.congestionEventsByDpc().get(300));
+    }
+
+    @Test
+    public void emptyBridgeExposesEmptySnapshots() {
+        AdaptiveSendController ctl = new AdaptiveSendController(
+                new AdaptiveSendPolicy(1000, 10, 2_000L, 1_000L, 50, true, 0.50, 0.25, 0.10));
+        StpCongestionBridge bridge = new StpCongestionBridge(ctl);
+        assertTrue(bridge.statusEventsByDpc().isEmpty());
+        assertTrue(bridge.congestionEventsByDpc().isEmpty());
+    }
 }

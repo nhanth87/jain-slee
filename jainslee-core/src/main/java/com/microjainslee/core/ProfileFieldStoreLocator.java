@@ -60,6 +60,17 @@ public final class ProfileFieldStoreLocator {
         return local != null ? local : global;
     }
 
+    /**
+     * ADR 0004 P0-2 — the currently bound JVM-global store, or {@code null}.
+     * Consumer code that suspects a stray {@code new InMemoryProfileFacility()}
+     * stole the binding (Digicom {@code ussdTx} incident) can compare this
+     * against the container's own facility and re-bind via
+     * {@code MicroSleeContainer#installProfileFacility} instead of guessing.
+     */
+    public static ProfileFieldAccess globalOwner() {
+        return global;
+    }
+
     /** Explicitly clear the JVM-global binding (container shutdown). */
     static void clearGlobal(ProfileFieldAccess store) {
         if (store == null || store == global) {

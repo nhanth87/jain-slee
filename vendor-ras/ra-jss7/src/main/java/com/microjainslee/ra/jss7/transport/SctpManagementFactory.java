@@ -13,6 +13,11 @@ import org.mobicents.protocols.sctp.spi.SctpProvider;
 /**
  * Isolation point for the SCTP transport. Default is F-Stack/DPDK (native-safe).
  * {@code NETTY_KERNEL} remains a JVM-only oracle and is refused inside a native image.
+ *
+ * <p>DESIGN §10.2 P3 guard: this factory only selects the transport backend — it
+ * deliberately exposes NO SCTP protocol timers (RTO.*, Path.Max.Retrans, heartbeat
+ * interval). Those stay at the stack/kernel RFC 4960 §15 defaults; do not add timer
+ * knobs here. See Nextgen STP RUNBOOK §D for the audit record.</p>
  */
 final class SctpManagementFactory {
 

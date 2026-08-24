@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import org.mobicents.protocols.api.Association;
 import org.mobicents.protocols.api.Management;
@@ -24,6 +25,10 @@ import org.restcomm.protocols.ss7.m3ua.As;
 import org.restcomm.protocols.ss7.m3ua.Asp;
 import org.restcomm.protocols.ss7.m3ua.AspFactory;
 import org.restcomm.protocols.ss7.m3ua.impl.M3UAManagementImpl;
+import org.restcomm.protocols.ss7.sccp.RemoteSignalingPointCode;
+import org.restcomm.protocols.ss7.sccp.impl.SccpStackImpl;
+
+import com.microjainslee.ra.jss7.transport.StpCongestionBridge;
 
 /**
  * Rich SS7 link snapshot for the admin hub — field parity with OTA
@@ -59,6 +64,7 @@ public final class Ss7LinkStatusSnapshot {
             } catch (RuntimeException ex) {
                 m.put("error", ex.getMessage());
             }
+            fillCongestionState(ra.stack(), m);
         }
 
         m.put("servers", servers);
@@ -186,6 +192,35 @@ public final class Ss7LinkStatusSnapshot {
                 row.put("state", as.getState() != null ? as.getState().getName() : "?");
                 appServers.add(row);
             }
+        }
+    }
+
+    /**
+     * DESIGN §10.2 (P1+P2) visibility: MTP3 congestion/status event counts per
+     * affected DPC plus the SCCP outgoing-congestion state. Limitation: the
+     * importance-based drops themselves happen inside jSS7 SccpRoutingControl with
+     * no counter hook — only these inputs are observable from the RA.
+     */
+    static void fillCongestionState(Ss7Stack stack, Map<String, Object> m) {
+        try {
+            StpCongestionBridge bridge = stack.congestionBridge();
+            if (bridge != null) {
+                m.put("mtp3StatusEventsByDpc", bridge.statusEventsByDpc());
+                m.put("mtp3CongestionEventsByDpc", bridge.congestionEventsByDpc());
+            }
+            org.restcomm.protocols.ss7.config.Ss7Stack under = stack.underlying();
+            SccpStackImpl sccp = under == null ? null : under.sccpStack();
+            if (sccp != null) {
+                m.put("sccpCongControlBlockingOutgoingSccpMessages",
+                        sccp.isCongControl_blockingOutgoingSccpMessages());
+                Map<Integer, Integer> levels = new TreeMap<>();
+                for (RemoteSignalingPointCode rspc : sccp.getSccpResource().getRemoteSpcs().values()) {
+                    levels.put(rspc.getRemoteSpc(), rspc.getCurrentRestrictionLevel());
+                }
+                m.put("sccpRestrictionLevelsByDpc", levels);
+            }
+        } catch (RuntimeException ex) {
+            m.put("congestionError", String.valueOf(ex.getMessage()));
         }
     }
 

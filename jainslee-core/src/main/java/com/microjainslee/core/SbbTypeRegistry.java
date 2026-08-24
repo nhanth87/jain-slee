@@ -43,6 +43,14 @@ public final class SbbTypeRegistry {
                 .build());
     }
 
+    /**
+     * @return all SBB types currently registered (ADR 0004 P0-3 wiring
+     *         validation walks these at container start).
+     */
+    public java.util.Set<Class<? extends Sbb>> registeredTypes() {
+        return java.util.Collections.unmodifiableSet(pools.keySet());
+    }
+
     public SbbTypePool require(Class<? extends Sbb> type) {
         SbbTypePool pool = pools.get(type);
         if (pool == null) {

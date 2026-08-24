@@ -61,6 +61,17 @@ final class Ss7StatusHtml {
                 headers("Name", "Assoc", "Kind", "State"),
                 m3uaRows(asps, apps)));
 
+        sb.append(table("MTP3 congestion / SCCP restriction (per DPC)",
+                headers("DPC", "MTP-STATUS", "SCON", "SCCP restriction"),
+                congestionRows(st)));
+        Object congBlock = st.get("sccpCongControlBlockingOutgoingSccpMessages");
+        if (congBlock != null) {
+            sb.append("<div class=\"kv\" style=\"margin-top:0.75rem\">")
+                    .append("<span class=\"k\">sccpCongBlockOutgoing</span>")
+                    .append("<span class=\"v\">").append(esc(String.valueOf(congBlock)))
+                    .append("</span></div>");
+        }
+
         sb.append("<div class=\"kv\" style=\"margin-top:0.75rem\">")
                 .append("<span class=\"k\">routeReady</span>")
                 .append("<span class=\"v ").append(routeReady ? "ok" : "bad").append("\">")
@@ -129,6 +140,68 @@ final class Ss7StatusHtml {
             }
         }
         return b.toString();
+    }
+
+    private static String congestionRows(Map<String, Object> st) {
+        Map<Integer, Long> status = intLongMap(st.get("mtp3StatusEventsByDpc"));
+        Map<Integer, Long> scon = intLongMap(st.get("mtp3CongestionEventsByDpc"));
+        Map<Integer, Integer> levels = intIntMap(st.get("sccpRestrictionLevelsByDpc"));
+        java.util.TreeSet<Integer> dpcs = new java.util.TreeSet<>();
+        dpcs.addAll(status.keySet());
+        dpcs.addAll(scon.keySet());
+        dpcs.addAll(levels.keySet());
+        if (dpcs.isEmpty()) {
+            return empty(4);
+        }
+        StringBuilder b = new StringBuilder();
+        for (Integer dpc : dpcs) {
+            b.append("<tr>")
+                    .append(tdMono(dpc))
+                    .append(td(status.getOrDefault(dpc, 0L)))
+                    .append(td(scon.getOrDefault(dpc, 0L)))
+                    .append(td(levels.getOrDefault(dpc, 0)))
+                    .append("</tr>");
+        }
+        return b.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<Integer, Long> intLongMap(Object raw) {
+        Map<Integer, Long> out = new java.util.TreeMap<>();
+        if (raw instanceof Map<?, ?> in) {
+            in.forEach((k, v) -> {
+                Integer dpc = asInt(k);
+                if (dpc != null && v instanceof Number n) {
+                    out.put(dpc, n.longValue());
+                }
+            });
+        }
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<Integer, Integer> intIntMap(Object raw) {
+        Map<Integer, Integer> out = new java.util.TreeMap<>();
+        if (raw instanceof Map<?, ?> in) {
+            in.forEach((k, v) -> {
+                Integer dpc = asInt(k);
+                if (dpc != null && v instanceof Number n) {
+                    out.put(dpc, n.intValue());
+                }
+            });
+        }
+        return out;
+    }
+
+    private static Integer asInt(Object k) {
+        if (k instanceof Number n) {
+            return n.intValue();
+        }
+        try {
+            return k == null ? null : Integer.parseInt(String.valueOf(k));
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static String table(String caption, String headersHtml, String rows) {

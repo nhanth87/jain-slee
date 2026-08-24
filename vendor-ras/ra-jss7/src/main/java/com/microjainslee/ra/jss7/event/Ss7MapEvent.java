@@ -36,6 +36,14 @@ public sealed interface Ss7MapEvent extends SleeEvent {
     record Dialog(String dialogId, Kind kind, String detail)
             implements Ss7MapEvent {}
 
+    /**
+     * A MAP return-error component (e.g. {@code unauthorizedLCSClient} local:53
+     * after a PSL privacy violation). {@code errorName} is the jSS7 error's
+     * canonical short name; {@code detail} is the full decoded message.
+     */
+    record Error(String dialogId, Long invokeId, String errorName, String detail)
+            implements Ss7MapEvent {}
+
     /** MAP dialog lifecycle kinds (see {@code MAPDialogListener}). */
     enum Kind {
         DELIMITER, REQUEST, ACCEPT, REJECT,

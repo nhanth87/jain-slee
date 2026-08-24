@@ -10,6 +10,8 @@
 
 package com.microjainslee.core;
 
+import com.microjainslee.api.ProfileAccessorBridge;
+import com.microjainslee.api.ProfileAccessorInvoker;
 import com.microjainslee.api.ActivityContextHandle;
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.ActivityContextNamingFacility;
@@ -24,6 +26,7 @@ import com.microjainslee.api.PoolableSbb;
 import com.microjainslee.api.ProfileFacility;
 import com.microjainslee.api.RaBootstrapPort;
 import com.microjainslee.api.RaCommandPort;
+import com.microjainslee.api.annotations.InjectRa;
 import com.microjainslee.api.RaEndpointPort;
 import com.microjainslee.api.ResourceAdaptor;
 import com.microjainslee.ra.RaEntityStateMachine;
@@ -47,11 +50,14 @@ import com.microjainslee.core.ordering.OutOfOrderBuffer;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -189,6 +195,10 @@ public final class MicroSleeContainer {
 
     public MicroSleeContainer(MicroSleeConfiguration configuration) {
         this.configuration = configuration;
+        // ADR 0004 — install the profile accessor bridge explicitly so the
+        // api-side facade never depends on ServiceLoader/TCCL luck under
+        // Quarkus fast-jar layering.
+        ProfileAccessorInvoker.install(new CoreProfileAccessorBridge());
         this.activityContextNamingFacility = new InMemoryAcnfBackend(new InMemoryActivityContextNamingFacility());
         this.eventRouter = new EventRouter(configuration.getEventRouterBufferSize(),
                 configuration.isPreferVirtualThreads(),
@@ -758,6 +768,10 @@ public final class MicroSleeContainer {
         // ClusterManager at deploy time see a started manager.
         invokeStartOnClusterManager(this.clusterManager);
         autoDeployFromClasspathIndex();
+        // ADR 0004 P0-3 — fail fast on @InjectRa wiring mistakes before any
+        // RA side effect. Escape hatch for exotic late-registration flows:
+        // -Djainslee.inject-ra.validation=warn|off (default strict).
+        validateInjectRaWiring();
         // GOAL 2 — activate all registered local RA endpoints.
         for (RaEndpointPort endpoint : endpointPorts.values()) {
             String name = endpoint.getRaName();
@@ -766,8 +780,10 @@ public final class MicroSleeContainer {
             try {
                 endpoint.activate(bootstrap);
                 LOG.info("Activated local RA endpoint: {}", name);
+                notifyRaState(name, "ACTIVE", 0);
             } catch (RuntimeException re) {
                 LOG.error("Failed to activate RA endpoint [{}]: {}", name, re.getMessage(), re);
+                notifyRaState(name, "ERROR", 0);
             }
         }
     }
@@ -850,8 +866,10 @@ public final class MicroSleeContainer {
             try {
                 endpoint.deactivate();
                 LOG.info("Deactivated local RA endpoint: {}", endpoint.getRaName());
+                notifyRaState(endpoint.getRaName(), "INACTIVE", 0);
             } catch (RuntimeException re) {
                 LOG.warn("Error deactivating RA endpoint [{}]: {}", endpoint.getRaName(), re.getMessage());
+                notifyRaState(endpoint.getRaName(), "ERROR", 0);
             }
         }
         // Production P2.1 — release JGroups threads + Infinispan resources
@@ -923,6 +941,82 @@ public final class MicroSleeContainer {
         }
         sbbTypeRegistry.register(type, config);
         LOG.info("Registered pooled SBB type {} (maxActive={})", type.getName(), config.getMaxActive());
+        // ADR 0004 P0-3 — late registrations (container already started) are
+        // validated immediately so a typo can never silently null a port.
+        if (state == State.STARTED) {
+            validateInjectRaWiring();
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // ADR 0004 P0-3 — @InjectRa wiring validation (fail fast)
+    // ──────────────────────────────────────────────────────────
+
+    private static final String VALIDATION_MODE_STRICT = "strict";
+    private static final String VALIDATION_MODE_WARN = "warn";
+    private static final String VALIDATION_MODE_OFF = "off";
+
+    /**
+     * Verify every registered SBB type's {@code @InjectRa(name=...)} resolves
+     * against the RA command-port registry. Empty-name injections resolve to
+     * the default port, so they only pass when at least one port exists.
+     *
+     * <p><b>Ordering-safe (regression lesson 2026-08-24):</b> validation is
+     * skipped while NO command port / endpoint exists at all — the S5 flow
+     * ({@code registerResourceAdaptor}) legally registers RAs only AFTER
+     * start(), so an empty registry proves nothing about typos. Deferred
+     * cases are caught loudly at injection time instead (see
+     * {@code VirtualThreadSbbEntityPool}).
+     *
+     * <p>Mode via system property {@code jainslee.inject-ra.validation}:
+     * {@code strict} (default) throws listing every problem; {@code warn}
+     * logs ERROR and continues; {@code off} skips entirely.
+     */
+    private void validateInjectRaWiring() {
+        String mode = System.getProperty("jainslee.inject-ra.validation", VALIDATION_MODE_STRICT);
+        if (VALIDATION_MODE_OFF.equalsIgnoreCase(mode)) {
+            return;
+        }
+        // No RA wiring exists yet — nothing to compare against; defer to
+        // injection-time reporting so legal late-registration flows survive.
+        if (raCommandPorts.isEmpty() && endpointPorts.isEmpty()) {
+            return;
+        }
+        List<String> problems = new ArrayList<>();
+        for (Class<? extends Sbb> type : sbbTypeRegistry.registeredTypes()) {
+            collectInjectRaProblems(type, problems);
+        }
+        if (problems.isEmpty()) {
+            return;
+        }
+        String summary = "RA wiring validation failed (" + problems.size()
+                + " problem(s)): " + String.join("; ", problems)
+                + ". Registered RA command ports: " + raCommandPorts.keySet();
+        if (VALIDATION_MODE_WARN.equalsIgnoreCase(mode)) {
+            LOG.error("{}", summary);
+            return;
+        }
+        throw new IllegalStateException(summary);
+    }
+
+    private void collectInjectRaProblems(Class<?> type, List<String> out) {
+        for (Class<?> k = type; k != null && k != Object.class; k = k.getSuperclass()) {
+            for (Field field : k.getDeclaredFields()) {
+                InjectRa injectRa = field.getAnnotation(InjectRa.class);
+                if (injectRa == null) {
+                    continue;
+                }
+                String name = injectRa.name();
+                boolean missing = (name == null || name.isEmpty())
+                        ? raCommandPorts.isEmpty()
+                        : !raCommandPorts.containsKey(name);
+                if (missing) {
+                    out.add(type.getSimpleName() + "." + field.getName()
+                            + " @InjectRa(name=\"" + (name == null ? "" : name)
+                            + "\") has no matching registered RA");
+                }
+            }
+        }
     }
 
     public SimpleSbbLocalObject acquireEntity(String id, Class<? extends Sbb> type) {
@@ -1297,8 +1391,10 @@ public final class MicroSleeContainer {
             try {
                 endpoint.activate(bootstrap);
                 LOG.info("Activated local RA endpoint (hot-register): {}", name);
+                notifyRaState(name, "ACTIVE", 0);
             } catch (RuntimeException re) {
                 LOG.error("Failed to activate RA endpoint [{}]: {}", name, re.getMessage(), re);
+                notifyRaState(name, "ERROR", 0);
             }
         }
     }
@@ -1382,11 +1478,13 @@ public final class MicroSleeContainer {
             ra.raConfigure();
         } catch (RuntimeException re) {
             LOG.error("raConfigure() failed for [{}]: {}", raEntityName, re.getMessage(), re);
+            notifyRaState(raEntityName, "ERROR", 0);
             throw re;
         }
 
         // 5 — activate (INACTIVE -> ACTIVE -> raActive()).
         built.stateMachine().activate();
+        notifyRaState(raEntityName, "ACTIVE", 0);
 
         raEntities.put(raEntityName, new RaEntity(ra, ctx, built.stateMachine(), built.endpoint()));
         // GOAL 4 — register a RaCommandPort so SBBs can @InjectRa it
@@ -1414,6 +1512,7 @@ public final class MicroSleeContainer {
         }
         if (current == RaEntityStateMachine.State.ACTIVE) {
             entry.stateMachine().deactivate(); // ACTIVE -> STOPPING -> raStopping()
+            notifyRaState(raEntityName, "STOPPING", 0);
         }
         // STOPPING -> INACTIVE -> raInactive() (synchronous — no
         // real in-flight events to drain in R&D; production path
@@ -1421,6 +1520,7 @@ public final class MicroSleeContainer {
         if (entry.stateMachine().getState() == RaEntityStateMachine.State.STOPPING) {
             entry.stateMachine().stopComplete();
         }
+        notifyRaState(raEntityName, "INACTIVE", 0);
         try {
             entry.ra().raUnconfigure();
         } catch (RuntimeException re) {
@@ -2151,6 +2251,14 @@ public final class MicroSleeContainer {
         LOG.info("Registered RaCommandPort for RA [{}]", name);
     }
 
+    /**
+     * ADR 0004 P0-3 — names of all registered RA command ports, for
+     * diagnostics in unresolved-{@code @InjectRa} reports.
+     */
+    public java.util.Set<String> registeredRaCommandPortNames() {
+        return java.util.Collections.unmodifiableSet(raCommandPorts.keySet());
+    }
+
     // ──────────────────────────────────────────────────────────
     // RaObserver seam — lets jainslee-telemetry count RA activity
     // without adding a compile-time dependency to the core.
@@ -2202,6 +2310,26 @@ public final class MicroSleeContainer {
             obs.onFailure(raName);
         } catch (Throwable t) {
             LOG.warn("RaObserver.onFailure threw for [{}] — observer bug", raName, t);
+        }
+    }
+
+    /**
+     * ADR 0004 P0-4 — notify observer of an RA lifecycle state transition.
+     * Called by the container at every activate/deactivate/error point so
+     * telemetry reflects real RA state instead of a permanent UNKNOWN.
+     * Never throws.
+     *
+     * @param raName the RA entity name
+     * @param state  {@code ACTIVE} / {@code ERROR} / {@code STOPPING} / {@code INACTIVE}
+     * @param port   bound listen port when known, else {@code 0}
+     */
+    void notifyRaState(String raName, String state, int port) {
+        RaObserver obs = raObserver;
+        if (obs == null) return;
+        try {
+            obs.onStateChange(raName, state, port);
+        } catch (Throwable t) {
+            LOG.warn("RaObserver.onStateChange threw for [{}] — observer bug", raName, t);
         }
     }
 

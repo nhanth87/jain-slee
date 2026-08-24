@@ -163,3 +163,46 @@ Per-delivery **full undo-log** (C3): if the event handler throws after profile w
 | Infinispan embedded durable store | 4 |
 
 See [PROFILE-IMPLEMENTATION-PLAN.md](../../design-ideas/PROFILE-IMPLEMENTATION-PLAN.md) for contracts, invariants I1–I6, and test gates.
+
+## 11. Runtime binding — ProfileAccessorBridge (ADR 0004)
+
+**Changed 2026-08-24.** The old split-package shadow is gone: there are no
+longer two classes named `com.microjainslee.api.ProfileAccessorInvoker` (the
+api stub that threw UOE used to win the classpath under Quarkus fast-jar and
+killed every profile write in production — the reason USSDGW/GMLC carried a
+`shadow-profile-accessor.sh` jar-patch step).
+
+How it works now:
+
+```
+ProfileAbstractCmp.profileGet/profileSet        (jainslee-api)
+      └─ delegates → ProfileAccessorInvoker     (facade, jainslee-api)
+                       ├─ 1. explicit install   ← MicroSleeContainer ctor
+                       └─ 2. ServiceLoader:
+                            META-INF/services/com.microjainslee.api.ProfileAccessorBridge
+                            └─ CoreProfileAccessorBridge (jainslee-core)
+                                 └─ ProfileFieldStoreLocator.get() → store
+```
+
+What app developers must know:
+
+- **No code change** — `ProfileAccessorInvoker.getValue/setValue/fieldNameFor`
+  keep their signatures; existing profiles compile and run unchanged.
+- **Delete the workaround**: once your host ships runtime jars built from this
+  version, remove `shadow-profile-accessor.sh` (gmlc) and any equivalent
+  class-overwrite step — it is now a no-op at best and harmful at worst.
+- **Missing runtime fails fast**: with api-only on the classpath you get
+  `IllegalStateException("No ProfileAccessorBridge installed … Add
+  jainslee-core")` instead of a confusing UOE deep in a request path.
+- **Locator ownership**: the container owns its facility binding; a stray
+  `new InMemoryProfileFacility()` that steals the JVM-global binding now logs
+  a WARN naming the previous owner. Check `ProfileFieldStoreLocator.globalOwner()`
+  when debugging "writes land in the wrong table" reports.
+
+## 12. RA state telemetry (ADR 0004 P0-4)
+
+The container now feeds every RA lifecycle transition into
+`RaObserver.onStateChange(raName, ACTIVE|ERROR|STOPPING|INACTIVE, port)`.
+With `TelemetryRaObserver` installed (Jakarta/Spring adapters do this
+automatically), `/metrics` reflects real RA state — no more permanent
+`state=UNKNOWN`. RAs themselves need no changes.

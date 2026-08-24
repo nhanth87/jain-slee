@@ -6,6 +6,9 @@
 
 package com.microjainslee.ra.jss7;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 /**
  * Configuration for the jSS7 protocol stack bootstrapped by
  * {@link com.microjainslee.ra.jss7.transport.Ss7Stack}.
@@ -21,6 +24,13 @@ package com.microjainslee.ra.jss7;
  * {@code docs/adr/0001-ss7-ra-nn-tcap-failover.md}.</p>
  */
 public final class Ss7RaConfig {
+
+    /** M3UA AS traffic mode — shared SLS loadshare across ASPs (DESIGN §2 / §10.2 P4 default). */
+    public static final String TRAFFIC_MODE_LOADSHARE = "loadshare";
+    /** M3UA AS traffic mode — active-standby only (DESIGN §10.2 P4). */
+    public static final String TRAFFIC_MODE_OVERRIDE = "override";
+
+    private static final Logger LOG = LogManager.getLogger(Ss7RaConfig.class);
 
     // ── identity ──────────────────────────────────────────────
     private String stackName = "ra-jss7";
@@ -77,6 +87,32 @@ public final class Ss7RaConfig {
     private boolean mapEnabled = true;
     private boolean capEnabled = true;
 
+    // ── congestion / overload control (DESIGN §10.2 P1+P2+P4) ──
+    /**
+     * Maps to jSS7 {@code SccpStack.setCongControl_blockingOutgoingSccpMessages}.
+     * When true, {@code SccpRoutingControl} drops outgoing SCCP messages whose
+     * importance is below the remote SPC's current restriction level and answers
+     * with NETWORK_CONGESTION / SUBSYSTEM_CONGESTION — the academically validated
+     * STP behavior "drop low-importance first, alert, never queue unboundedly"
+     * (P1/P2, DESIGN §10.2). Default false = jSS7 behavior unchanged.
+     */
+    private boolean congestionControlBlockingOutgoingSccpMessages = false;
+    /**
+     * Baseline SCCP restriction level applied to every remote SPC at stack start.
+     * {@code 0} = unrestricted (default); {@code 1..8} block outgoing messages with
+     * importance below the level, but only when
+     * {@link #congestionControlBlockingOutgoingSccpMessages()} is true. Peer TFC
+     * raises the level at runtime regardless — this is only the startup baseline.
+     */
+    private int defaultRestrictionLevel = 0;
+    /**
+     * M3UA AS traffic mode for the AS created by the flat-config path:
+     * {@link #TRAFFIC_MODE_LOADSHARE} (default) or {@link #TRAFFIC_MODE_OVERRIDE}.
+     * {@code broadcast} is rejected at set time (DESIGN §10.2/P4: never broadcast
+     * on transit links).
+     */
+    private String defaultTrafficMode = TRAFFIC_MODE_LOADSHARE;
+
     public Ss7RaConfig() { }
 
     // ── getters ───────────────────────────────────────────────
@@ -107,6 +143,9 @@ public final class Ss7RaConfig {
     public long dialogIdRangeEnd()       { return dialogIdRangeEnd; }
     public boolean mapEnabled()          { return mapEnabled; }
     public boolean capEnabled()          { return capEnabled; }
+    public boolean congestionControlBlockingOutgoingSccpMessages() { return congestionControlBlockingOutgoingSccpMessages; }
+    public int defaultRestrictionLevel() { return defaultRestrictionLevel; }
+    public String defaultTrafficMode()   { return defaultTrafficMode; }
 
     // ── fluent setters ────────────────────────────────────────
     public Ss7RaConfig stackName(String v)            { this.stackName = v; return this; }
@@ -139,6 +178,71 @@ public final class Ss7RaConfig {
     public Ss7RaConfig dialogIdRangeEnd(long v)       { this.dialogIdRangeEnd = v; return this; }
     public Ss7RaConfig mapEnabled(boolean v)          { this.mapEnabled = v; return this; }
     public Ss7RaConfig capEnabled(boolean v)          { this.capEnabled = v; return this; }
+    public Ss7RaConfig congestionControlBlockingOutgoingSccpMessages(boolean v) {
+        this.congestionControlBlockingOutgoingSccpMessages = v;
+        return this;
+    }
+
+    /** @throws IllegalArgumentException outside {@code 0..8} (0 = unrestricted) */
+    public Ss7RaConfig defaultRestrictionLevel(int v) {
+        if (v < 0 || v > 8) {
+            throw new IllegalArgumentException(
+                    "defaultRestrictionLevel must be 0..8 (0 = unrestricted), got " + v);
+        }
+        this.defaultRestrictionLevel = v;
+        return this;
+    }
+
+    /**
+     * Accepts {@code loadshare} | {@code override} (case-insensitive, normalized to
+     * lower case). {@code broadcast} and any other value are rejected.
+     *
+     * @throws IllegalArgumentException for broadcast ("broadcast forbidden on transit
+     *         links — DESIGN §10.2/P4") or unknown values
+     */
+    public Ss7RaConfig defaultTrafficMode(String v) {
+        this.defaultTrafficMode = normalizeTrafficMode(v);
+        return this;
+    }
+
+    private static String normalizeTrafficMode(String v) {
+        if (v == null || v.isBlank()) {
+            throw new IllegalArgumentException(
+                    "defaultTrafficMode must be loadshare|override, got blank");
+        }
+        String mode = v.trim().toLowerCase(java.util.Locale.ROOT);
+        if ("broadcast".equals(mode)) {
+            throw new IllegalArgumentException(
+                    "broadcast forbidden on transit links — DESIGN §10.2/P4");
+        }
+        if (!TRAFFIC_MODE_LOADSHARE.equals(mode) && !TRAFFIC_MODE_OVERRIDE.equals(mode)) {
+            throw new IllegalArgumentException(
+                    "defaultTrafficMode must be loadshare|override, got '" + v + "'");
+        }
+        return mode;
+    }
+
+    /**
+     * DESIGN §10.2/P4 guardrail: {@code override} traffic mode is meant for
+     * active-standby fabrics only — under an active-active fabric it concentrates
+     * all SLS traffic on one ASP. Logs a WARN (and returns true) when override is
+     * configured against a non-active-standby HA mode.
+     *
+     * @param haMode effective fabric mode (null counts as ACTIVE_ACTIVE default)
+     * @return true when the warning was emitted
+     */
+    public boolean warnIfOverrideTrafficMode(StpTransitProfile.HaMode haMode) {
+        StpTransitProfile.HaMode effective =
+                haMode == null ? StpTransitProfile.HaMode.ACTIVE_ACTIVE : haMode;
+        if (TRAFFIC_MODE_OVERRIDE.equals(defaultTrafficMode)
+                && effective != StpTransitProfile.HaMode.ACTIVE_STANDBY) {
+            LOG.warn("[ra-jss7] defaultTrafficMode=override with haMode={} — override is for "
+                    + "active-standby only (DESIGN §10.2/P4); active-active should use loadshare",
+                    effective);
+            return true;
+        }
+        return false;
+    }
 
     /**
      * Validate OTID range: both 0 (defaults) or {@code start > 0 && end > start}.
@@ -188,6 +292,9 @@ public final class Ss7RaConfig {
                 + " dpc=" + destinationPointCode + " ssn=" + localSsn
                 + " endpoints=" + allLocalEndpoints()
                 + " otid=[" + dialogIdRangeStart + "," + dialogIdRangeEnd + "]"
-                + " map=" + mapEnabled + " cap=" + capEnabled + "}";
+                + " map=" + mapEnabled + " cap=" + capEnabled
+                + " congBlock=" + congestionControlBlockingOutgoingSccpMessages
+                + " restrictionLevel=" + defaultRestrictionLevel
+                + " trafficMode=" + defaultTrafficMode + "}";
     }
 }

@@ -30,3 +30,19 @@ Peer hosts: ussdgw [`docs/agents/lessons.md`](../../../../worktrees/ussd-service
 - Digicom ussdgw = **prod-bound** (PostgreSQL DB `ussdgw`, Balance Plus) — never treat as wipe-friendly toy lab; never overwrite Digicom `configs/` on rsync.
 - Dated lab notes **2026-08-07**: 4-arg `JsonPostRequest`, SCTP via `ss`/`/proc`, 10k pool target **40960**, VT discipline, attribution hooks.
 - Dated **2026-08-08** (cross-cutting): wire proof (TLS/SNI); bind peer’s real SSN via `extraSsns`; dist honesty / no config clobber; JDBC flusher column completeness; network/tenant scoping.
+
+## Synced 2026-08-23 — framework changes proven on gmlc-microjainslee (Monitor Hub branding / pack discovery / KPI)
+
+- **Hub branding is per-app now**: `META-INF/resources/index.html` carries an `@@APP_NAME@@` token; `MonitorHandler` gained a 5-arg ctor `(telemetry, healthJson, ai, registry, appName)` replacing it at serve-time. Resolution order: ctor arg → system property `microjainslee.monitor.app-name` → legacy default `Digicom-ET USSDGW`. Apps pass their product name (GMLC: `gmlc.admin.monitor-app-name`, default `Digicom-ET GMLC`) or every non-USSDGW product shows USSDGW branding. Installed in local 1.2.0-SNAPSHOT 2026-08-23.
+- **`AdminDashboardRegistry.load()` cannot see services inside the consumer's ROOT app jar** under Quarkus fast-jar layering — ServiceLoader over TCCL finds only packs in `lib/main` jars. Apps must build the registry explicitly and append their own contributor (merge TCCL + SPI CL + app CL, dedupe by `raName`); reference impl: gmlc `AdminHttpHandler.buildHub()`. Document this in the SPI javadoc when touching admin-spi next.
+- **`RaCollector.updateState(raName, state, port)` is still an unfed seam** — no RA calls it, so telemetry snapshot shows `state=UNKNOWN, port=0` until an RA/app publishes state. If you wire RAs to push state, mirror it into the KPI panel too.
+- **Protocol-KPI pattern lives app-side** (reference: gmlc `GmlcKpi` + `GmlcKpiContributor`): LongAdder map as source of truth + passive Micrometer mirrors via `TelemetryPort.customCounter` (`gmlc_kpi_*`) + an own `RaAdminDashboardContributor` tab polling `/api/ra/{ra}/status.html`. Framework provides the seams only.
+
+## Synced 2026-08-24 — ADR 0004 P0 hardening shipped in runtime (consumer trees must adapt habits)
+
+Implemented in this repo (runtime modules), full regression 1065→1099 tests green (same single pre-existing SIP BYE-defer failure). Consumer trees pick these up on next runtime jar refresh:
+
+- **`shadow-profile-accessor.sh` is OBSOLETE** once a host consumes runtime jars built ≥ 2026-08-24: the split-package `ProfileAccessorInvoker` stub no longer exists — api ships a delegating facade over `ProfileAccessorBridge` (`META-INF/services`, provided by core; container also installs explicitly). Keep the script harmless until upgrade, then delete it. New failure signature when runtime missing: `IllegalStateException("No ProfileAccessorBridge installed …")` — grep for this, not UOE.
+- **Boot now FAILS FAST on `@InjectRa` typos** (`RA wiring validation failed …` listing `Class#field → raName`). This replaces silent null ports (classic mistake #4). Ordering-safe: with zero RAs registered the check defers and reports at injection time instead (S5 flow unaffected). Escape hatch `-Djainslee.inject-ra.validation=warn|off`. If a consumer app fails boot with this message → fix the RA name, do not disable validation casually.
+- **RA state telemetry is container-fed** (`RaObserver.onStateChange` → `RaCollector`): the 2026-08-23 row above about the "unfed seam" is CLOSED for apps installing `TelemetryRaObserver`; `/metrics` shows real ACTIVE/ERROR/STOPPING/INACTIVE.
+- **Stray profile-facility binding warns loudly**: constructing a second `InMemoryProfileFacility` over a live global logs WARN naming the previous owner; debug aid `ProfileFieldStoreLocator.globalOwner()` (the ussdTx re-bind workaround class).

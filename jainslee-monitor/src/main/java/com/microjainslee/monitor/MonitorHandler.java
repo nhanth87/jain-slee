@@ -57,27 +57,44 @@ public final class MonitorHandler {
     private final Supplier<String> healthJson;
     private final AiMonitorBridge ai;
     private final AdminDashboardRegistry adminRegistry;
+    /** Hub shell branding; {@code null} = system property or legacy default. */
+    private final String appName;
 
     public MonitorHandler(TelemetryPort telemetry) {
-        this(telemetry, null, null, AdminDashboardRegistry.load());
+        this(telemetry, null, null, AdminDashboardRegistry.load(), null);
     }
 
     public MonitorHandler(TelemetryPort telemetry,
                           Supplier<String> healthJson,
                           AiMonitorBridge ai) {
-        this(telemetry, healthJson, ai, AdminDashboardRegistry.load());
+        this(telemetry, healthJson, ai, AdminDashboardRegistry.load(), null);
     }
 
     public MonitorHandler(TelemetryPort telemetry,
                           Supplier<String> healthJson,
                           AiMonitorBridge ai,
                           AdminDashboardRegistry adminRegistry) {
+        this(telemetry, healthJson, ai, adminRegistry, null);
+    }
+
+    /**
+     * Full ctor. {@code appName} brands the hub shell (the {@code @@APP_NAME@@} token in
+     * {@code META-INF/resources/index.html}); when {@code null}, the system property
+     * {@code microjainslee.monitor.app-name} wins, else the legacy
+     * {@code Digicom-ET USSDGW} default.
+     */
+    public MonitorHandler(TelemetryPort telemetry,
+                          Supplier<String> healthJson,
+                          AiMonitorBridge ai,
+                          AdminDashboardRegistry adminRegistry,
+                          String appName) {
         this.telemetry = telemetry;
         this.healthJson = healthJson;
         this.ai = ai;
         this.adminRegistry = adminRegistry == null
                 ? AdminDashboardRegistry.load()
                 : adminRegistry;
+        this.appName = appName;
         HttpEndpointCatalog.shared().replace(
                 HttpEndpointCatalog.SOURCE_MICRO_JAINSLEE, hubOwnedEndpoints());
     }
@@ -318,11 +335,25 @@ public final class MonitorHandler {
             if (in == null) {
                 return RaAdminHttpResponse.notFound();
             }
-            return RaAdminHttpResponse.bytes(contentType(rest), in.readAllBytes());
+            byte[] bytes = in.readAllBytes();
+            if (rest.equals("/index.html")) {
+                bytes = brand(bytes);
+            }
+            return RaAdminHttpResponse.bytes(contentType(rest), bytes);
         } catch (Exception ex) {
             LOG.warn("[monitor] failed to serve {}: {}", resource, ex.getMessage());
             return RaAdminHttpResponse.notFound();
         }
+    }
+
+    /** Replace the {@code @@APP_NAME@@} shell token with the resolved product name. */
+    private byte[] brand(byte[] indexHtml) {
+        String name = appName != null && !appName.isBlank()
+                ? appName.trim()
+                : System.getProperty("microjainslee.monitor.app-name", "Digicom-ET USSDGW");
+        return new String(indexHtml, java.nio.charset.StandardCharsets.UTF_8)
+                .replace("@@APP_NAME@@", escHtml(name))
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private RaAdminHttpResponse telemetryApi(String method, String path, String body) {

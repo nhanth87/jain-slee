@@ -24,6 +24,9 @@ import org.mobicents.protocols.sctp.spi.AdaptiveSendController;
 import org.mobicents.protocols.sctp.spi.SctpCongestionSample;
 import org.restcomm.protocols.ss7.m3ua.As;
 import org.restcomm.protocols.ss7.m3ua.impl.M3UAManagementImpl;
+import org.restcomm.protocols.ss7.sccp.RemoteSignalingPointCode;
+import org.restcomm.protocols.ss7.sccp.impl.RemoteSignalingPointCodeImpl;
+import org.restcomm.protocols.ss7.sccp.impl.SccpStackImpl;
 
 import java.util.List;
 
@@ -71,6 +74,7 @@ public final class Ss7Stack {
     private org.restcomm.protocols.ss7.config.Ss7Stack delegate;
     private volatile boolean started;
     private volatile AdaptiveSendController congestion = AdaptiveSendController.disabled();
+    private volatile StpCongestionBridge congestionBridge;
 
     public Ss7Stack(Ss7RaConfig cfg) {
         this.flatCfg = cfg;
@@ -183,6 +187,15 @@ public final class Ss7Stack {
         return congestion;
     }
 
+    /**
+     * MTP3 congestion/status event counters per affected DPC (admin visibility,
+     * DESIGN §10.2 P1+P2). Null before the first {@link #start()} and after
+     * {@link #stop()}.
+     */
+    public StpCongestionBridge congestionBridge() {
+        return congestionBridge;
+    }
+
     // ── lifecycle ─────────────────────────────────────────────
     public synchronized void start() throws Exception {
         if (started) return;
@@ -190,6 +203,7 @@ public final class Ss7Stack {
         LOG.info("[ra-jss7] bootstrapping jSS7 stack: {}",
                 fullCfg != null ? "Ss7Config stackName=" + built.stackName() : flatCfg);
         delegate = Ss7StackBuilder.build(built);
+        applySccpCongestionPolicy(delegate);
         wireCongestionAdaptation(delegate);
         started = true;
         boolean map = built.protocols() != null && Boolean.TRUE.equals(built.protocols().map());
@@ -201,8 +215,49 @@ public final class Ss7Stack {
         if (!started) return;
         started = false;
         congestion = AdaptiveSendController.disabled();
+        congestionBridge = null;
         if (delegate != null) delegate.stop();
         LOG.info("[ra-jss7] jSS7 stack STOPPED");
+    }
+
+    /**
+     * DESIGN §10.2 (P1+P2): importance-based outgoing overload control. Flat
+     * {@link Ss7RaConfig} path only — full-{@link Ss7Config} deployments set the
+     * SCCP congestion parameters in their own config. The builder already STARTED
+     * the SCCP stack, so both the running-only setter and the remote-SPC baseline
+     * can be applied here.
+     */
+    private void applySccpCongestionPolicy(org.restcomm.protocols.ss7.config.Ss7Stack stack)
+            throws Exception {
+        if (flatCfg == null) {
+            return;
+        }
+        SccpStackImpl sccp = stack.sccpStack();
+        if (sccp == null) {
+            return;
+        }
+        boolean block = flatCfg.congestionControlBlockingOutgoingSccpMessages();
+        if (block) {
+            // SccpStack interface setter — valid only while the SCCP stack is RUNNING.
+            sccp.setCongControl_blockingOutgoingSccpMessages(true);
+        }
+        int rl = flatCfg.defaultRestrictionLevel();
+        if (rl > 0) {
+            // Baseline restriction for every auto-derived remote SPC.
+            // RemoteSignalingPointCodeImpl.setCurrentRestrictionLevel is the only
+            // write path jSS7 exposes (its javadoc says debug-only — acceptable at
+            // startup before any traffic; peer TFC still raises levels at runtime).
+            for (RemoteSignalingPointCode rspc : sccp.getSccpResource().getRemoteSpcs().values()) {
+                if (rspc instanceof RemoteSignalingPointCodeImpl impl) {
+                    impl.setCurrentRestrictionLevel(rl);
+                }
+            }
+        }
+        if (block || rl > 0) {
+            LOG.info("[ra-jss7] SCCP congestion policy applied: blockingOutgoingSccpMessages={} "
+                    + "defaultRestrictionLevel={} (drops enforced by jSS7 SccpRoutingControl)",
+                    block, rl);
+        }
     }
 
     private void wireCongestionAdaptation(org.restcomm.protocols.ss7.config.Ss7Stack stack) {
@@ -220,13 +275,16 @@ public final class Ss7Stack {
         ctl.addReporter(new Log4jCongestionReporter());
         M3UAManagementImpl m3ua = stack.m3uaManagement();
         if (m3ua != null) {
-            m3ua.addMtp3UserPartListener(new StpCongestionBridge(ctl));
+            StpCongestionBridge bridge = new StpCongestionBridge(ctl);
+            m3ua.addMtp3UserPartListener(bridge);
+            this.congestionBridge = bridge;
         }
         this.congestion = ctl;
     }
 
     // ── Ss7RaConfig -> Ss7Config translation ───────────────────
-    private static Ss7Config toSs7Config(Ss7RaConfig cfg) {
+    /** Package-visible for unit tests (traffic mode / topology round-trip). */
+    static Ss7Config toSs7Config(Ss7RaConfig cfg) {
         String linkName = cfg.associationName();
 
         var protocols = new Ss7Config.Protocols(cfg.mapEnabled(), cfg.capEnabled(), false);
@@ -244,12 +302,18 @@ public final class Ss7Stack {
                 "client",                                // this RA always dials out
                 null,                                    // server name — n/a for type=client
                 null,                                    // aspId — sequential default
-                null);                                   // heartbeat — default false
+                null);                                   // heartbeat — default false (M3UA ASP BEAT, RFC 4666 §3.5.5)
+        // DESIGN §10.2 P3 guard: SCTP protocol timers are intentionally NOT configurable
+        // on this path. Keep the stack's RFC 4960 §15 defaults (RTO.Initial 3s,
+        // Path.Max.Retrans 5, HB.interval 30s). Failover speed must come from SCTP
+        // multi-homing + the M3UA ASP state machine, never from fast heartbeats or
+        // aggressive RTO tuning (Nextgen STP RUNBOOK §D audit). connectDelay above is
+        // management-level reconnect pacing only, not an RFC 4960 timer.
         var sctp = new Ss7Config.Sctp(1000, cfg.sctpWorkerThreads(), 256, 256, List.of(link));
 
         var as = new Ss7Config.As(
                 "AS1",
-                "loadshare",
+                cfg.defaultTrafficMode(),
                 cfg.ipspClient() ? "ipsp" : "as",
                 cfg.ipspClient() ? "client" : null,
                 "se",

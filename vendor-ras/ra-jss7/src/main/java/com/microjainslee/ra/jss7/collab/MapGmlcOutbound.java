@@ -33,7 +33,9 @@ import org.restcomm.protocols.ss7.map.api.service.callhandling.InterrogationType
 import org.restcomm.protocols.ss7.map.api.service.callhandling.MAPDialogCallHandling;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSClientID;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSClientType;
+import org.restcomm.protocols.ss7.map.api.service.lsm.LCSPrivacyCheck;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSPriority;
+import org.restcomm.protocols.ss7.map.api.service.lsm.PrivacyCheckRelatedAction;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSQoS;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSQoSClass;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LocationEstimateType;
@@ -259,11 +261,12 @@ final class MapGmlcOutbound {
             LCSPriority priority = blank(cmd.lcsPriority()) ? null
                     : enumValue(LCSPriority.class, cmd.lcsPriority(), "PSL lcsPriority");
             LCSQoS qos = qos(pf, cmd);
+            LCSPrivacyCheck privacyCheck = privacyCheck(pf, cmd);
 
             dialog.addProvideSubscriberLocationRequest(
                     locationType, mlc, client, cmd.privacyOverride(), imsi, msisdn, lmsi, imei,
                     priority, qos, null, null, cmd.lcsReferenceNumber(), cmd.lcsServiceTypeId(),
-                    null, null, null, null, false, null, null);
+                    null, privacyCheck, null, null, false, null, null);
             sendOnce(dialog, cmd.dialogId(), "PSL");
         } catch (MAPException | RuntimeException e) {
             failUnsent(dialog, cmd.dialogId(), "PSL", e);
@@ -366,6 +369,25 @@ final class MapGmlcOutbound {
                 cmd.horizontalAccuracy(), cmd.verticalAccuracy(),
                 cmd.verticalCoordinateRequested(), responseTime, null,
                 cmd.velocityRequested(), qosClass);
+    }
+
+    /**
+     * TS 29.002 LCS-PrivacyCheck: {@code callSessionUnrelated} is mandatory and
+     * {@code callSessionRelated} optional, so the IE is omitted unless at least
+     * {@code callSessionUnrelated} is present. BER/DER encoding lives in jSS7's
+     * {@code LCSPrivacyCheckImpl}; we only build the typed parameter here.
+     */
+    private LCSPrivacyCheck privacyCheck(MAPParameterFactory pf, Ss7Command.MapProvideSubscriberLocation cmd) {
+        if (blank(cmd.callSessionUnrelated())) {
+            return null;
+        }
+        PrivacyCheckRelatedAction unrelated = enumValue(
+                PrivacyCheckRelatedAction.class, cmd.callSessionUnrelated(),
+                "PSL callSessionUnrelated");
+        PrivacyCheckRelatedAction related = blank(cmd.callSessionRelated()) ? null
+                : enumValue(PrivacyCheckRelatedAction.class, cmd.callSessionRelated(),
+                        "PSL callSessionRelated");
+        return pf.createLCSPrivacyCheck(unrelated, related);
     }
 
     private SubscriberIdentity subscriberIdentity(

@@ -1,5 +1,5 @@
 /*
- * micro-jainslee 1.1.0
+ * micro-jainslee 1.2.0
  *
  * Dual-licensed: GPLv3 (Section A) OR Commercial License (Section B).
  * See the LICENSE file at the root of this repository for the full text.
@@ -8,47 +8,41 @@
  * Contact: nhanth87@gmail.com
  */
 
-package com.microjainslee.api;
+package com.microjainslee.core;
 
-import com.microjainslee.core.ActivityContextTransactionRegistry;
-import com.microjainslee.core.CmpAccessorInvoker;
-import com.microjainslee.core.InMemoryProfileFacility;
-import com.microjainslee.core.ProfileFieldAccess;
-import com.microjainslee.core.ProfileFieldStoreLocator;
-import com.microjainslee.core.SbbTransactionContext;
+import com.microjainslee.api.Profile;
+import com.microjainslee.api.ProfileAccessorBridge;
+import com.microjainslee.api.ProfileFieldTypes;
+import com.microjainslee.api.ProfileID;
 
 import java.lang.reflect.Method;
 
 /**
- * Real implementation of the reflective profile accessor bridge.
- * <p>
- * <b>Split-package shadow.</b> The {@code jainslee-api} JAR ships a stub
- * with the same fully-qualified name that throws
- * {@link UnsupportedOperationException}; this class, compiled into the
- * {@code jainslee-core} JAR, lives in the same
- * {@code com.microjainslee.api} package and therefore overrides the stub
- * on the runtime classpath whenever {@code jainslee-core} is present.
+ * The one real {@link ProfileAccessorBridge} implementation (ADR 0004).
+ * Body moved verbatim from the former split-package duplicate
+ * {@code com.microjainslee.api.ProfileAccessorInvoker} that used to live in
+ * this module; the api-side facade now delegates here via ServiceLoader or
+ * explicit {@link com.microjainslee.api.ProfileAccessorInvoker#install}.
  *
  * <p>Reads/writes use the {@link ProfileFieldAccess} hot-path interface
  * resolved from {@link ProfileFieldStoreLocator}.
  *
  * @author Tran Nhan (nhanth87)
  */
-public final class ProfileAccessorInvoker {
-
-    private ProfileAccessorInvoker() {}
+public final class CoreProfileAccessorBridge implements ProfileAccessorBridge {
 
     /**
      * Read a CMP field value via its getter accessor.
      */
-    public static Object getValue(Profile profile, Method getter) {
+    @Override
+    public Object getValue(Profile profile, Method getter) {
         if (profile == null) {
             throw new IllegalArgumentException("profile is required");
         }
         if (getter == null) {
             throw new IllegalArgumentException("getter method is required");
         }
-        String fieldName = fieldNameFor(getter);
+        String fieldName = com.microjainslee.api.ProfileAccessorInvoker.fieldNameFor(getter);
         ProfileID id = profile.getProfileID();
         if (id == null) {
             return CmpAccessorInvoker.defaultForType(getter.getReturnType());
@@ -70,14 +64,15 @@ public final class ProfileAccessorInvoker {
      * rollback when inside an active event delivery.
      * <p>Contract C5: update event queued non-blocking via facility.
      */
-    public static void setValue(Profile profile, Method setter, Object value) {
+    @Override
+    public void setValue(Profile profile, Method setter, Object value) {
         if (profile == null) {
             throw new IllegalArgumentException("profile is required");
         }
         if (setter == null) {
             throw new IllegalArgumentException("setter method is required");
         }
-        String fieldName = fieldNameFor(setter);
+        String fieldName = com.microjainslee.api.ProfileAccessorInvoker.fieldNameFor(setter);
         // C7 — validate type before touching the store.
         ProfileFieldTypes.assertAllowed(fieldName, value);
         ProfileID id = profile.getProfileID();
@@ -98,27 +93,5 @@ public final class ProfileAccessorInvoker {
         }
         // writeField: C7 re-validation + index maintenance + dirty mark + C5 notification
         store.writeField(id, fieldName, value);
-    }
-
-    /**
-     * Extract the CMP field name from a {@code getXxx}/{@code setXxx}/{@code isXxx} method.
-     */
-    public static String fieldNameFor(Method accessor) {
-        if (accessor == null) {
-            throw new IllegalArgumentException("accessor method is required");
-        }
-        String name = accessor.getName();
-        if (name.startsWith("get") && name.length() > 3) {
-            return Character.toLowerCase(name.charAt(3)) + name.substring(4);
-        }
-        if (name.startsWith("set") && name.length() > 3) {
-            return Character.toLowerCase(name.charAt(3)) + name.substring(4);
-        }
-        if (name.startsWith("is") && name.length() > 2
-                && (accessor.getReturnType() == boolean.class
-                        || accessor.getReturnType() == Boolean.class)) {
-            return Character.toLowerCase(name.charAt(2)) + name.substring(3);
-        }
-        throw new IllegalArgumentException("Not a JavaBeans accessor: " + accessor);
     }
 }

@@ -17,6 +17,12 @@
     </properties>
 
     <dependencies>
-        <!-- No dependencies -->
+        <!-- No runtime dependencies. Test-only JUnit for the ADR-0004 facade tests. -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

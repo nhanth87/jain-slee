@@ -239,7 +239,38 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     @Override public void onDialogNotice(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, org.restcomm.protocols.ss7.map.api.dialog.MAPNoticeProblemDiagnostic mapNoticeProblemDiagnostic) { dialog(mapDialog, Ss7MapEvent.Kind.NOTICE, null); }
     @Override public void onDialogRelease(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog) { dialog(mapDialog, Ss7MapEvent.Kind.RELEASE, null); }
     @Override public void onDialogTimeout(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog) { dialog(mapDialog, Ss7MapEvent.Kind.TIMEOUT, null); }
-    @Override public void onErrorComponent(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, Long invokeId, org.restcomm.protocols.ss7.map.api.errors.MAPErrorMessage mapErrorMessage) { dialog(mapDialog, Ss7MapEvent.Kind.NOTICE, "onErrorComponent"); }
+    @Override public void onErrorComponent(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, Long invokeId, org.restcomm.protocols.ss7.map.api.errors.MAPErrorMessage mapErrorMessage) {
+        if (publisher == null || mapDialog == null) return;
+        String did = did(mapDialog);
+        publisher.publish(did, new Ss7MapEvent.Error(
+                did, invokeId, errorName(mapErrorMessage), describe(mapErrorMessage)));
+    }
+
+    /** Canonical short name of a MAP return-error (TS 29.002 error set). */
+    static String errorName(org.restcomm.protocols.ss7.map.api.errors.MAPErrorMessage e) {
+        if (e == null) return "unknown";
+        if (e.isEmUnauthorizedLCSClient()) return "unauthorizedLCSClient";
+        if (e.isEmPositionMethodFailure()) return "positionMethodFailure";
+        if (e.isEmUnknownSubscriber()) return "unknownSubscriber";
+        if (e.isEmAbsentSubscriber()) return "absentSubscriber";
+        if (e.isEmAbsentSubscriberSM()) return "absentSubscriberSM";
+        if (e.isEmSubscriberBusyForMtSms()) return "subscriberBusyForMtSms";
+        if (e.isEmCallBarred()) return "callBarred";
+        if (e.isEmSystemFailure()) return "systemFailure";
+        if (e.isEmFacilityNotSup()) return "facilityNotSup";
+        if (e.isEmSMDeliveryFailure()) return "smDeliveryFailure";
+        if (e.isEmParameterless()) return "parameterless";
+        return "errorCode" + e.getErrorCode();
+    }
+
+    private static String describe(org.restcomm.protocols.ss7.map.api.errors.MAPErrorMessage e) {
+        if (e == null) return null;
+        try {
+            return e.toString();
+        } catch (RuntimeException unexpected) {
+            return errorName(e);
+        }
+    }
     @Override public void onRejectComponent(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, Long invokeId, org.restcomm.protocols.ss7.tcap.asn.comp.Problem problem, boolean isLocalOriginated) { dialog(mapDialog, Ss7MapEvent.Kind.NOTICE, "onRejectComponent"); }
     @Override public void onInvokeTimeout(org.restcomm.protocols.ss7.map.api.MAPDialog mapDialog, Long invokeId) { dialog(mapDialog, Ss7MapEvent.Kind.NOTICE, "onInvokeTimeout"); }
     // jSS7 MAP services always call onMAPMessage *and* the typed listener for the

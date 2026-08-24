@@ -132,6 +132,26 @@ public final class Gtpv2Ies {
     }
 
     /**
+     * PGW S5/S8 control-plane F-TEID carried by the MME in a
+     * {@code CREATE_SESSION_REQUEST} (TS 29.274 "PGW S5/S8 address for control
+     * plane or PMIP"). It is a top-level F-TEID distinct from the Sender F-TEID
+     * (S11 MME); select it by interface type 5..8 (S5/S8 SGW/PGW). Returns
+     * {@code null} when the MME did not provide one so the SGW-C can fall back to
+     * its configured S5-C peer.
+     */
+    public static GtpFteid pgwS5cFteid(Gtpv2Message msg) {
+        for (Gtpv2Ie ie : msg.ies()) {
+            if (ie.type() == Gtpv2Ie.FTEID) {
+                GtpFteid f = decodeFteid(ie.value());
+                if (f.interfaceType() >= 5 && f.interfaceType() <= 8) {
+                    return f;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * TS 29.274 IE 93 — grouped Bearer Context: concatenated inner TLVs
      * (EBI + F-TEID + optional extras such as Cause).
      */

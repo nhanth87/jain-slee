@@ -47,4 +47,14 @@ public final class TelemetryRaObserver implements RaObserver {
     public void onFailure(String raName) {
         telemetry.raCollector().recordFailure(raName);
     }
+
+    /**
+     * ADR 0004 P0-4 — the container feeds RA lifecycle transitions here, so
+     * {@code RaCollector} no longer shows a permanent UNKNOWN state. The
+     * unfed-seam lesson (runtime lessons 2026-08-23) is closed at the seam.
+     */
+    @Override
+    public void onStateChange(String raName, String state, int port) {
+        telemetry.raCollector().updateState(raName, state, port);
+    }
 }

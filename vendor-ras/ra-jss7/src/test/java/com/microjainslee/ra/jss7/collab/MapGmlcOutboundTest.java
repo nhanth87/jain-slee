@@ -19,6 +19,7 @@ import org.restcomm.protocols.ss7.map.api.MAPParameterFactory;
 import org.restcomm.protocols.ss7.map.api.MAPProvider;
 import org.restcomm.protocols.ss7.map.api.service.callhandling.MAPDialogCallHandling;
 import org.restcomm.protocols.ss7.map.api.service.callhandling.MAPServiceCallHandling;
+import org.restcomm.protocols.ss7.map.api.service.lsm.LCSPrivacyCheck;
 import org.restcomm.protocols.ss7.map.api.service.lsm.MAPDialogLsm;
 import org.restcomm.protocols.ss7.map.api.service.lsm.MAPServiceLsm;
 import org.restcomm.protocols.ss7.map.api.service.mobility.MAPDialogMobility;
@@ -34,6 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -144,6 +146,42 @@ public class MapGmlcOutboundTest {
     }
 
     @Test
+    public void pslCarriesLcsPrivacyCheckForP2AndP3AndOmitsItWithoutPrivacy() {
+        DialogStub dialog = new DialogStub(null);
+        MapGmlcOutbound outbound = outbound(dialog);
+
+        // P1 (allowedWithoutNotification) + P2 (allowedWithNotification)
+        assertTrue(outbound.send(pslWithPrivacy("allowedWithoutNotification", "allowedWithNotification")));
+        assertTrue(dialog.pslArgs[15] instanceof LCSPrivacyCheck);
+
+        // P3 (notAllowed) on callSessionUnrelated, no related element
+        dialog.pslArgs = null;
+        assertTrue(outbound.send(pslWithPrivacy("notAllowed", null)));
+        assertTrue(dialog.pslArgs[15] instanceof LCSPrivacyCheck);
+
+        // No privacy profile -> LCS-PrivacyCheck IE omitted entirely
+        dialog.pslArgs = null;
+        assertTrue(outbound.send(pslWithPrivacy(null, null)));
+        assertNull(dialog.pslArgs[15]);
+    }
+
+    @Test
+    public void pslRejectsUnknownPrivacyActionAndCleansDialog() {
+        DialogStub dialog = new DialogStub(null);
+        MapGmlcOutbound outbound = outbound(dialog);
+
+        try {
+            outbound.send(pslWithPrivacy("P2", null));
+            fail("expected unknown PrivacyCheckRelatedAction rejection");
+        } catch (IllegalStateException expected) {
+            assertTrue(expected.getCause() instanceof IllegalArgumentException);
+        }
+
+        assertEquals(0, dialog.sendCount.get());
+        assertEquals(1, dialog.releaseCount.get());
+    }
+
+    @Test
     public void slrCloseFailureReleasesExistingDialogExactlyOnce() {
         DialogStub dialog = new DialogStub(null, new MAPException("close failed"));
         MapGmlcOutbound outbound = outbound(dialog);
@@ -216,12 +254,19 @@ public class MapGmlcOutboundTest {
     }
 
     private static Ss7Command.MapProvideSubscriberLocation psl() {
+        return pslWithPrivacy(null, null);
+    }
+
+    /** Privacy actions per TS 23.271: allowedWithoutNotification=P1, allowedWithNotification=P2, notAllowed=P3. */
+    private static Ss7Command.MapProvideSubscriberLocation pslWithPrivacy(
+            String callSessionUnrelated, String callSessionRelated) {
         return new Ss7Command.MapProvideSubscriberLocation(
                 "corr-psl", Ss7Address.of("251900000003", 8), GMLC,
                 "currentLocation", "251900000002", "plmnOperatorServices",
                 false, "636010000000001", null, null, null,
                 "normalPriority", 100, null, false,
                 "delaytolerant", false, "bestEffort", 7, 1,
+                callSessionUnrelated, callSessionRelated,
                 0, null, -1);
     }
 
@@ -238,6 +283,7 @@ public class MapGmlcOutboundTest {
         private final AtomicInteger closeCount = new AtomicInteger();
         private final AtomicInteger releaseCount = new AtomicInteger();
         private final AtomicInteger slrResponseCount = new AtomicInteger();
+        private volatile Object[] pslArgs;
 
         private DialogStub(Throwable sendFailure) {
             this(sendFailure, null);
@@ -272,6 +318,10 @@ public class MapGmlcOutboundTest {
                 }
                 case "addSubscriberLocationReportResponse" -> {
                     slrResponseCount.incrementAndGet();
+                    yield null;
+                }
+                case "addProvideSubscriberLocationRequest" -> {
+                    pslArgs = args;
                     yield null;
                 }
                 default -> defaultValue(proxy, method, args);

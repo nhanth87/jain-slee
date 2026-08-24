@@ -131,4 +131,24 @@ public class TelemetryRaObserverTest {
         assertTrue(stats.stream().anyMatch(s -> "ra-a".equals(s.raName()) && s.eventsFired() == 1));
         assertTrue(stats.stream().anyMatch(s -> "ra-b".equals(s.raName()) && s.eventsFired() == 2));
     }
+
+    /**
+     * ADR 0004 P0-4 — container-fed state transitions land in the collector,
+     * closing the "RaCollector.updateState is an unfed seam" lesson: telemetry
+     * must never show a permanent UNKNOWN for an RA the container activated.
+     */
+    @Test
+    public void onStateChangeUpdatesCollectorStateAndPort() {
+        RaOnlyPort port = new RaOnlyPort();
+        TelemetryRaObserver observer = new TelemetryRaObserver(port);
+
+        observer.onStateChange("ra-jss7", "ACTIVE", 0);
+        assertEquals("ACTIVE", port.ra.stats().stream()
+                .filter(s -> "ra-jss7".equals(s.raName())).findFirst().orElseThrow().state());
+
+        observer.onStateChange("ra-jss7", "INACTIVE", 0);
+        RaCollector.RaStats after = port.ra.stats().stream()
+                .filter(s -> "ra-jss7".equals(s.raName())).findFirst().orElseThrow();
+        assertEquals("INACTIVE", after.state());
+    }
 }

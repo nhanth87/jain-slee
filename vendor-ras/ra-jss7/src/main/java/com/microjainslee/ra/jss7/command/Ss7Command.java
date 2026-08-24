@@ -312,6 +312,13 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
     /**
      * MAP ProvideSubscriberLocation toward the serving MSC/SGSN.
      * Enum-valued fields use their jSS7 enum names and are rejected when unknown.
+     * {@code callSessionUnrelated} / {@code callSessionRelated} carry the TS 29.002
+     * LCS-PrivacyCheck IE ({@code PrivacyCheckRelatedAction} values:
+     * {@code allowedWithoutNotification}, {@code allowedWithNotification},
+     * {@code allowedIfNoResponse}, {@code restrictedIfNoResponse}, {@code notAllowed}).
+     * {@code callSessionUnrelated} is mandatory within the IE and {@code callSessionRelated}
+     * is optional, so a blank {@code callSessionUnrelated} omits the IE entirely.
+     * BER/DER encoding stays in jSS7 map-api/impl.
      */
     record MapProvideSubscriberLocation(
             String dialogId,
@@ -334,6 +341,8 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             String lcsQosClass,
             Integer lcsReferenceNumber,
             Integer lcsServiceTypeId,
+            String callSessionUnrelated,
+            String callSessionRelated,
             int networkId,
             String preferredAspName,
             int remotePc

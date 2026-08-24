@@ -16,6 +16,8 @@ import com.microjainslee.ra.jss7.Ss7ResourceAdaptor;
 import org.junit.After;
 import org.junit.Test;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.Assert.assertEquals;
@@ -88,5 +90,22 @@ public class Ss7RaAdminStatusTruthTest {
         Ss7RaAdminContributor c = new Ss7RaAdminContributor();
         assertEquals("ss7", c.manifest().tabId());
         assertEquals("ra-jss7", c.manifest().raName());
+    }
+
+    @Test
+    public void statusHtmlRendersCongestionVisibility() {
+        Map<String, Object> st = new LinkedHashMap<>();
+        st.put("active", true);
+        st.put("routeReady", true);
+        st.put("mtp3StatusEventsByDpc", Map.of(300, 3L, 301, 1L));
+        st.put("mtp3CongestionEventsByDpc", Map.of(300, 2L));
+        st.put("sccpRestrictionLevelsByDpc", Map.of(300, 4));
+        st.put("sccpCongControlBlockingOutgoingSccpMessages", true);
+        String html = Ss7StatusHtml.render(st);
+        assertTrue(html.contains("MTP3 congestion / SCCP restriction (per DPC)"));
+        assertTrue(html.contains("sccpCongBlockOutgoing"));
+        assertTrue(html.contains("300"));
+        assertTrue(html.contains(">4<"));   // SCCP restriction level cell
+        assertTrue(html.contains(">2<"));   // SCON count cell
     }
 }

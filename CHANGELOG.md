@@ -8,6 +8,52 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [Unreleased] — 2026-08-24 — ADR 0004 Runtime Wiring Hardening (P0)
+
+### Changed
+
+- **Profile CMP binding (BREAKING for workarounds, not source)** — the
+  split-package `com.microjainslee.api.ProfileAccessorInvoker` duplicate is
+  gone. `jainslee-api` ships a delegating facade over the new
+  `ProfileAccessorBridge`; `jainslee-core` provides the single real
+  implementation (`CoreProfileAccessorBridge`) via explicit container install +
+  `META-INF/services`. Missing runtime now fails with a clear
+  `IllegalStateException` instead of `UnsupportedOperationException`.
+  Per-app `shadow-profile-accessor.sh` jar patches are obsolete.
+- **Profile locator ownership** — `ProfileFieldStoreLocator.globalOwner()`
+  added; constructing an `InMemoryProfileFacility` that replaces a different
+  live global binding logs a WARN naming the previous owner (Digicom `ussdTx`
+  incident class). Behavior otherwise unchanged.
+
+### Added
+
+- **Boot-time `@InjectRa` wiring validation** (ADR 0004 P0-3) — `start()` and
+  post-start `registerSbbType()` fail fast on unresolved RA names, listing
+  every `Class#field → raName` problem and the registered ports. Ordering-safe:
+  deferred to injection time when no RA exists yet (S5 late-registration flow),
+  where a one-time ERROR names the unresolved field. Escape hatch:
+  `-Djainslee.inject-ra.validation=strict|warn|off` (default strict).
+  Unresolved injections are always reported loudly at creation time (previously
+  silent null ports).
+- **RA state telemetry feed** (ADR 0004 P0-4) — new
+  `RaObserver.onStateChange(raName, state, port)` default method; container
+  publishes ACTIVE / ERROR / STOPPING / INACTIVE at every RA lifecycle point;
+  `TelemetryRaObserver` mirrors into `RaCollector` so `/metrics` no longer
+  shows permanent `state=UNKNOWN`.
+- Tests: `ProfileAccessorInvokerFacadeTest` (api), `WiringHardeningTest`
+  (core, red-check verified), telemetry state-feed test.
+
+### Fixed
+
+- E2E regression during development of P0-3 caught and fixed by making
+  validation ordering-safe (SBB-before-RA registration flows in
+  ra-grpc-server / ra-camel / ra-sip-servlet tests).
+
+Full rationale: [docs/adr/0004-runtime-wiring-hardening.md](docs/adr/0004-runtime-wiring-hardening.md) ·
+program context: [docs/improvement-proposal.md](docs/improvement-proposal.md).
+
+---
+
 ## [Unreleased] - 2026-06-28 - Removed legacy vendor Mobicents directories (api/, container/, release/) — replaced by micro-jainslee built from scratch with JAIN SLEE 1.1 spec subset (jainslee-api, jainslee-core, jainslee-tx, jainslee-codegen, jainslee-cluster, jainslee-tck-harness, jainslee-ra-spi). Vendored reference code preserved in git history.
 
 

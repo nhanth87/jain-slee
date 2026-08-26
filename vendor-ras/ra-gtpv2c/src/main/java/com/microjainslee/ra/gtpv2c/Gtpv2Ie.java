@@ -15,6 +15,9 @@ public record Gtpv2Ie(int type, int instance, byte[] value) {
     public static final int RECOVERY = 3;
     public static final int APN = 71;
     public static final int EBI = 73;
+    /** TS 29.274 §8.13/§8.14 — Protocol Configuration Options (message-level
+     *  and nested inside Bearer Context). */
+    public static final int PCO = 78;
     public static final int FTEID = 87;
     public static final int BEARER_CONTEXT = 93;
     public static final int CHARGING_ID = 94;

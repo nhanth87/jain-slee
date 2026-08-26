@@ -221,4 +221,101 @@ public final class Gtpv2Ies {
     public static Gtpv2Ie cause(int value) {
         return new Gtpv2Ie(Gtpv2Ie.CAUSE, 0, new byte[] {(byte) value, 0});
     }
+
+    // ── TS 24.008 §10.5.6.11 / TS 29.274 §8.13-8.14 — PCO ────────────────
+
+    /** EPS configuration protocol option container. */
+    public record PcoContainer(int id, byte[] data) {
+        public PcoContainer {
+            Objects.requireNonNull(data);
+        }
+    }
+
+    public static final int PCO_P_CSCF_IPV6 = 0x0001;
+    public static final int PCO_DNS_SERVER_IPV6 = 0x0003;
+    public static final int PCO_P_CSCF_IPV4 = 0x000C;
+    public static final int PCO_DNS_SERVER_IPV4 = 0x000D;
+    public static final int PCO_IPV4_LINK_MTU = 0x0010;
+
+    /**
+     * Encode IE 78 value: octet3 = 0x80 (config protocol PPP), octet4 =
+     * contents length, then per container {id:2 big-endian}{len:1}{data}.
+     */
+    public static Gtpv2Ie pco(PcoContainer... containers) {
+        return pco(List.of(containers == null ? new PcoContainer[0] : containers));
+    }
+
+    public static Gtpv2Ie pco(List<PcoContainer> containers) {
+        return new Gtpv2Ie(Gtpv2Ie.PCO, 0, encodePcoValue(containers));
+    }
+
+    public static byte[] encodePcoValue(List<PcoContainer> containers) {
+        List<PcoContainer> list = containers == null ? List.of() : containers;
+        byte[] contents = new byte[list.stream().mapToInt(c -> 3 + c.data().length).sum()];
+        int o = 0;
+        for (PcoContainer c : list) {
+            contents[o++] = (byte) ((c.id() >>> 8) & 0xff);
+            contents[o++] = (byte) (c.id() & 0xff);
+            if (c.data().length > 255) {
+                throw new IllegalArgumentException("PCO container >255 bytes id=0x"
+                        + Integer.toHexString(c.id()));
+            }
+            contents[o++] = (byte) c.data().length;
+            System.arraycopy(c.data(), 0, contents, o, c.data().length);
+            o += c.data().length;
+        }
+        byte[] out = new byte[2 + contents.length];
+        out[0] = (byte) 0x80; // configuration protocol: PPP
+        out[1] = (byte) contents.length;
+        System.arraycopy(contents, 0, out, 2, contents.length);
+        return out;
+    }
+
+    /** Tolerant decode — unknown/truncated containers are skipped. */
+    public static List<PcoContainer> decodePcoValue(byte[] raw) {
+        if (raw == null || raw.length < 2) {
+            return List.of();
+        }
+        int n = Math.min(raw[1] & 0xff, raw.length - 2);
+        List<PcoContainer> out = new ArrayList<>();
+        int o = 2;
+        while (o + 3 <= 2 + n && o + 3 <= raw.length) {
+            int id = ((raw[o] & 0xff) << 8) | (raw[o + 1] & 0xff);
+            int len = raw[o + 2] & 0xff;
+            if (o + 3 + len > raw.length) {
+                break;
+            }
+            out.add(new PcoContainer(id, java.util.Arrays.copyOfRange(raw, o + 3, o + 3 + len)));
+            o += 3 + len;
+        }
+        return out;
+    }
+
+    /** Message-level IE 78 containers (empty when the message carries no PCO). */
+    public static List<PcoContainer> pcoFrom(Gtpv2Message msg) {
+        Gtpv2Ie ie = msg.first(Gtpv2Ie.PCO);
+        return ie == null ? List.of() : decodePcoValue(ie.value());
+    }
+
+    /** First IPv4 address carried by a container of the given id, else null. */
+    public static InetAddress pcoIpv4(List<PcoContainer> containers, int id) {
+        if (containers == null) {
+            return null;
+        }
+        for (PcoContainer c : containers) {
+            if (c.id() == id && c.data().length == 4) {
+                try {
+                    return InetAddress.getByAddress(c.data());
+                } catch (Exception _) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    public static PcoContainer ipv4Container(int id, InetAddress v4) {
+        Objects.requireNonNull(v4);
+        return new PcoContainer(id, v4.getAddress());
+    }
 }

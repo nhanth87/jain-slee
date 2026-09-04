@@ -331,9 +331,9 @@ public final class Ss7Stack {
                 networkIndicatorName(cfg.networkIndicator()),
                 0,
                 List.of(cfg.destinationPointCode()));
-        var wildcard = new Ss7Config.Addr(null, null, "*", null, null, null, null);
-        var toLocal = new Ss7Config.Addr(cfg.originatingPointCode(), null, null, null, null, null, null);
-        var toRemote = new Ss7Config.Addr(cfg.destinationPointCode(), null, null, null, null, null, null);
+        var wildcard = new Ss7Config.Addr(null, null, "*", null, null, null, null, null);
+        var toLocal = new Ss7Config.Addr(cfg.originatingPointCode(), null, null, null, null, null, null, null);
+        var toRemote = new Ss7Config.Addr(cfg.destinationPointCode(), null, null, null, null, null, null, null);
         var ruleInbound = new Ss7Config.Rule("remote", 0, "K", wildcard, toLocal, null);
         var ruleOutbound = new Ss7Config.Rule("local", 0, "K", wildcard, toRemote, null);
         var sccp = new Ss7Config.Sccp(List.of(localPoint), List.of(ruleInbound, ruleOutbound));

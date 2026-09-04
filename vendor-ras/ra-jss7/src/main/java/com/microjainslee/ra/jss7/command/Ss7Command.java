@@ -147,6 +147,10 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
      * @param udhi          TP-UDHI bit
      * @param networkId     jSS7 network id
      * @param lmsi          optional LMSI octets from SRI ({@code null}/empty → SM_RP_DA by IMSI)
+     * @param udl           TP-UDL as the composer knows it — septets for GSM-7, octets otherwise
+     *                      (TS 23.040 §9.2.3.16). {@code null} keeps the legacy text re-encode
+     *                      path, which double-packs pre-packed GSM-7 bytes; pass it whenever the
+     *                      caller already holds the packed octets.
      */
     record MapMtForwardSm(
             String dialogId,
@@ -161,9 +165,10 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             int networkId,
             byte[] lmsi,
             String preferredAspName,
-            int remotePc
+            int remotePc,
+            Integer udl
     ) implements Ss7Command {
-        /** Backward-compatible: no LMSI / no sticky ASP pin. */
+        /** Backward-compatible: no LMSI / no sticky ASP pin / legacy text path. */
         public MapMtForwardSm(
                 String dialogId,
                 Ss7Address targetAddress,
@@ -176,10 +181,10 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 boolean udhi,
                 int networkId) {
             this(dialogId, targetAddress, localAddress, imsi, scAddress, tpUd,
-                    dataCoding, protocolId, udhi, networkId, null, null, -1);
+                    dataCoding, protocolId, udhi, networkId, null, null, -1, null);
         }
 
-        /** Backward-compatible: LMSI, no sticky ASP pin. */
+        /** Backward-compatible: LMSI, no sticky ASP pin, legacy text path. */
         public MapMtForwardSm(
                 String dialogId,
                 Ss7Address targetAddress,
@@ -193,7 +198,64 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
                 int networkId,
                 byte[] lmsi) {
             this(dialogId, targetAddress, localAddress, imsi, scAddress, tpUd,
-                    dataCoding, protocolId, udhi, networkId, lmsi, null, -1);
+                    dataCoding, protocolId, udhi, networkId, lmsi, null, -1, null);
+        }
+    }
+
+    /**
+     * MAP MO-relay forward of an inbound short message toward a destination SMSC/MSC
+     * peer over SS7 (SS7→SS7 gateway leg, TS 29.002 MO-ForwardSM relay context).
+     *
+     * <p>Unlike {@link MapMtForwardSm} (SMSC-composed MT), this re-sends an {@code moForwardSM}
+     * primitive received on one SS7 leg onward to an SS7 peer named by {@code targetAddress}
+     * (usually the tenant's SMSC GT via {@code upperGt}). It carries the original SM point-to-point
+     * data; {@code smRpDaMisidn} supplies the RP-DA destination subscriber.
+     *
+     * @param dialogId        correlation id used as SLEE activity key (new forward leg)
+     * @param targetAddress   destination SMSC/MSC SCCP address (route {@code upperGt})
+     * @param localAddress    this gateway SCCP address (route {@code scGt})
+     * @param smRpDaMsisdn    RP-DA destination MSISDN digits (subscriber to deliver to)
+     * @param smRpOaMsisdn    RP-OA originator MSISDN digits (from the inbound MO)
+     * @param smRpOaServiceCentreAddress  SC GT digits to carry as RP-OA SC on the leg
+     * @param tpUd            TP-UserData (payload) octets from the inbound MO
+     * @param dataCoding      TP-DCS (0=GSM7, 1=8bit, 2=UCS2)
+     * @param protocolId      TP-PID
+     * @param udhi            TP-UDHI flag
+     * @param networkId       jSS7 network id
+     * @param preferredAspName  optional sticky ASP pin ({@code null} → SLS among ACTIVE)
+     * @param remotePc        optional peer PC for route pin ({@code -1} → route by GT)
+     */
+    record MapMoForwardSm(
+            String dialogId,
+            Ss7Address targetAddress,
+            Ss7Address localAddress,
+            String smRpDaMsisdn,
+            String smRpOaMsisdn,
+            String smRpOaServiceCentreAddress,
+            byte[] tpUd,
+            int dataCoding,
+            int protocolId,
+            boolean udhi,
+            int networkId,
+            String preferredAspName,
+            int remotePc
+    ) implements Ss7Command {
+        /** No sticky ASP pin. */
+        public MapMoForwardSm(
+                String dialogId,
+                Ss7Address targetAddress,
+                Ss7Address localAddress,
+                String smRpDaMsisdn,
+                String smRpOaMsisdn,
+                String smRpOaServiceCentreAddress,
+                byte[] tpUd,
+                int dataCoding,
+                int protocolId,
+                boolean udhi,
+                int networkId) {
+            this(dialogId, targetAddress, localAddress, smRpDaMsisdn, smRpOaMsisdn,
+                    smRpOaServiceCentreAddress, tpUd, dataCoding, protocolId, udhi,
+                    networkId, null, -1);
         }
     }
 

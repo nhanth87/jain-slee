@@ -621,6 +621,8 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     LOG.warn("MAP SRI response not handled by any adapter: {}", sriRsp.dialogId());
             case Ss7Command.MapMtForwardSm mt ->
                     LOG.warn("MAP MT not handled by any adapter: {}", mt.dialogId());
+            case Ss7Command.MapMoForwardSm mo ->
+                    LOG.warn("MAP MO-ForwardSM not handled by any adapter: {}", mo.dialogId());
             case Ss7Command.MapReportSMDeliveryStatus report ->
                     LOG.warn("MAP ReportSM not handled by any adapter: {}", report.dialogId());
             case Ss7Command.MapAtiRequest ati ->

@@ -94,6 +94,10 @@ final class MapSmsOutbound {
                 sendMt(mt);
                 yield true;
             }
+            case Ss7Command.MapMoForwardSm mo -> {
+                sendMo(mo);
+                yield true;
+            }
             case Ss7Command.MapReportSMDeliveryStatus report -> {
                 sendReportSm(report);
                 yield true;
@@ -281,7 +285,8 @@ final class MapSmsOutbound {
                     digits(cmd.scAddress()));
             SM_RP_OA oa = pf.createSM_RP_OA_ServiceCentreAddressOA(sc);
 
-            SmsSignalInfo si = buildSignalInfo(tpdu, pf, cmd);
+            SmsSignalInfo si = buildSignalInfo(tpdu, pf, cmd.tpUd(), cmd.dataCoding(),
+                    cmd.protocolId(), cmd.udhi(), cmd.udl(), digits(cmd.scAddress()));
             dialog.addMtForwardShortMessageRequest(
                     da, oa, si, false, null, null, null, false, null, null, null, null);
             dialog.send();
@@ -295,6 +300,64 @@ final class MapSmsOutbound {
             }
             LOG.error("[ra-jss7] MT-ForwardSM failed corr={}: {}", cmd.dialogId(), e.toString());
             throw new IllegalStateException("MAP MT-ForwardSM failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Relay an inbound MO short message onward to an SS7 peer (SS7→SS7 leg).
+     * Uses the MO-relay MAP application context and {@code addMoForwardShortMessageRequest},
+     * carrying the original SM-RP-TPDU data to {@code targetAddress}.
+     */
+    private void sendMo(Ss7Command.MapMoForwardSm cmd) {
+        MAPDialogSms dialog = null;
+        boolean sent = false;
+        try {
+            MAPApplicationContext ac = MAPApplicationContext.getInstance(
+                    MAPApplicationContextName.shortMsgMORelayContext,
+                    MAPApplicationContextVersion.version3);
+            SccpAddress dest = toSccp(cmd.targetAddress());
+            SccpAddress orig = toSccp(cmd.localAddress());
+            dialog = provider.getMAPServiceSms()
+                    .createNewDialog(ac, orig, null, dest, null);
+            dialog.setNetworkId(cmd.networkId());
+            DialogRoutePin.apply(dialog, cmd.preferredAspName(), cmd.remotePc());
+            remember(dialog.getLocalDialogId(), cmd.dialogId());
+
+            MAPParameterFactory pf = provider.getMAPParameterFactory();
+            MAPSmsTpduParameterFactory tpdu = provider.getMAPSmsTpduParameterFactory();
+
+            SM_RP_DA da = pf.createSM_RP_DA(
+                    pf.createISDNAddressString(
+                            AddressNature.international_number, NumberingPlan.ISDN,
+                            digits(cmd.smRpDaMsisdn())));
+            SM_RP_OA oa;
+            if (!isBlank(cmd.smRpOaServiceCentreAddress())) {
+                oa = pf.createSM_RP_OA_ServiceCentreAddressOA(pf.createAddressString(
+                        AddressNature.international_number, NumberingPlan.ISDN,
+                        digits(cmd.smRpOaServiceCentreAddress())));
+            } else {
+                oa = pf.createSM_RP_OA_Msisdn(
+                        pf.createISDNAddressString(
+                                AddressNature.international_number, NumberingPlan.ISDN,
+                                digits(cmd.smRpOaMsisdn())));
+            }
+
+            SmsSignalInfo si = buildSignalInfo(tpdu, pf, cmd.tpUd(), cmd.dataCoding(),
+                    cmd.protocolId(), cmd.udhi(), null, null);
+            dialog.addMoForwardShortMessageRequest(
+                    da, oa, si, null, null, null, null);
+            dialog.send();
+            sent = true;
+            LOG.info("[ra-jss7] MO-ForwardSM relayed corr={} localDialog={} da={} oa={}",
+                    cmd.dialogId(), dialog.getLocalDialogId(), cmd.smRpDaMsisdn(),
+                    isBlank(cmd.smRpOaServiceCentreAddress()) ? cmd.smRpOaMsisdn()
+                            : cmd.smRpOaServiceCentreAddress());
+        } catch (MAPException | RuntimeException e) {
+            if (!sent) {
+                releaseUnsent(dialog, cmd.dialogId());
+            }
+            LOG.error("[ra-jss7] MO-ForwardSM relay failed corr={}: {}", cmd.dialogId(), e.toString());
+            throw new IllegalStateException("MAP MO-ForwardSM relay failed: " + e.getMessage(), e);
         }
     }
 
@@ -325,35 +388,59 @@ final class MapSmsOutbound {
 
     private SmsSignalInfo buildSignalInfo(MAPSmsTpduParameterFactory tpdu,
                                           MAPParameterFactory pf,
-                                          Ss7Command.MapMtForwardSm cmd) throws MAPException {
-        byte[] tpUd = cmd.tpUd() == null ? new byte[0] : cmd.tpUd();
-        DataCodingScheme dcs = tpdu.createDataCodingScheme(cmd.dataCoding());
-        ProtocolIdentifier pid = tpdu.createProtocolIdentifier(cmd.protocolId());
+                                          byte[] tpUdArg,
+                                          int dataCoding,
+                                          int protocolId,
+                                          boolean udhi,
+                                          Integer udl,
+                                          String scDigits) throws MAPException {
+        byte[] tpUd = tpUdArg == null ? new byte[0] : tpUdArg;
+        DataCodingScheme dcs = tpdu.createDataCodingScheme(dataCoding);
+        ProtocolIdentifier pid = tpdu.createProtocolIdentifier(protocolId);
 
-        UserDataHeader udh = null;
-        byte[] payload = tpUd;
-        if (cmd.udhi() && tpUd.length > 0) {
-            int udhl = tpUd[0] & 0xFF;
-            if (udhl > 0 && tpUd.length >= udhl + 1) {
-                // UserDataHeaderImpl expects UDHL-prefixed octets (TS 23.040).
-                // Passing IE body only (without UDHL) mis-parses concat IEI 0x00 as
-                // UDHL=0 → empty header → UDHI cleared on the wire → sim cannot merge.
-                udh = tpdu.createUserDataHeader(Arrays.copyOfRange(tpUd, 0, udhl + 1));
-                payload = Arrays.copyOfRange(tpUd, udhl + 1, tpUd.length);
+        UserData ud;
+        if (udl != null) {
+            // Exact TP-UDL known (composer packed it): byte pass-through. The String
+            // overload below re-encodes from DCS, which double-packs already-packed
+            // GSM-7 octets — the handset then decodes garbage.
+            ud = tpdu.createUserData(tpUd, dcs, udl, udhi, StandardCharsets.ISO_8859_1);
+        } else {
+            UserDataHeader udh = null;
+            byte[] payload = tpUd;
+            if (udhi && tpUd.length > 0) {
+                int udhl = tpUd[0] & 0xFF;
+                if (udhl > 0 && tpUd.length >= udhl + 1) {
+                    // UserDataHeaderImpl expects UDHL-prefixed octets (TS 23.040).
+                    // Passing IE body only (without UDHL) mis-parses concat IEI 0x00 as
+                    // UDHL=0 → empty header → UDHI cleared on the wire → sim cannot merge.
+                    udh = tpdu.createUserDataHeader(Arrays.copyOfRange(tpUd, 0, udhl + 1));
+                    payload = Arrays.copyOfRange(tpUd, udhl + 1, tpUd.length);
+                }
             }
+            // 8-bit binary body as ISO-8859-1 string carrier (jSS7 UserData text path)
+            String body = new String(payload, StandardCharsets.ISO_8859_1);
+            ud = tpdu.createUserData(body, dcs, udh, StandardCharsets.ISO_8859_1);
         }
-
-        // 8-bit binary body as ISO-8859-1 string carrier (jSS7 UserData text path)
-        String body = new String(payload, StandardCharsets.ISO_8859_1);
-        UserData ud = tpdu.createUserData(body, dcs, udh, StandardCharsets.ISO_8859_1);
 
         LocalDateTime now = LocalDateTime.now();
         AbsoluteTimeStamp ts = tpdu.createAbsoluteTimeStamp(
                 now.getYear() % 100, now.getMonthValue(), now.getDayOfMonth(),
                 now.getHour(), now.getMinute(), now.getSecond(), 0);
 
-        AddressField oa = tpdu.createAddressField(
-                TypeOfNumber.Alphanumeric, NumberingPlanIdentification.Unknown, "DIGICOM");
+        // SIM data download (PID 0x7F): the UICC/ME expect a numeric Service Centre
+        // address as TP-OA. An alphanumeric OA ("DIGICOM") makes the handset treat the
+        // deliver as a normal text and never hand it to the SIM → no PoR is produced.
+        // Keep the alphanumeric sender-id only for non-download traffic.
+        AddressField oa;
+        if (protocolId == 0x7F && scDigits != null && !scDigits.isEmpty()) {
+            oa = tpdu.createAddressField(
+                    TypeOfNumber.InternationalNumber,
+                    NumberingPlanIdentification.ISDNTelephoneNumberingPlan,
+                    scDigits);
+        } else {
+            oa = tpdu.createAddressField(
+                    TypeOfNumber.Alphanumeric, NumberingPlanIdentification.Unknown, "DIGICOM");
+        }
 
         SmsDeliverTpdu deliver = tpdu.createSmsDeliverTpdu(
                 false, false, false, false, oa, pid, ts, ud);
@@ -408,6 +495,10 @@ final class MapSmsOutbound {
             default -> throw new IllegalArgumentException(
                     "MAP version must be 2 or 3, got " + version);
         };
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isBlank();
     }
 
     private static String digits(String s) {

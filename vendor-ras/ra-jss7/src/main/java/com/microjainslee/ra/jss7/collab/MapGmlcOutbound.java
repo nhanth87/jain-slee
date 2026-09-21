@@ -44,6 +44,8 @@ import org.restcomm.protocols.ss7.map.api.service.lsm.MAPDialogLsm;
 import org.restcomm.protocols.ss7.map.api.service.lsm.ResponseTime;
 import org.restcomm.protocols.ss7.map.api.service.lsm.ResponseTimeCategory;
 import org.restcomm.protocols.ss7.map.api.service.mobility.MAPDialogMobility;
+import org.restcomm.protocols.ss7.map.api.service.mobility.subscriberInformation.DomainType;
+import org.restcomm.protocols.ss7.map.api.service.mobility.subscriberInformation.RequestedInfo;
 import org.restcomm.protocols.ss7.sccp.parameter.GlobalTitle;
 import org.restcomm.protocols.ss7.sccp.parameter.ParameterFactory;
 import org.restcomm.protocols.ss7.sccp.parameter.SccpAddress;
@@ -155,9 +157,14 @@ final class MapGmlcOutbound {
             prepare(dialog, cmd);
             ISDNAddressString msisdn = isdn(pf, cmd.msisdn(), "ATI msisdn");
             SubscriberIdentity identity = pf.createSubscriberIdentity(msisdn);
+            // Create minimal valid RequestedInfo (mandatory per TS 29.002 §18.2)
+            // Force safe flags — HLR rejects when too many/requested unsuitable fields
+            DomainType domainType = enumValue(DomainType.class, cmd.requestedDomain(), "ati.requestedDomain");
+            RequestedInfo requested = pf.createRequestedInfo(
+                    cmd.requestLocationInformation(), cmd.requestSubscriberState(),
+                    null, cmd.requestCurrentLocation(), domainType, false, false, false, false);
             ISDNAddressString gsmScf = isdn(pf, cmd.gsmScfAddress(), "ATI gsmScfAddress");
-            // Removed: do not send RequestedInfo in ATI (causes HLR rejection)
-            dialog.addAnyTimeInterrogationRequest(identity, null, gsmScf, null);
+            dialog.addAnyTimeInterrogationRequest(identity, requested, gsmScf, null);
             sendOnce(dialog, cmd.dialogId(), "ATI");
         } catch (MAPException | RuntimeException e) {
             failUnsent(dialog, cmd.dialogId(), "ATI", e);
@@ -203,8 +210,12 @@ final class MapGmlcOutbound {
             prepare(dialog, cmd);
             IMSI imsi = pf.createIMSI(digitsRequired(cmd.imsi(), "PSI imsi"));
             LMSI lmsi = bytesPresent(cmd.lmsi()) ? pf.createLMSI(cmd.lmsi().clone()) : null;
-            // Removed: do not send RequestedInfo in PSI (causes HLR rejection)
-            dialog.addProvideSubscriberInfoRequest(imsi, lmsi, null, null, null);
+            // Create minimal valid RequestedInfo (mandatory per TS 29.002)
+            DomainType domainType = enumValue(DomainType.class, cmd.requestedDomain(), "psi.requestedDomain");
+            RequestedInfo requested = pf.createRequestedInfo(
+                    cmd.requestLocationInformation(), cmd.requestSubscriberState(),
+                    null, cmd.requestCurrentLocation(), domainType, false, false, false, false);
+            dialog.addProvideSubscriberInfoRequest(imsi, lmsi, requested, null, null);
             sendOnce(dialog, cmd.dialogId(), "PSI");
         } catch (MAPException | RuntimeException e) {
             failUnsent(dialog, cmd.dialogId(), "PSI", e);

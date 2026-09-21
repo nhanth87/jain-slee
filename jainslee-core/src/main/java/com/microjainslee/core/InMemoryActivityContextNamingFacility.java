@@ -13,6 +13,7 @@ package com.microjainslee.core;
 import com.microjainslee.api.ActivityContextInterface;
 import com.microjainslee.api.ActivityContextNamingFacility;
 
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -41,6 +42,26 @@ public final class InMemoryActivityContextNamingFacility implements ActivityCont
 
     public void unbind(String name) {
         contexts.remove(name);
+    }
+
+    /**
+     * Production P3 — reverse lookup: the bind key under which the given
+     * activity context is registered, or {@code null} when unbound.
+     * <p>
+     * Needed because pooled ACIs (from {@code ActivityContextPool}) carry a
+     * final placeholder name field ("__pool__") that never reflects the
+     * caller-facing bind name — only this facility knows the real key.
+     */
+    public String resolveName(ActivityContextInterface aci) {
+        if (aci == null) {
+            return null;
+        }
+        for (Map.Entry<String, ActivityContextInterface> e : contexts.entrySet()) {
+            if (e.getValue() == aci) {
+                return e.getKey();
+            }
+        }
+        return null;
     }
 
     public void clear() {

@@ -65,6 +65,24 @@ final class EntitySlotPool {
         }
     }
 
+    /**
+     * Production P3 — permanently retire a slot whose event-loop thread may
+     * be wedged inside user code (supervisor force-restart path). The slot
+     * is marked shut down (POISON + flag so the loop exits as soon as the
+     * stuck task returns) and best-effort interrupted; it is NEVER offered
+     * back to the idle queue, so a dying thread can never be re-bound to a
+     * future SBB entity. The created count is released so the pool can
+     * grow a replacement slot on the next {@link #borrow()}.
+     */
+    void abandon(EntitySlot slot) {
+        if (slot == null) {
+            return;
+        }
+        slot.markShutdown();
+        slot.getLoopFuture().cancel(true);
+        created.decrementAndGet();
+    }
+
     int prewarm(int count) {
         if (count <= 0) {
             return 0;

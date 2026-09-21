@@ -417,6 +417,29 @@ injectOffHeapForPrebuilt(sbb, sbbId);
         }
     }
 
+    /**
+     * Production P3 — force-remove an entity whose slot thread may be
+     * wedged inside user code (delivery timeout). Unlike
+     * {@link #releaseById(String)} this <b>abandons</b> the underlying
+     * {@code EntitySlot}: the slot is shut down and never returned to the
+     * idle pool, so the stuck virtual thread can never pick up work for a
+     * future entity.
+     *
+     * @return {@code true} when an entity existed for {@code sbbId}
+     */
+    public boolean forceTerminate(String sbbId) {
+        if (sbbId == null) {
+            return false;
+        }
+        SbbEntity entity = entities.remove(sbbId);
+        if (entity == null) {
+            return false;
+        }
+        unbindOffHeapIfNeeded(entity.getSbb(), sbbId);
+        slotPool.abandon(entity.getSlot());
+        return true;
+    }
+
     public SbbEntity findEntity(String sbbId) {
         if (sbbId == null) {
             return null;

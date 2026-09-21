@@ -28,6 +28,16 @@ public final class MicroSleeConfiguration {
     private static final String DEFAULT_CLUSTER_STACK = "tcp";
     private static final String DEFAULT_CLUSTER_INITIAL_HOSTS = "localhost[7800]";
 
+    // Production P3 — local SBB supervision defaults. Supervision is a
+    // single-JVM safety net: it never contacts a cluster, and it is on by
+    // default because a wedged SBB entity (per-SBB virtual thread stuck in
+    // user code) is undetectable from application code.
+    private static final boolean DEFAULT_SBB_SUPERVISION_ENABLED = true;
+    private static final int DEFAULT_SBB_RESTART_MAX_ATTEMPTS = 3;
+    private static final long DEFAULT_SBB_RESTART_BACKOFF_BASE_MS = 100L;
+    private static final long DEFAULT_SBB_RESTART_BACKOFF_MAX_MS = 3_200L;
+    private static final int DEFAULT_SBB_RESTART_REPLAY_CAPACITY = 256;
+
     private final int eventRouterBufferSize;
     private final boolean preferVirtualThreads;
     private final int sbbPoolMin;
@@ -52,6 +62,22 @@ public final class MicroSleeConfiguration {
     private final boolean offHeapEnabled;
     /** Default directory for MMAP arenas when @OffHeap.filePath is empty. */
     private final String offHeapStorageDir;
+    /** Production P3 — local SBB supervision (restart wedged/crash-looping entities). */
+    private final boolean sbbSupervisionEnabled;
+    /** Production P3 — supervised restarts allowed per entity id before DEAD. */
+    private final int sbbRestartMaxAttempts;
+    /** Production P3 — first supervised-restart delay (exponential base). */
+    private final long sbbRestartBackoffBaseMs;
+    /** Production P3 — ceiling for the exponential backoff delay. */
+    private final long sbbRestartBackoffMaxMs;
+    /**
+     * Production P3 (M3) — per-entity bound of the parked-event replay
+     * buffer: events routed to an entity whose supervised restart is in
+     * flight are parked (up to this many) and re-routed to the fresh
+     * entity once the restart lands. {@code 0} disables parking entirely
+     * (pre-M3 behaviour).
+     */
+    private final int sbbRestartReplayCapacity;
 
     private MicroSleeConfiguration(Builder builder) {
         this.eventRouterBufferSize = builder.eventRouterBufferSize;
@@ -71,6 +97,11 @@ public final class MicroSleeConfiguration {
         this.tracePinnedThreads = builder.tracePinnedThreads;
         this.offHeapEnabled = builder.offHeapEnabled;
         this.offHeapStorageDir = builder.offHeapStorageDir;
+        this.sbbSupervisionEnabled = builder.sbbSupervisionEnabled;
+        this.sbbRestartMaxAttempts = builder.sbbRestartMaxAttempts;
+        this.sbbRestartBackoffBaseMs = builder.sbbRestartBackoffBaseMs;
+        this.sbbRestartBackoffMaxMs = builder.sbbRestartBackoffMaxMs;
+        this.sbbRestartReplayCapacity = builder.sbbRestartReplayCapacity;
     }
 
     public static Builder builder() {
@@ -206,6 +237,45 @@ public final class MicroSleeConfiguration {
         return tracePinnedThreads;
     }
 
+    /**
+     * Production P3 — local SBB supervision enabled. When {@code true} the
+     * container starts an {@code SbbSupervisor} that force-restarts wedged
+     * (delivery-timeout) or crash-looping SBB entities with exponential
+     * backoff, and raises a CRITICAL alarm when restart attempts are
+     * exhausted. Purely local — no cluster interaction.
+     */
+    public boolean isSbbSupervisionEnabled() {
+        return sbbSupervisionEnabled;
+    }
+
+    /**
+     * Production P3 — supervised restarts allowed per entity id before the
+     * supervisor declares the entity dead (alarm + final removal). The
+     * counter never resets: a session needing this many restarts in total
+     * is considered too unstable to keep resurrecting.
+     */
+    public int getSbbRestartMaxAttempts() {
+        return sbbRestartMaxAttempts;
+    }
+
+    /** Production P3 — first supervised-restart delay (exponential base). */
+    public long getSbbRestartBackoffBaseMs() {
+        return sbbRestartBackoffBaseMs;
+    }
+
+    /** Production P3 — ceiling for the exponential backoff delay. */
+    public long getSbbRestartBackoffMaxMs() {
+        return sbbRestartBackoffMaxMs;
+    }
+
+    /**
+     * Production P3 (M3) — per-entity capacity of the supervised-restart
+     * replay buffer. {@code 0} disables event parking entirely.
+     */
+    public int getSbbRestartReplayCapacity() {
+        return sbbRestartReplayCapacity;
+    }
+
     public static final class Builder {
         private int eventRouterBufferSize = DEFAULT_RING_BUFFER_SIZE;
         private boolean preferVirtualThreads = true;
@@ -231,6 +301,12 @@ public final class MicroSleeConfiguration {
         private boolean tracePinnedThreads = false;
         private boolean offHeapEnabled = true;
         private String offHeapStorageDir = "";
+        // Production P3 — local SBB supervision.
+        private boolean sbbSupervisionEnabled = DEFAULT_SBB_SUPERVISION_ENABLED;
+        private int sbbRestartMaxAttempts = DEFAULT_SBB_RESTART_MAX_ATTEMPTS;
+        private long sbbRestartBackoffBaseMs = DEFAULT_SBB_RESTART_BACKOFF_BASE_MS;
+        private long sbbRestartBackoffMaxMs = DEFAULT_SBB_RESTART_BACKOFF_MAX_MS;
+        private int sbbRestartReplayCapacity = DEFAULT_SBB_RESTART_REPLAY_CAPACITY;
 
         public Builder eventRouterBufferSize(int eventRouterBufferSize) {
             if (eventRouterBufferSize <= 0 || Integer.bitCount(eventRouterBufferSize) != 1) {
@@ -382,6 +458,40 @@ public final class MicroSleeConfiguration {
             return this;
         }
 
+        /** Production P3 — toggle local SBB supervision. Default {@code true}. */
+        public Builder sbbSupervisionEnabled(boolean enable) {
+            this.sbbSupervisionEnabled = enable;
+            return this;
+        }
+
+        /** Production P3 — supervised restarts per entity id before DEAD. Default 3. */
+        public Builder sbbRestartMaxAttempts(int maxAttempts) {
+            this.sbbRestartMaxAttempts = maxAttempts;
+            return this;
+        }
+
+        /** Production P3 — exponential backoff base delay in ms. Default 100. */
+        public Builder sbbRestartBackoffBaseMs(long baseMs) {
+            this.sbbRestartBackoffBaseMs = baseMs;
+            return this;
+        }
+
+        /** Production P3 — exponential backoff ceiling in ms. Default 3200. */
+        public Builder sbbRestartBackoffMaxMs(long maxMs) {
+            this.sbbRestartBackoffMaxMs = maxMs;
+            return this;
+        }
+
+        /**
+         * Production P3 (M3) — parked-event bound per entity for the
+         * supervised-restart replay buffer. {@code 0} disables parking.
+         * Default 256.
+         */
+        public Builder sbbRestartReplayCapacity(int capacity) {
+            this.sbbRestartReplayCapacity = capacity;
+            return this;
+        }
+
         public MicroSleeConfiguration build() {
             if (sbbPoolMin < 0) {
                 throw new IllegalArgumentException("sbbPoolMin must be >= 0 (was " + sbbPoolMin + ")");
@@ -396,6 +506,25 @@ public final class MicroSleeConfiguration {
             if (sbbTypePoolMinIdle < 0) {
                 throw new IllegalArgumentException(
                         "sbbTypePoolMinIdle must be >= 0 (was " + sbbTypePoolMinIdle + ")");
+            }
+            if (sbbRestartMaxAttempts < 1) {
+                throw new IllegalArgumentException(
+                        "sbbRestartMaxAttempts must be >= 1 (was " + sbbRestartMaxAttempts + ")");
+            }
+            if (sbbRestartBackoffBaseMs < 0L) {
+                throw new IllegalArgumentException(
+                        "sbbRestartBackoffBaseMs must be >= 0 (was " + sbbRestartBackoffBaseMs + ")");
+            }
+            if (sbbRestartBackoffMaxMs < sbbRestartBackoffBaseMs) {
+                throw new IllegalArgumentException(
+                        "sbbRestartBackoffMaxMs (" + sbbRestartBackoffMaxMs
+                                + ") must be >= sbbRestartBackoffBaseMs ("
+                                + sbbRestartBackoffBaseMs + ")");
+            }
+            if (sbbRestartReplayCapacity < 0) {
+                throw new IllegalArgumentException(
+                        "sbbRestartReplayCapacity must be >= 0 (was "
+                                + sbbRestartReplayCapacity + ")");
             }
             return new MicroSleeConfiguration(this);
         }

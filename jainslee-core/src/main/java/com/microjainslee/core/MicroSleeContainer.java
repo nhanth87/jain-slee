@@ -47,6 +47,11 @@ import com.microjainslee.core.removal.EntityRemovalEvent;
 import com.microjainslee.core.removal.EntityRemovalEvent.RemovalReason;
 import com.microjainslee.core.removal.SessionLifecycleLogger;
 import com.microjainslee.core.ordering.OutOfOrderBuffer;
+import com.microjainslee.core.recovery.RecoverySnapshot;
+import com.microjainslee.core.recovery.SessionRecoveryService;
+import com.microjainslee.core.recovery.SessionRecoveryServiceImpl;
+import com.microjainslee.core.supervision.SbbSupervisor;
+import com.microjainslee.core.supervision.SbbSupervisionPort;
 
 import java.io.File;
 import java.io.IOException;
@@ -56,6 +61,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -68,7 +74,7 @@ import java.util.function.Consumer;
 /**
  * Embedded JAIN-SLEE micro-container foundation with no JBoss Modules, VFS, MSC, or JMX dependency.
  */
-public final class MicroSleeContainer {
+public final class MicroSleeContainer implements SessionRecoveryService.RehydrateCallback {
 
     private static final Logger LOG = LogManager.getLogger(MicroSleeContainer.class);
 
@@ -181,6 +187,23 @@ public final class MicroSleeContainer {
      * leaking subscribers across stop/start cycles.
      */
     private volatile SessionLifecycleLogger sessionLifecycleLogger;
+
+    /**
+     * Production P3 — local SBB supervisor. {@code null} until
+     * {@code start()} (and always {@code null} when
+     * {@link MicroSleeConfiguration#isSbbSupervisionEnabled()} is false).
+     */
+    private volatile SbbSupervisor sbbSupervisor;
+
+    /**
+     * Production P3 / Sprint S7 wiring — bounded LRU of
+     * {@link RecoverySnapshot}s captured at entity-removal time. When the
+     * router later finds an entity missing while an event is still in
+     * flight (Gap-SR-1), it calls back into
+     * {@link #reconstructFromSnapshot(RecoverySnapshot)} to rebuild the
+     * entity and re-dispatch. {@code null} until {@code start()}.
+     */
+    private volatile SessionRecoveryServiceImpl sessionRecoveryService;
     // Production P2.1 — optional cluster manager. Bound reflectively by
     // #bindCluster(Object) when MicroSleeConfiguration.isClusterEnabled() is
     // true. Stored as java.lang.Object so the kernel stays free of any
@@ -577,6 +600,22 @@ public final class MicroSleeContainer {
     }
 
     /**
+     * Production P3 — the local SBB supervisor, or {@code null} when
+     * supervision is disabled or the container is not STARTED.
+     */
+    public SbbSupervisor getSbbSupervisor() {
+        return sbbSupervisor;
+    }
+
+    /**
+     * Production P3 / Sprint S7 — the dead-slot rehydration service bound
+     * to the router, or {@code null} when the container is not STARTED.
+     */
+    public SessionRecoveryService getSessionRecoveryService() {
+        return sessionRecoveryService;
+    }
+
+    /**
      * Gate A — HA checkpoint for a live SBB entity (no-op when no distributed
      * pool). <b>RA-only</b> entry point ({@code RaCheckpointBridge}); SBBs must
      * not call this. Snapshot payload is CMP + remembered profile refs only.
@@ -749,6 +788,29 @@ public final class MicroSleeContainer {
             this.sessionLifecycleLogger = new SessionLifecycleLogger();
             entityRemovalBus.subscribe(this.sessionLifecycleLogger);
         }
+        // Production P3 / Sprint S7 — wire the dead-slot rehydration seam
+        // and the local SBB supervisor. The recovery service captures a
+        // CMP snapshot on every entity removal; when the router later
+        // finds the entity missing (Gap-SR-1), it reconstructs a fresh
+        // entity and re-dispatches the pending event. The supervisor
+        // force-restarts wedged (delivery-timeout) or crash-looping
+        // entities with exponential backoff on its own virtual thread.
+        this.sessionRecoveryService = new SessionRecoveryServiceImpl(this);
+        this.eventRouter.bindSessionRecoveryService(this.sessionRecoveryService);
+        if (configuration.isSbbSupervisionEnabled()) {
+            this.sbbSupervisor = new SbbSupervisor(new SupervisorRestartPort(),
+                    configuration.getSbbRestartMaxAttempts(),
+                    configuration.getSbbRestartBackoffBaseMs(),
+                    configuration.getSbbRestartBackoffMaxMs(),
+                    configuration.getSbbRestartReplayCapacity());
+            this.eventRouter.bindSbbSupervisor(this.sbbSupervisor);
+            LOG.info("SBB supervision enabled: maxAttempts={} backoffBaseMs={} backoffMaxMs={} "
+                            + "replayCapacity={}",
+                    configuration.getSbbRestartMaxAttempts(),
+                    configuration.getSbbRestartBackoffBaseMs(),
+                    configuration.getSbbRestartBackoffMaxMs(),
+                    configuration.getSbbRestartReplayCapacity());
+        }
         // Sprint S8 — lazy-create the out-of-order buffer if no embedder has
         // supplied one. Capacity 16/convergence, 30s TTL, 30s sweep. If the
         // IES dispatcher was already bound (rare but legal), push the buffer
@@ -791,6 +853,18 @@ public final class MicroSleeContainer {
     public synchronized void stop() {
         if (state == State.STOPPED) {
             return;
+        }
+        // Production P3 — stop supervision first so no scheduled restart
+        // can race the pool shutdown below, and drop the rehydration seam
+        // before the SBB maps are cleared.
+        if (this.sbbSupervisor != null) {
+            this.sbbSupervisor.shutdown();
+            this.sbbSupervisor = null;
+            this.eventRouter.bindSbbSupervisor(null);
+        }
+        if (this.sessionRecoveryService != null) {
+            this.sessionRecoveryService = null;
+            this.eventRouter.bindSessionRecoveryService(null);
         }
         for (ServiceID serviceID : serviceRegistry.snapshot().keySet()) {
             if (serviceRegistry.isActive(serviceID)) {
@@ -1621,6 +1695,208 @@ public final class MicroSleeContainer {
             }
         }
         timerPort.getBridge().unbindActivityContext(sbbLocalObject);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Production P3 — local SBB supervision + Sprint S7 rehydration
+    // ──────────────────────────────────────────────────────────────
+
+    /**
+     * Sprint S7 wiring — capture a {@link RecoverySnapshot} for an entity
+     * that is about to be released, so the router can rehydrate it when a
+     * still-in-flight event finds the slot empty (Gap-SR-1). Runs as the
+     * FIRST step of the removal listener, before detach/unbind clears the
+     * attachments and CMP state. No-op when the recovery service is not
+     * bound (container stopped / not yet started).
+     */
+    private void registerLocalRecoverySnapshot(String id, SimpleSbbLocalObject removedObject) {
+        SessionRecoveryServiceImpl svc = this.sessionRecoveryService;
+        if (svc == null || id == null || removedObject == null) {
+            return;
+        }
+        try {
+            Class<? extends Sbb> pooledType = entityTypesById.get(id);
+            String classFqn = pooledType != null
+                    ? pooledType.getName()
+                    : removedObject.getSbb().getClass().getName();
+            Map<String, Object> cmp = new LinkedHashMap<String, Object>(
+                    removedObject.getEntityState().getCmpFields());
+            Set<String> aciNames = new LinkedHashSet<String>(
+                    findAttachedAciNames(removedObject));
+            svc.registerSnapshot(new RecoverySnapshot(id, classFqn, cmp, aciNames,
+                    System.currentTimeMillis(), captureConvergenceKeyFor(id)));
+        } catch (RuntimeException re) {
+            // Snapshot capture is best-effort; a broken SBB must never be
+            // able to block its own removal.
+            LOG.debug("recovery snapshot capture failed for {}: {}", id, re.toString());
+        }
+    }
+
+    /**
+     * Production P3 — names of every bound activity context the entity is
+     * attached to (used to re-attach a restarted / rehydrated entity).
+     */
+    private List<String> findAttachedAciNames(SbbLocalObject target) {
+        List<String> names = new ArrayList<String>();
+        if (target == null) {
+            return names;
+        }
+        for (ActivityContextInterface aci : activityContextNamingFacility.getBoundContexts()) {
+            if (aci instanceof InMemoryActivityContext) {
+                InMemoryActivityContext ctx = (InMemoryActivityContext) aci;
+                if (ctx.getAttachedSbbs().contains(target)) {
+                    // Pooled ACIs carry a final placeholder name field, so
+                    // prefer the naming facility's bind key and only fall
+                    // back to the context's own name when unbound.
+                    String name = activityContextNamingFacility.resolveName(ctx);
+                    if (name == null) {
+                        name = ctx.getActivityContextName();
+                    }
+                    if (name != null) {
+                        names.add(name);
+                    }
+                }
+            }
+        }
+        return names;
+    }
+
+    /**
+     * Production P3 — destructive removal for a (possibly wedged) entity.
+     * Bypasses the entity thread entirely (a wedged thread would never run
+     * {@code remove()}), abandons the pool slot so the stuck virtual
+     * thread can never be re-bound, and publishes the same removal event
+     * the normal path emits so bus subscribers stay honest. The faulty SBB
+     * instance is NOT returned to its type pool — a crashing instance must
+     * never poison a fresh entity.
+     */
+    private void forceRemoveSbbEntity(String sbbId, SimpleSbbLocalObject old) {
+        old.setRemovalCause(SimpleSbbLocalObject.RemovalCause.EXCEPTION_ROLLBACK);
+        old.getEntityState().markRemoved();
+        old.getEntityState().transitionTo(SbbLifecycleManager.State.DOES_NOT_EXIST);
+        detachFromAllActivityContexts(old);
+        sbbs.remove(sbbId);
+        entityTypesById.remove(sbbId);
+        // Publish BEFORE the pool release so subscribers can still read CMP.
+        entityRemovalBus.publish(new EntityRemovalEvent(sbbId,
+                captureConvergenceKeyFor(sbbId),
+                RemovalReason.EXCEPTION_ROLLBACK, System.currentTimeMillis()));
+        entityRemovalCounter.incrementAndGet();
+        sbbEntityPool.forceTerminate(sbbId);
+        cmpFieldStore.remove(sbbId);
+    }
+
+    /**
+     * Production P3 / Sprint S7 — rebuild an entity from captured state:
+     * a fresh instance from the registered type pool, CMP state restored
+     * through the store, re-attached to the named activity contexts.
+     */
+    private SimpleSbbLocalObject recreateEntityInternal(String sbbId, Class<? extends Sbb> type,
+            EventMask mask, Map<String, Object> cmpFields, List<String> aciNames) {
+        if (state != State.STARTED || type == null || sbbId == null) {
+            return null;
+        }
+        if (cmpFields != null && !cmpFields.isEmpty()) {
+            cmpFieldStore.store(sbbId, new LinkedHashMap<String, Object>(cmpFields));
+        }
+        EventMask effectiveMask = mask != null ? mask : EventMask.ACCEPT_ALL;
+        SimpleSbbLocalObject fresh = acquireEntity(sbbId, type, effectiveMask,
+                new ServiceID(sbbId, "com.microjainslee", "1.0"));
+        if (fresh == null || aciNames == null) {
+            return fresh;
+        }
+        for (String aciName : aciNames) {
+            ActivityContextInterface aci = activityContextNamingFacility.lookup(aciName);
+            if (aci != null) {
+                aci.attach(fresh);
+            } else {
+                LOG.debug("reattach skipped for {}: ACI '{}' no longer bound", sbbId, aciName);
+            }
+        }
+        return fresh;
+    }
+
+    /**
+     * Sprint S7 — the router detected a dead slot while an event was in
+     * flight; rebuild the entity from its removal-time snapshot. Returns
+     * {@code true} when the entity is alive and ready for re-dispatch.
+     */
+    @Override
+    public boolean reconstructFromSnapshot(RecoverySnapshot snapshot) {
+        if (snapshot == null || state != State.STARTED) {
+            return false;
+        }
+        String id = snapshot.entityId();
+        if (id == null) {
+            return false;
+        }
+        if (sbbs.containsKey(id)) {
+            return true;
+        }
+        Class<? extends Sbb> type = sbbTypeRegistry.findTypeByName(snapshot.sbbClassFqn());
+        if (type == null) {
+            LOG.debug("rehydrate refused for {}: type {} not registered",
+                    id, snapshot.sbbClassFqn());
+            return false;
+        }
+        SimpleSbbLocalObject fresh = recreateEntityInternal(id, type, EventMask.ACCEPT_ALL,
+                snapshot.cmpFields(), new ArrayList<String>(snapshot.attachedAciNames()));
+        if (fresh == null) {
+            return false;
+        }
+        LOG.info("rehydrated sbbId={} from snapshot (age={}ms, cmpFields={}, acis={})",
+                id, System.currentTimeMillis() - snapshot.capturedAtMs(),
+                snapshot.cmpFields().size(), snapshot.attachedAciNames().size());
+        return true;
+    }
+
+    /**
+     * Production P3 — supervisor-facing restart mechanics. Registered with
+     * the {@link SbbSupervisor} at {@code start()}; all methods run on the
+     * supervisor's single virtual thread.
+     */
+    private final class SupervisorRestartPort implements SbbSupervisionPort {
+
+        @Override
+        public boolean restartEntity(String sbbId) {
+            SimpleSbbLocalObject old = sbbs.get(sbbId);
+            if (old == null) {
+                return false;
+            }
+            Class<? extends Sbb> type = entityTypesById.get(sbbId);
+            if (type == null || sbbTypeRegistry.find(type) == null) {
+                LOG.warn("[SbbSupervisor] sbbId={} is a legacy (non-pooled) SBB — cannot restart",
+                        sbbId);
+                return false;
+            }
+            EventMask mask = old.getEntityState().getEventMask();
+            Map<String, Object> cmp = new LinkedHashMap<String, Object>(
+                    old.getEntityState().getCmpFields());
+            List<String> aciNames = findAttachedAciNames(old);
+            forceRemoveSbbEntity(sbbId, old);
+            SimpleSbbLocalObject fresh = recreateEntityInternal(sbbId, type, mask, cmp, aciNames);
+            return fresh != null;
+        }
+
+        @Override
+        public void giveUp(String sbbId, String reason) {
+            SimpleSbbLocalObject old = sbbs.get(sbbId);
+            if (old != null) {
+                forceRemoveSbbEntity(sbbId, old);
+            }
+            alarmFacility.raise(SbbSupervisor.ALARM_TYPE, sbbId, AlarmLevel.CRITICAL, reason);
+        }
+
+        @Override
+        public void replayEvent(SleeEvent event, ActivityContextInterface aci) {
+            // M3 — a parked event is re-routed through the ring buffer so it
+            // gets the full dispatch machinery (transaction, MDC, event
+            // mask, failure reporting) against the freshly restarted
+            // entity instead of a bare inline invocation.
+            if (event != null && state == State.STARTED) {
+                eventRouter.routeEvent(event, aci);
+            }
+        }
     }
 
     public void setInitialEventSelectorCustomizer(InitialEventSelectorCustomizer customizer) {
@@ -2558,6 +2834,10 @@ public final class MicroSleeContainer {
                 new SimpleSbbLocalObject.RemovalListener() {
                     @Override
                     public void onRemoved(SimpleSbbLocalObject removedObject) {
+                        // Production P3 / Sprint S7 — capture the recovery
+                        // snapshot BEFORE the detach/unbind below clears the
+                        // entity's ACI attachments and CMP state.
+                        registerLocalRecoverySnapshot(id, removedObject);
                         detachFromAllActivityContexts(removedObject);
                         sbbs.remove(id);
                         entityTypesById.remove(id);
@@ -2681,6 +2961,21 @@ public final class MicroSleeContainer {
         java.util.Set<String> names();
         void clear();
         java.util.Collection<ActivityContextInterface> getBoundContexts();
+
+        /**
+         * Production P3 — reverse lookup of the bind key for a bound
+         * context. Returns {@code null} when the backend cannot resolve
+         * (unbound, or a clustered backend that does not expose the
+         * operation); callers fall back to
+         * {@link ActivityContextInterface#getActivityContextName()}.
+         * <p>
+         * Default method (not abstract) on purpose: the reflective
+         * cluster-backed implementation wraps a delegate that may not
+         * know this operation.
+         */
+        default String resolveName(ActivityContextInterface aci) {
+            return null;
+        }
     }
 
     /**
@@ -2704,6 +2999,15 @@ public final class MicroSleeContainer {
         @Override
         public ActivityContextInterface lookup(String name) {
             return delegate.lookup(name);
+        }
+
+        /**
+         * Production P3 — the in-memory facility knows the real bind key
+         * even for pooled ACIs whose own name field is a placeholder.
+         */
+        @Override
+        public String resolveName(ActivityContextInterface aci) {
+            return delegate.resolveName(aci);
         }
 
         @Override
@@ -2789,6 +3093,24 @@ public final class MicroSleeContainer {
         @Override
         public ActivityContextInterface lookup(String name) {
             return (ActivityContextInterface) invoke(lookupMethod, name);
+        }
+
+        /**
+         * Production P3 — optional on the clustered delegate: when the
+         * cluster facility does not expose {@code resolveName} we return
+         * {@code null} and callers fall back to the context's own
+         * (possibly placeholder) name.
+         */
+        @Override
+        public String resolveName(ActivityContextInterface aci) {
+            try {
+                java.lang.reflect.Method m = delegate.getClass()
+                        .getMethod("resolveName", ActivityContextInterface.class);
+                Object result = m.invoke(delegate, aci);
+                return result instanceof String s ? s : null;
+            } catch (ReflectiveOperationException roe) {
+                return null;
+            }
         }
 
         @Override

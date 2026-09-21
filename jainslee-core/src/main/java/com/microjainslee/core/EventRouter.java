@@ -15,6 +15,7 @@ import com.lmax.disruptor.*;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
 import com.microjainslee.core.logging.EventMdc;
+import com.microjainslee.core.supervision.SbbSupervisor;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -57,6 +58,16 @@ public class EventRouter {
      * Disruptor under concurrent multi-producer load.
      */
     private volatile RaFanInGateway fanInGateway;
+
+    /**
+     * Production P3 — local SBB supervision. Bound by
+     * {@code MicroSleeContainer.start()} when
+     * {@code MicroSleeConfiguration.isSbbSupervisionEnabled()}. When
+     * non-null the router reports delivery failures, per-SBB virtual-thread
+     * timeouts and delivery successes so the supervisor can force-restart
+     * wedged / crash-looping entities. {@code null} = supervision off.
+     */
+    private volatile SbbSupervisor sbbSupervisor;
 
     /**
      * Passive delivery observation (jainslee-telemetry). One volatile read
@@ -214,6 +225,18 @@ public class EventRouter {
      */
     public void bindSbbEntityPool(VirtualThreadSbbEntityPool pool) {
         this.sbbEntityPool = pool;
+    }
+
+    /**
+     * Production P3 — bind (or clear, with {@code null}) the local SBB
+     * supervisor. Called by {@code MicroSleeContainer.start()} /
+     * {@code stop()}. After binding, delivery failures and per-SBB
+     * virtual-thread timeouts are reported to the supervisor; a wedged
+     * entity gets force-restarted on the supervisor's own thread so this
+     * router thread never blocks.
+     */
+    public void bindSbbSupervisor(SbbSupervisor supervisor) {
+        this.sbbSupervisor = supervisor;
     }
 
     /**
@@ -529,6 +552,23 @@ public class EventRouter {
                 if (localObject.isRemoved()) {
                     continue;
                 }
+                // Production P3 (M3) — supervised-restart replay window: a
+                // restart for this entity is scheduled or executing, so a
+                // delivery now would either queue the event behind a wedged
+                // slot thread (abandoned — and lost — when the restart
+                // lands) or hit the dead-slot path. Park it on the
+                // supervisor's replay buffer instead; it is re-routed to
+                // the fresh entity once the restart completes. Parking is
+                // limited to single-SBB activity contexts so the replay
+                // re-route cannot duplicate the event for other attached
+                // SBBs.
+                SbbSupervisor supervisor = this.sbbSupervisor;
+                if (supervisor != null && attached.size() == 1
+                        && localObject.getSbbID() != null
+                        && supervisor.isRestarting(localObject.getSbbID().getId())
+                        && supervisor.parkEvent(localObject.getSbbID().getId(), event, aci)) {
+                    continue;
+                }
                 // JAIN-SLEE 1.1 §8.6 — apply the SBB's EventMask before invoking
                 // onEvent. Without this filter the router spends a transaction,
                 // a virtual-thread handoff, and a stack frame per attached SBB
@@ -711,6 +751,14 @@ public class EventRouter {
         }
         try {
             if (!done.await(30, TimeUnit.SECONDS)) {
+                // Production P3 — the per-SBB virtual thread is wedged in
+                // user code. Report to the supervisor BEFORE throwing: it
+                // will force-restart the entity (fresh instance, abandoned
+                // slot) on its own thread; this router thread keeps routing.
+                SbbSupervisor supervisor = this.sbbSupervisor;
+                if (supervisor != null && localObject.getSbbID() != null) {
+                    supervisor.onDeliveryTimeout(localObject.getSbbID().getId());
+                }
                 throw new IllegalStateException(
                         "Timed out delivering event to SBB " + localObject.getSbbID());
             }
@@ -723,7 +771,21 @@ public class EventRouter {
             handleSbbException(failure.get(), localObject, event, aci, transaction);
             return true;
         }
+        notifyDeliverySuccess(localObject);
         return false;
+    }
+
+    /**
+     * Production P3 — a successful SYNC-path delivery resets the
+     * supervisor's consecutive-failure streak for this entity. One
+     * ConcurrentHashMap lookup per delivery; a no-op when the supervisor
+     * is unbound or has never seen a failure for this id.
+     */
+    private void notifyDeliverySuccess(SbbLocalObject localObject) {
+        SbbSupervisor supervisor = this.sbbSupervisor;
+        if (supervisor != null && localObject != null && localObject.getSbbID() != null) {
+            supervisor.onDeliverySuccess(localObject.getSbbID().getId());
+        }
     }
 
     /**
@@ -788,6 +850,13 @@ public class EventRouter {
             } catch (Throwable ignored) {
                 // never let application exception handlers break dispatch
             }
+        }
+        // Production P3 — report the failure so the supervisor can decide
+        // (after maxAttempts consecutive failures) whether this entity is
+        // crash-looping and needs a fresh-instantiation restart.
+        SbbSupervisor supervisor = this.sbbSupervisor;
+        if (supervisor != null && localObject != null && localObject.getSbbID() != null) {
+            supervisor.onSbbException(localObject.getSbbID().getId(), exception);
         }
     }
 

@@ -44,8 +44,6 @@ import org.restcomm.protocols.ss7.map.api.service.lsm.MAPDialogLsm;
 import org.restcomm.protocols.ss7.map.api.service.lsm.ResponseTime;
 import org.restcomm.protocols.ss7.map.api.service.lsm.ResponseTimeCategory;
 import org.restcomm.protocols.ss7.map.api.service.mobility.MAPDialogMobility;
-import org.restcomm.protocols.ss7.map.api.service.mobility.subscriberInformation.DomainType;
-import org.restcomm.protocols.ss7.map.api.service.mobility.subscriberInformation.RequestedInfo;
 import org.restcomm.protocols.ss7.sccp.parameter.GlobalTitle;
 import org.restcomm.protocols.ss7.sccp.parameter.ParameterFactory;
 import org.restcomm.protocols.ss7.sccp.parameter.SccpAddress;
@@ -157,12 +155,9 @@ final class MapGmlcOutbound {
             prepare(dialog, cmd);
             ISDNAddressString msisdn = isdn(pf, cmd.msisdn(), "ATI msisdn");
             SubscriberIdentity identity = pf.createSubscriberIdentity(msisdn);
-            RequestedInfo requested = requestedInfo(pf, cmd.requestedDomain(),
-                    cmd.requestLocationInformation(), cmd.requestSubscriberState(),
-                    cmd.requestCurrentLocation(), cmd.requestImei(), cmd.requestMsClassmark(),
-                    cmd.requestMnpInfo(), cmd.requestEpsLocationInformation());
             ISDNAddressString gsmScf = isdn(pf, cmd.gsmScfAddress(), "ATI gsmScfAddress");
-            dialog.addAnyTimeInterrogationRequest(identity, requested, gsmScf, null);
+            // Removed: do not send RequestedInfo in ATI (causes HLR rejection)
+            dialog.addAnyTimeInterrogationRequest(identity, null, gsmScf, null);
             sendOnce(dialog, cmd.dialogId(), "ATI");
         } catch (MAPException | RuntimeException e) {
             failUnsent(dialog, cmd.dialogId(), "ATI", e);
@@ -208,11 +203,8 @@ final class MapGmlcOutbound {
             prepare(dialog, cmd);
             IMSI imsi = pf.createIMSI(digitsRequired(cmd.imsi(), "PSI imsi"));
             LMSI lmsi = bytesPresent(cmd.lmsi()) ? pf.createLMSI(cmd.lmsi().clone()) : null;
-            RequestedInfo requested = requestedInfo(pf, cmd.requestedDomain(),
-                    cmd.requestLocationInformation(), cmd.requestSubscriberState(),
-                    cmd.requestCurrentLocation(), cmd.requestImei(), cmd.requestMsClassmark(),
-                    cmd.requestMnpInfo(), cmd.requestEpsLocationInformation());
-            dialog.addProvideSubscriberInfoRequest(imsi, lmsi, requested, null, null);
+            // Removed: do not send RequestedInfo in PSI (causes HLR rejection)
+            dialog.addProvideSubscriberInfoRequest(imsi, lmsi, null, null, null);
             sendOnce(dialog, cmd.dialogId(), "PSI");
         } catch (MAPException | RuntimeException e) {
             failUnsent(dialog, cmd.dialogId(), "PSI", e);
@@ -336,21 +328,6 @@ final class MapGmlcOutbound {
         } finally {
             forget(localId);
         }
-    }
-
-    private RequestedInfo requestedInfo(
-            MAPParameterFactory pf,
-            String domain,
-            boolean location,
-            boolean state,
-            boolean current,
-            boolean imei,
-            boolean classmark,
-            boolean mnp,
-            boolean eps) {
-        DomainType requestedDomain = enumValue(DomainType.class, domain, "requestedDomain");
-        return pf.createRequestedInfo(
-                location, state, null, current, requestedDomain, imei, classmark, mnp, eps);
     }
 
     private LCSQoS qos(MAPParameterFactory pf, Ss7Command.MapProvideSubscriberLocation cmd) {

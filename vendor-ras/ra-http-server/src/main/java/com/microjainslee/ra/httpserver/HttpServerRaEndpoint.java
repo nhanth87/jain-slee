@@ -111,6 +111,12 @@ public final class HttpServerRaEndpoint implements RaEndpointPort, RaCommandPort
                     hx.textBody(), hx.binaryBody(), hx.headers());
             LOG.debug(() -> "Sent HTTP response via HttpResponseExCommand sessionId="
                     + hx.sessionId() + " status=" + hx.statusCode());
+        } else if (command instanceof HttpServerCommand.HttpStreamStartCommand ss) {
+            delegate.startStream(ss.sessionId(), ss.statusCode(), ss.contentType(), ss.headers());
+        } else if (command instanceof HttpServerCommand.HttpStreamChunkCommand sc) {
+            delegate.writeStream(sc.sessionId(), sc.text());
+        } else if (command instanceof HttpServerCommand.HttpStreamEndCommand se) {
+            delegate.endStream(se.sessionId());
         } else if (command instanceof HttpServerCommand) {
             LOG.info(() -> "HTTP server RA received command: "
                     + command.getClass().getSimpleName()

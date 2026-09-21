@@ -76,6 +76,8 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
     private String host = "127.0.0.1";
     private int eventLoopThreads = 0;   // 0 = Vert.x default (2 × cores)
     private int workerPoolSize = 0;     // 0 = Vert.x default (20) — raise for high TPS fireEvent
+    private String uploadsDirectory = "file-uploads";
+    private long bodyLimitBytes = 32L * 1024 * 1024;
     private int acceptBacklog = 0;      // 0 = Vert.x / OS default; lab 10k → 8192+
 
     /** Maps sessionId → pending HttpServerResponse for async resolution. */
@@ -138,6 +140,23 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
         this.acceptBacklog = Math.max(0, n);
     }
 
+    /**
+     * Where multipart uploads are spooled. Vert.x resolves a relative path against the working
+     * directory, which is read-only in a hardened container — point this at a writable volume.
+     */
+    public void setUploadsDirectory(String dir) {
+        if (dir != null && !dir.isBlank()) {
+            this.uploadsDirectory = dir;
+        }
+    }
+
+    /** Maximum request body in bytes (multipart included). */
+    public void setBodyLimitBytes(long bytes) {
+        if (bytes > 0) {
+            this.bodyLimitBytes = bytes;
+        }
+    }
+
     /** Actual bound port (after ephemeral bind when configured port is 0). */
     public int port() {
         return server != null ? server.actualPort() : port;
@@ -191,10 +210,10 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
         // vertx-web Router: BodyHandler parses form fields, multipart file
         // uploads and cookies for us, so SBBs receive them already structured.
         Router router = Router.router(vertx);
-        router.route().handler(BodyHandler.create()
+        router.route().handler(BodyHandler.create(uploadsDirectory)
                 .setHandleFileUploads(true)
                 .setDeleteUploadedFilesOnEnd(true)
-                .setBodyLimit(32L * 1024 * 1024));
+                .setBodyLimit(bodyLimitBytes));
         router.get("/health").handler(ctx ->
                 writeJson(ctx.response(), 200, "{\"status\":\"ok\"}"));
         router.route().handler(this::handle);
@@ -418,6 +437,74 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
             response.end();
         }
         endRequestActivity(sessionId);
+    }
+
+    // ── streamed responses (SSE relay, long downloads) ─────────────────
+
+    /** sessionId → response that has been started in chunked mode. */
+    private final ConcurrentHashMap<String, HttpServerResponse> streamingResponses =
+            new ConcurrentHashMap<>();
+
+    /**
+     * Begin a chunked response: headers and status go out now; the request
+     * stays open until {@link #endStream}. If the client disconnects the
+     * stream is dropped and {@link #isStreamOpen} turns false so producers can
+     * stop early.
+     */
+    public void startStream(String sessionId, int statusCode, String contentType,
+                            Map<String, String> headers) {
+        HttpServerResponse response = pendingResponses.remove(sessionId);
+        if (response == null) {
+            LOG.warn(() -> "startStream: no pending response for sessionId=" + sessionId);
+            return;
+        }
+        if (headers != null) {
+            headers.forEach((name, value) -> putOrAddHeader(response, name, value));
+        }
+        if (contentType != null && !contentType.isEmpty()) {
+            response.putHeader("Content-Type", contentType);
+        }
+        response.setStatusCode(statusCode);
+        response.setChunked(true);
+        streamingResponses.put(sessionId, response);
+        response.closeHandler(v -> {
+            if (streamingResponses.remove(sessionId) != null) {
+                LOG.debug(() -> "stream closed by client sessionId=" + sessionId);
+                endRequestActivity(sessionId);
+            }
+        });
+        response.write("");
+    }
+
+    /** Write one chunk; silently dropped when the client has gone away. */
+    public void writeStream(String sessionId, String text) {
+        HttpServerResponse response = streamingResponses.get(sessionId);
+        if (response == null || text == null || text.isEmpty()) {
+            return;
+        }
+        try {
+            response.write(text);
+        } catch (IllegalStateException closed) {
+            streamingResponses.remove(sessionId);
+        }
+    }
+
+    public void endStream(String sessionId) {
+        HttpServerResponse response = streamingResponses.remove(sessionId);
+        if (response == null) {
+            return;
+        }
+        try {
+            response.end();
+        } catch (IllegalStateException alreadyClosed) {
+            // client went away between the last chunk and the end
+        }
+        endRequestActivity(sessionId);
+    }
+
+    /** True while a started stream is still connected to its client. */
+    public boolean isStreamOpen(String sessionId) {
+        return streamingResponses.containsKey(sessionId);
     }
 
     /**

@@ -19,7 +19,10 @@ import java.util.Map;
  */
 public sealed interface HttpServerCommand extends OutboundCommand
         permits HttpServerCommand.HttpResponseCommand,
-                HttpServerCommand.HttpResponseExCommand {
+                HttpServerCommand.HttpResponseExCommand,
+                HttpServerCommand.HttpStreamStartCommand,
+                HttpServerCommand.HttpStreamChunkCommand,
+                HttpServerCommand.HttpStreamEndCommand {
 
     /**
      * Command to send a text HTTP response back to a pending request identified
@@ -48,6 +51,28 @@ public sealed interface HttpServerCommand extends OutboundCommand
     record HttpResponseExCommand(String sessionId, int statusCode, String contentType,
                                  String textBody, byte[] binaryBody,
                                  Map<String, String> headers)
+            implements HttpServerCommand, OutboundCommand {
+    }
+
+    /**
+     * Start a streamed (chunked) response — e.g. Server-Sent Events relayed
+     * from a backend. Status and headers are sent immediately; follow with any
+     * number of {@link HttpStreamChunkCommand}s and exactly one
+     * {@link HttpStreamEndCommand}. Chunks for a client that disconnected are
+     * dropped (see {@code HttpServerResourceAdaptor#isStreamOpen}).
+     */
+    record HttpStreamStartCommand(String sessionId, int statusCode, String contentType,
+                                  Map<String, String> headers)
+            implements HttpServerCommand, OutboundCommand {
+    }
+
+    /** One chunk of a streamed response (written and flushed as-is). */
+    record HttpStreamChunkCommand(String sessionId, String text)
+            implements HttpServerCommand, OutboundCommand {
+    }
+
+    /** Finish a streamed response and release the request activity. */
+    record HttpStreamEndCommand(String sessionId)
             implements HttpServerCommand, OutboundCommand {
     }
 }

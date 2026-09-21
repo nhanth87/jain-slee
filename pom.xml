@@ -70,6 +70,7 @@
         <module>vendor-ras</module>
         <module>jainslee-telemetry</module>
         <module>jainslee-admin-spi</module>
+        <module>jainslee-authz</module>
         <module>jainslee-monitor</module>
         <module>jainslee-autonomous</module>
         <module>jainslee-ai</module>

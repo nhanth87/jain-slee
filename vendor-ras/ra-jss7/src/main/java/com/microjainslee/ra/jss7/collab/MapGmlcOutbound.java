@@ -44,7 +44,6 @@ import org.restcomm.protocols.ss7.map.api.service.lsm.MAPDialogLsm;
 import org.restcomm.protocols.ss7.map.api.service.lsm.ResponseTime;
 import org.restcomm.protocols.ss7.map.api.service.lsm.ResponseTimeCategory;
 import org.restcomm.protocols.ss7.map.api.service.mobility.MAPDialogMobility;
-import org.restcomm.protocols.ss7.map.api.service.mobility.subscriberInformation.DomainType;
 import org.restcomm.protocols.ss7.map.api.service.mobility.subscriberInformation.RequestedInfo;
 import org.restcomm.protocols.ss7.sccp.parameter.GlobalTitle;
 import org.restcomm.protocols.ss7.sccp.parameter.ParameterFactory;
@@ -157,12 +156,11 @@ final class MapGmlcOutbound {
             prepare(dialog, cmd);
             ISDNAddressString msisdn = isdn(pf, cmd.msisdn(), "ATI msisdn");
             SubscriberIdentity identity = pf.createSubscriberIdentity(msisdn);
-            // Create minimal valid RequestedInfo (mandatory per TS 29.002 §18.2)
-            // Force safe flags — HLR rejects when too many/requested unsuitable fields
-            DomainType domainType = enumValue(DomainType.class, cmd.requestedDomain(), "ati.requestedDomain");
+            // RequestedInfo flags come from command/config (brute-force friendly);
+            // requestedDomain omitted (null) and imei/classmark/mnp/eps forced off.
             RequestedInfo requested = pf.createRequestedInfo(
                     cmd.requestLocationInformation(), cmd.requestSubscriberState(),
-                    null, cmd.requestCurrentLocation(), domainType, false, false, false, false);
+                    null, cmd.requestCurrentLocation(), null, false, false, false, false);
             ISDNAddressString gsmScf = isdn(pf, cmd.gsmScfAddress(), "ATI gsmScfAddress");
             dialog.addAnyTimeInterrogationRequest(identity, requested, gsmScf, null);
             sendOnce(dialog, cmd.dialogId(), "ATI");
@@ -210,11 +208,10 @@ final class MapGmlcOutbound {
             prepare(dialog, cmd);
             IMSI imsi = pf.createIMSI(digitsRequired(cmd.imsi(), "PSI imsi"));
             LMSI lmsi = bytesPresent(cmd.lmsi()) ? pf.createLMSI(cmd.lmsi().clone()) : null;
-            // Create minimal valid RequestedInfo (mandatory per TS 29.002)
-            DomainType domainType = enumValue(DomainType.class, cmd.requestedDomain(), "psi.requestedDomain");
+            // Same policy as ATI: flags from command/config, no requestedDomain, no imei etc.
             RequestedInfo requested = pf.createRequestedInfo(
                     cmd.requestLocationInformation(), cmd.requestSubscriberState(),
-                    null, cmd.requestCurrentLocation(), domainType, false, false, false, false);
+                    null, cmd.requestCurrentLocation(), null, false, false, false, false);
             dialog.addProvideSubscriberInfoRequest(imsi, lmsi, requested, null, null);
             sendOnce(dialog, cmd.dialogId(), "PSI");
         } catch (MAPException | RuntimeException e) {

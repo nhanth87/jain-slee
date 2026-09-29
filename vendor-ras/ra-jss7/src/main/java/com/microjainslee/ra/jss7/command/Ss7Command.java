@@ -293,6 +293,46 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
 
     // ── MAP GMLC (mobility / call handling / LCS) ────────────
 
+    /**
+     * {@code RequestedNodes} of ATI/PSI (TS 29.271 Rel-15+): a BIT STRING telling
+     * the HLR which core node it should interrogate for the location instead of the
+     * CS-domain VLR. {@code MME} is the on-ramp to a 5G location, but whether the
+     * deployed HLR honours it is a vendor/network decision — it is therefore opt-in
+     * per deployment and defaults to {@link #NONE}.
+     */
+    enum MapRequestedNodes {
+        /** IE omitted (legacy behaviour). */
+        NONE,
+        /** {@code mme (0)} — ask the MME (EPS/5G core). */
+        MME,
+        /** {@code mme (0) + sgsn (1)}. */
+        MME_SGSN
+    }
+
+    /**
+     * Deferred MT-LR trigger of a MAP ProvideSubscriberLocationRequest (TS 29.002
+     * §8.5.3). {@code type} is one of {@code ueAvailable}, {@code periodic},
+     * {@code areaEntering}, {@code areaLeaving}, {@code areaInside}, {@code areaEvent}
+     * and maps onto the {@code DeferredLocationEventType} bits
+     * {@code msAvailable(0) enteringIntoArea(1) leavingFromArea(2) beingInsideArea(3)
+     * periodicLDR(4)}. {@code periodic} adds {@code PeriodicLDRInfo}, the {@code area*}
+     * types add {@code AreaEventInfo}, {@code hgmlcAddress} is the mandatory H-GMLC
+     * address for a deferred request, {@code shortCircuit} is
+     * {@code MoLrShortCircuitIndicator} and {@code shape} requests a GAD shape
+     * (ellipsoidPoint / ellipsoidPointWithUncertainty / ellipsoidArc).
+     */
+    record MtLrRequest(
+            String type,
+            Integer intervalSeconds,
+            Integer durationSeconds,
+            String areaType,
+            String areaId,
+            String occurrence,
+            String hgmlcAddress,
+            boolean shortCircuit,
+            String shape
+    ) implements java.io.Serializable {}
+
     /** MAP AnyTimeInterrogation toward the subscriber HLR. */
     record MapAtiRequest(
             String dialogId,
@@ -308,6 +348,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             boolean requestMsClassmark,
             boolean requestMnpInfo,
             boolean requestEpsLocationInformation,
+            MapRequestedNodes requestedNodes,
             int networkId,
             String preferredAspName,
             int remotePc
@@ -353,6 +394,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             boolean requestMsClassmark,
             boolean requestMnpInfo,
             boolean requestEpsLocationInformation,
+            MapRequestedNodes requestedNodes,
             int networkId,
             String preferredAspName,
             int remotePc
@@ -381,6 +423,12 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
      * {@code callSessionUnrelated} is mandatory within the IE and {@code callSessionRelated}
      * is optional, so a blank {@code callSessionUnrelated} omits the IE entirely.
      * BER/DER encoding stays in jSS7 map-api/impl.
+     *
+     * <p>{@code mtLr} carries the deferred MT-LR trigger (see {@link MtLrRequest}); when
+     * it is non-null the request is built with a {@code DeferredLocationEventType}, the
+     * matching {@code PeriodicLDRInfo}/{@code AreaEventInfo}, the mandatory H-GMLC
+     * address and the negotiated GAD shape, so the network answers later with a
+     * SubscriberLocationReport instead of an immediate location.
      */
     record MapProvideSubscriberLocation(
             String dialogId,
@@ -405,6 +453,7 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
             Integer lcsServiceTypeId,
             String callSessionUnrelated,
             String callSessionRelated,
+            MtLrRequest mtLr,
             int networkId,
             String preferredAspName,
             int remotePc

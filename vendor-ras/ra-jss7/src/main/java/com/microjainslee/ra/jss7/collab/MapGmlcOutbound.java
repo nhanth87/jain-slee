@@ -9,6 +9,7 @@ package com.microjainslee.ra.jss7.collab;
 import com.microjainslee.api.OutboundCommand;
 import com.microjainslee.ra.jss7.Ss7Address;
 import com.microjainslee.ra.jss7.command.Ss7Command;
+import com.microjainslee.ra.jss7.command.Ss7Command.MtLrRequest;
 import com.microjainslee.ra.jss7.transport.Ss7Stack;
 
 import org.apache.logging.log4j.LogManager;
@@ -31,6 +32,14 @@ import org.restcomm.protocols.ss7.map.api.primitives.NumberingPlan;
 import org.restcomm.protocols.ss7.map.api.primitives.SubscriberIdentity;
 import org.restcomm.protocols.ss7.map.api.service.callhandling.InterrogationType;
 import org.restcomm.protocols.ss7.map.api.service.callhandling.MAPDialogCallHandling;
+import org.restcomm.protocols.ss7.map.api.primitives.GSNAddress;
+import org.restcomm.protocols.ss7.map.api.primitives.GSNAddressAddressType;
+import org.restcomm.protocols.ss7.map.api.service.lsm.Area;
+import org.restcomm.protocols.ss7.map.api.service.lsm.AreaDefinition;
+import org.restcomm.protocols.ss7.map.api.service.lsm.AreaEventInfo;
+import org.restcomm.protocols.ss7.map.api.service.lsm.AreaIdentification;
+import org.restcomm.protocols.ss7.map.api.service.lsm.AreaType;
+import org.restcomm.protocols.ss7.map.api.service.lsm.DeferredLocationEventType;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSClientID;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSClientType;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LCSPrivacyCheck;
@@ -41,14 +50,21 @@ import org.restcomm.protocols.ss7.map.api.service.lsm.LCSQoSClass;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LocationEstimateType;
 import org.restcomm.protocols.ss7.map.api.service.lsm.LocationType;
 import org.restcomm.protocols.ss7.map.api.service.lsm.MAPDialogLsm;
+import org.restcomm.protocols.ss7.map.api.service.lsm.OccurrenceInfo;
+import org.restcomm.protocols.ss7.map.api.service.lsm.PeriodicLDRInfo;
 import org.restcomm.protocols.ss7.map.api.service.lsm.ResponseTime;
 import org.restcomm.protocols.ss7.map.api.service.lsm.ResponseTimeCategory;
+import org.restcomm.protocols.ss7.map.api.service.lsm.SupportedGADShapes;
 import org.restcomm.protocols.ss7.map.api.service.mobility.MAPDialogMobility;
 import org.restcomm.protocols.ss7.map.api.service.mobility.subscriberInformation.RequestedInfo;
+import org.restcomm.protocols.ss7.map.api.service.mobility.subscriberInformation.RequestedNodes;
+import org.restcomm.protocols.ss7.map.service.mobility.subscriberInformation.RequestedNodesImpl;
 import org.restcomm.protocols.ss7.sccp.parameter.GlobalTitle;
 import org.restcomm.protocols.ss7.sccp.parameter.ParameterFactory;
 import org.restcomm.protocols.ss7.sccp.parameter.SccpAddress;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -157,10 +173,19 @@ final class MapGmlcOutbound {
             ISDNAddressString msisdn = isdn(pf, cmd.msisdn(), "ATI msisdn");
             SubscriberIdentity identity = pf.createSubscriberIdentity(msisdn);
             // RequestedInfo flags come from command/config (brute-force friendly);
-            // requestedDomain omitted (null) and imei/classmark/mnp/eps forced off.
-            RequestedInfo requested = pf.createRequestedInfo(
-                    cmd.requestLocationInformation(), cmd.requestSubscriberState(),
-                    null, cmd.requestCurrentLocation(), null, false, false, false, false);
+            // requestedDomain omitted (null); imei/classmark/mnp stay off. The 9th
+            // flag is locationInformationEPSSupported (RequestInfo
+            // epsLocationInformationRequested, TS 29.002 §8.2.5.1.3) — that is what
+            // makes the HLR return the E-UTRAN cell (ECGI) instead of only the legacy
+            // CGI, so it follows the command instead of being forced off. 5G has no
+            // EPS-style request bit: NR-CGI arrives in the same answer as
+            // locationInformation5GS whenever the network offers it. The optional
+            // requestedNodes BIT STRING (TS 29.271 Rel-15+) asks the HLR to interrogate
+            // the MME/SGSN instead of the CS VLR — deployment-opt-in, see
+            // Ss7Command.MapRequestedNodes.
+            RequestedInfo requested = requestedInfo(pf, cmd.requestLocationInformation(),
+                    cmd.requestSubscriberState(), cmd.requestCurrentLocation(),
+                    cmd.requestEpsLocationInformation(), cmd.requestedNodes());
             ISDNAddressString gsmScf = isdn(pf, cmd.gsmScfAddress(), "ATI gsmScfAddress");
             dialog.addAnyTimeInterrogationRequest(identity, requested, gsmScf, null);
             sendOnce(dialog, cmd.dialogId(), "ATI");
@@ -198,6 +223,31 @@ final class MapGmlcOutbound {
         }
     }
 
+    /**
+     * Build RequestedInfo for ATI/PSI. {@code eps} is
+     * {@code epsLocationInformationRequested} (4G ECGI); {@code nodes} is the optional
+     * {@code RequestedNodes} BIT STRING (TS 29.271) — {@code null} keeps it off the wire
+     * exactly as before. The 13-arg factory overload is used unconditionally: with
+     * {@code tadsData}/{@code servingNodeIndication}/{@code localTimeZoneRequest} false
+     * it encodes byte-for-byte what the 9-arg overload does, and it is the only way to
+     * carry {@code requestedNodes}.
+     */
+    private static RequestedInfo requestedInfo(MAPParameterFactory pf,
+            boolean locationInformation, boolean subscriberState, boolean currentLocation,
+            boolean eps, Ss7Command.MapRequestedNodes nodes) {
+        RequestedNodes requestedNodes = null;
+        if (nodes != null) {
+            requestedNodes = switch (nodes) {
+                case NONE -> null;
+                case MME -> new RequestedNodesImpl(true, false);
+                case MME_SGSN -> new RequestedNodesImpl(true, true);
+            };
+        }
+        return pf.createRequestedInfo(locationInformation, subscriberState, null,
+                currentLocation, null, false, false, false, eps, false, requestedNodes,
+                false, false);
+    }
+
     private void sendPsi(Ss7Command.MapProvideSubscriberInfo cmd) {
         MAPDialogMobility dialog = null;
         try {
@@ -208,10 +258,12 @@ final class MapGmlcOutbound {
             prepare(dialog, cmd);
             IMSI imsi = pf.createIMSI(digitsRequired(cmd.imsi(), "PSI imsi"));
             LMSI lmsi = bytesPresent(cmd.lmsi()) ? pf.createLMSI(cmd.lmsi().clone()) : null;
-            // Same policy as ATI: flags from command/config, no requestedDomain, no imei etc.
-            RequestedInfo requested = pf.createRequestedInfo(
-                    cmd.requestLocationInformation(), cmd.requestSubscriberState(),
-                    null, cmd.requestCurrentLocation(), null, false, false, false, false);
+            // Same policy as ATI: flags from command/config, no requestedDomain, no
+            // imei/classmark/mnp; epsLocationInformationRequested follows the command
+            // so PSI can also return the E-UTRAN cell (ECGI).
+            RequestedInfo requested = requestedInfo(pf, cmd.requestLocationInformation(),
+                    cmd.requestSubscriberState(), cmd.requestCurrentLocation(),
+                    cmd.requestEpsLocationInformation(), cmd.requestedNodes());
             dialog.addProvideSubscriberInfoRequest(imsi, lmsi, requested, null, null);
             sendOnce(dialog, cmd.dialogId(), "PSI");
         } catch (MAPException | RuntimeException e) {
@@ -245,9 +297,19 @@ final class MapGmlcOutbound {
                     toSccp(cmd.targetAddress()), null);
             prepare(dialog, cmd);
 
-            LocationType locationType = pf.createLocationType(
-                    enumValue(LocationEstimateType.class, cmd.locationEstimateType(),
-                            "PSL locationEstimateType"), null);
+            MtLrRequest mtLr = cmd.mtLr();
+            // Deferred MT-LR: LocationType carries the DeferredLocationEventType, the
+            // event-specific IE (PeriodicLDRInfo / AreaEventInfo) is filled, and the
+            // H-GMLC address is mandatory (TS 29.002 §8.5.3). A deferred request gets no
+            // immediate answer — the network reports the event later via SLR.
+            // TS 29.002 LocationEstimateType.activateDeferredLocation(3) arms the
+            // procedure; the trigger decides it, so the command's estimate text is not
+            // parsed for a deferred request (currentLocation would ask for a fix now).
+            DeferredLocationEventType deferred = deferredType(pf, mtLr);
+            LocationType locationType = deferred != null
+                    ? pf.createLocationType(LocationEstimateType.activateDeferredLocation, deferred)
+                    : pf.createLocationType(enumValue(LocationEstimateType.class,
+                            cmd.locationEstimateType(), "PSL locationEstimateType"), null);
             ISDNAddressString mlc = isdn(pf, cmd.mlcNumber(), "PSL mlcNumber");
             LCSClientID client = pf.createLCSClientID(
                     enumValue(LCSClientType.class, cmd.lcsClientType(), "PSL lcsClientType"),
@@ -262,15 +324,171 @@ final class MapGmlcOutbound {
                     : enumValue(LCSPriority.class, cmd.lcsPriority(), "PSL lcsPriority");
             LCSQoS qos = qos(pf, cmd);
             LCSPrivacyCheck privacyCheck = privacyCheck(pf, cmd);
+            Integer lcsRef = cmd.lcsReferenceNumber();
+            if (lcsRef != null && (lcsRef < 0 || lcsRef > 255)) {
+                // LCS-ReferenceNumber is OCTET STRING (SIZE(1)): a wider value would be
+                // truncated on the wire and the later SLR could never correlate.
+                throw new IllegalArgumentException(
+                        "PSL lcsReferenceNumber must be 0..255, got " + lcsRef);
+            }
+            PeriodicLDRInfo periodicInfo = periodicInfo(pf, mtLr);
+            AreaEventInfo areaEventInfo = areaEventInfo(pf, mtLr);
+            GSNAddress hgmlc = hgmlc(pf, mtLr);
+            SupportedGADShapes shapes = gadShapes(pf, mtLr == null ? null : mtLr.shape());
 
             dialog.addProvideSubscriberLocationRequest(
                     locationType, mlc, client, cmd.privacyOverride(), imsi, msisdn, lmsi, imei,
-                    priority, qos, null, null, cmd.lcsReferenceNumber(), cmd.lcsServiceTypeId(),
-                    null, privacyCheck, null, null, false, null, null);
+                    priority, qos, null, shapes, cmd.lcsReferenceNumber(), cmd.lcsServiceTypeId(),
+                    null, privacyCheck, areaEventInfo, hgmlc,
+                    mtLr != null && mtLr.shortCircuit(), periodicInfo, null);
             sendOnce(dialog, cmd.dialogId(), "PSL");
         } catch (MAPException | RuntimeException e) {
             failUnsent(dialog, cmd.dialogId(), "PSL", e);
         }
+    }
+
+    /**
+     * {@code DeferredLocationEventType} bit set of an MT-LR trigger, or null for an
+     * immediate request. jSS7 takes the five bits positionally in the TS 29.002 order
+     * {@code msAvailable, enteringIntoArea, leavingFromArea, beingInsideArea,
+     * periodicLDR}.
+     */
+    private static DeferredLocationEventType deferredType(MAPParameterFactory pf,
+            Ss7Command.MtLrRequest mtLr) {
+        if (mtLr == null || blank(mtLr.type())) {
+            return null;
+        }
+        String type = mtLr.type();
+        String occurrence = blank(mtLr.occurrence()) ? null : mtLr.occurrence();
+        boolean area = type.startsWith("area");
+        boolean msAvailable = type.equals("ueAvailable");
+        boolean entering = type.equals("areaEntering")
+                || (type.equals("areaEvent") && "entering".equals(occurrence));
+        boolean leaving = type.equals("areaLeaving")
+                || (type.equals("areaEvent") && "leaving".equals(occurrence));
+        boolean inside = type.equals("areaInside")
+                || (type.equals("areaEvent") && "inside".equals(occurrence));
+        boolean periodic = type.equals("periodic");
+        if (!msAvailable && !entering && !leaving && !inside && !periodic) {
+            throw new IllegalArgumentException("Unsupported MT-LR trigger type: " + type);
+        }
+        if (area && (mtLr.areaId() == null || mtLr.areaId().isBlank())) {
+            throw new IllegalArgumentException("MT-LR area trigger needs areaId hex digits");
+        }
+        LOG.info("[ra-jss7] PSL deferred MT-LR type={} entering={} leaving={} inside={} periodic={}",
+                type, entering, leaving, inside, periodic);
+        return pf.createDeferredLocationEventType(msAvailable, entering, leaving, inside, periodic);
+    }
+
+    /**
+     * {@code PeriodicLDRInfo} (TS 29.002 §8.5.4): {@code reportingInterval} is the gap
+     * between reports in seconds and {@code reportingAmount} is the NUMBER of reports
+     * (1..8 639 999), not a duration. The GMLC API speaks interval + total duration, so
+     * the amount is {@code duration / interval} (at least one report); TS 29.002 caps
+     * {@code reportingAmount x reportingInterval} at 8 639 999 s (99 days) for OMA
+     * MLP/RLP compatibility. {@code reportingOptionMilliseconds} (Rel-15) stays absent.
+     */
+    private static PeriodicLDRInfo periodicInfo(MAPParameterFactory pf, Ss7Command.MtLrRequest mtLr) {
+        if (mtLr == null || !"periodic".equals(mtLr.type())) {
+            return null;
+        }
+        Integer interval = mtLr.intervalSeconds();
+        if (interval == null || interval <= 0) {
+            throw new IllegalArgumentException("periodic MT-LR needs intervalSeconds");
+        }
+        Integer duration = mtLr.durationSeconds();
+        if (duration == null || duration <= 0) {
+            throw new IllegalArgumentException(
+                    "periodic MT-LR needs durationSeconds (PeriodicLDRInfo reportingAmount is mandatory)");
+        }
+        int amount = Math.max(1, duration / interval);
+        long product = (long) interval * amount;
+        if (product > 8_639_999L) {
+            throw new IllegalArgumentException(
+                    "periodic MT-LR reportingAmount x reportingInterval must be <= 8639999 s, got "
+                            + product);
+        }
+        return pf.createPeriodicLDRInfo(amount, interval, null);
+    }
+
+    /**
+     * {@code AreaEventInfo} (TS 29.002 §8.5.3): the area octets come from
+     * {@code AreaIdentification} and are carried verbatim, so the caller supplies them
+     * as hex. {@code occurrenceInfo} is one-time for the edge triggers and multiple-time
+     * for "inside area", which the network has to keep re-evaluating. {@code intervalTime}
+     * stays absent — it is the "report at most every N s" throttle.
+     */
+    private static AreaEventInfo areaEventInfo(MAPParameterFactory pf, Ss7Command.MtLrRequest mtLr) {
+        if (mtLr == null || blank(mtLr.type()) || !mtLr.type().startsWith("area")) {
+            return null;
+        }
+        AreaType areaType = enumValue(AreaType.class, mtLr.areaType(), "PSL areaType");
+        String hex = mtLr.areaId() == null ? "" : mtLr.areaId().trim();
+        if (hex.isEmpty() || hex.length() % 2 != 0 || !hex.matches("[0-9a-fA-F]+")) {
+            throw new IllegalArgumentException(
+                    "PSL areaId must be an even number of hex digits (AreaIdentification octets)");
+        }
+        AreaIdentification id = pf.createAreaIdentification(hexToBytes(hex));
+        Area area = pf.createArea(areaType, id);
+        AreaDefinition definition = pf.createAreaDefinition(new ArrayList<>(List.of(area)));
+        boolean inside = "areaInside".equals(mtLr.type())
+                || ("areaEvent".equals(mtLr.type()) && "inside".equals(mtLr.occurrence()));
+        OccurrenceInfo occurrence = inside
+                ? OccurrenceInfo.multipleTimeEvent
+                : OccurrenceInfo.oneTimeEvent;
+        return pf.createAreaEventInfo(definition, occurrence, null);
+    }
+
+    /**
+     * H-GMLC address: mandatory for a deferred MT-LR. TS 29.002 carries it as
+     * {@code h-gmlc-Address [6] GSN-Address}, {@code OCTET STRING (SIZE (5..17))}: one
+     * octet of address type (2 bits, 0 = IPv4 / 1 = IPv6) + address length (6 bits),
+     * then the 4 or 16 address octets — an IP address of the H-GMLC, not an E.164
+     * number (the SS7 return path for the later SLR is the {@code mlc-Number}).
+     */
+    private static GSNAddress hgmlc(MAPParameterFactory pf, Ss7Command.MtLrRequest mtLr)
+            throws MAPException {
+        if (mtLr == null || blank(mtLr.type())) {
+            return null;
+        }
+        if (blank(mtLr.hgmlcAddress())) {
+            throw new IllegalArgumentException(
+                    "deferred MT-LR requires an H-GMLC IP address (hgmlcAddress) for the later report");
+        }
+        byte[] ip = ipLiteral(mtLr.hgmlcAddress().trim());
+        return pf.createGSNAddress(
+                ip.length == 4 ? GSNAddressAddressType.IPv4 : GSNAddressAddressType.IPv6, ip);
+    }
+
+    /** IPv4/IPv6 literal to octets; never resolves a host name (no DNS on the MAP path). */
+    static byte[] ipLiteral(String text) {
+        try {
+            return java.net.InetAddress.ofLiteral(text).getAddress();
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "hgmlcAddress must be an IPv4/IPv6 literal (GSN-Address), got: " + text, e);
+        }
+    }
+
+    /** {@code SupportedGADShapes} bit set; null keeps the network default (ellipsoid point). */
+    private static SupportedGADShapes gadShapes(MAPParameterFactory pf, String shape) {
+        if (blank(shape)) {
+            return null;
+        }
+        return switch (shape.trim()) {
+            case "ellipsoidPoint" -> pf.createSupportedGADShapes(true, false, false, false, false, false, false);
+            case "ellipsoidPointWithUncertainty" -> pf.createSupportedGADShapes(false, true, false, false, false, false, false);
+            case "ellipsoidArc" -> pf.createSupportedGADShapes(false, false, false, false, false, false, true);
+            default -> throw new IllegalArgumentException("Unsupported PSL GAD shape: " + shape);
+        };
+    }
+
+    private static byte[] hexToBytes(String hex) {
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+        }
+        return out;
     }
 
     private void replySlr(Ss7Command.MapSubscriberLocationReportResponse cmd) {

@@ -30,11 +30,40 @@ import java.io.Serializable;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.restcomm.protocols.ss7.map.api.service.lsm.Area;
+import org.restcomm.protocols.ss7.map.api.service.lsm.AreaDefinition;
+import org.restcomm.protocols.ss7.map.api.service.lsm.AreaEventInfo;
+import org.restcomm.protocols.ss7.map.api.service.lsm.AreaIdentification;
+import org.restcomm.protocols.ss7.map.api.service.lsm.AreaType;
+import org.restcomm.protocols.ss7.map.api.service.lsm.DeferredLocationEventType;
+import org.restcomm.protocols.ss7.map.api.service.lsm.LocationEstimateType;
+import org.restcomm.protocols.ss7.map.api.service.lsm.LocationType;
+import org.restcomm.protocols.ss7.map.api.service.lsm.OccurrenceInfo;
+import org.restcomm.protocols.ss7.map.api.service.lsm.PeriodicLDRInfo;
+import org.restcomm.protocols.ss7.map.api.service.lsm.ReportingOptionMilliseconds;
+import org.restcomm.protocols.ss7.map.api.service.mobility.subscriberInformation.RequestedNodes;
+import org.restcomm.protocols.ss7.map.api.service.lsm.SupportedGADShapes;
+import org.restcomm.protocols.ss7.map.service.mobility.subscriberInformation.RequestedInfoImpl;
+import org.restcomm.protocols.ss7.map.api.primitives.GSNAddress;
+import org.restcomm.protocols.ss7.map.api.primitives.GSNAddressAddressType;
+import org.restcomm.protocols.ss7.map.primitives.GSNAddressImpl;
+import org.restcomm.protocols.ss7.map.service.lsm.AreaDefinitionImpl;
+import org.restcomm.protocols.ss7.map.service.lsm.AreaEventInfoImpl;
+import org.restcomm.protocols.ss7.map.service.lsm.AreaIdentificationImpl;
+import org.restcomm.protocols.ss7.map.service.lsm.AreaImpl;
+import org.restcomm.protocols.ss7.map.service.lsm.DeferredLocationEventTypeImpl;
+import org.restcomm.protocols.ss7.map.service.lsm.LocationTypeImpl;
+import org.restcomm.protocols.ss7.map.service.lsm.PeriodicLDRInfoImpl;
+import org.restcomm.protocols.ss7.map.service.lsm.SupportedGADShapesImpl;
+
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -165,9 +194,152 @@ public class MapGmlcOutboundTest {
         assertNull(dialog.pslArgs[15]);
     }
 
+    // ── 4G / 5G request flags and deferred MT-LR IEs ───────────────────────────
+
     @Test
-    public void pslRejectsUnknownPrivacyActionAndCleansDialog() {
+    public void atiRequestsEpsLocationAndCarriesRequestedNodesOnlyWhenAsked() {
         DialogStub dialog = new DialogStub(null);
+        Wired wired = outboundWithProvider(dialog);
+
+        // No requestedNodes -> the IE stays off the wire (legacy behaviour).
+        assertTrue(wired.outbound().send(ati(Ss7Command.MapRequestedNodes.NONE)));
+        assertTrue(boolAt(wired.provider().requestedInfoArgs(), 8));
+        assertNull(wired.provider().requestedInfoArgs()[10]);
+
+        // mme(0) bit set -> the HLR is asked to interrogate the EPS core.
+        assertTrue(wired.outbound().send(ati(Ss7Command.MapRequestedNodes.MME)));
+        Object nodes = wired.provider().requestedInfoArgs()[10];
+        assertTrue(nodes instanceof RequestedNodes);
+        assertTrue(((RequestedNodes) nodes).getMme());
+        assertFalse(((RequestedNodes) nodes).getSgsn());
+
+        assertTrue(wired.outbound().send(ati(Ss7Command.MapRequestedNodes.MME_SGSN)));
+        nodes = wired.provider().requestedInfoArgs()[10];
+        assertTrue(((RequestedNodes) nodes).getMme());
+        assertTrue(((RequestedNodes) nodes).getSgsn());
+    }
+
+    @Test
+    public void psiCarriesEpsFlagAndRequestedNodes() {
+        DialogStub dialog = new DialogStub(null);
+        Wired wired = outboundWithProvider(dialog);
+        assertTrue(wired.outbound().send(psi(Ss7Command.MapRequestedNodes.MME)));
+        assertTrue(boolAt(wired.provider().requestedInfoArgs(), 8));
+        assertTrue(((RequestedNodes) wired.provider().requestedInfoArgs()[10]).getMme());
+    }
+
+    @Test
+    public void pslBuildsPeriodicMtLrWithHgmlcAndNoAreaEvent() {
+        DialogStub dialog = new DialogStub(null);
+        assertTrue(outbound(dialog).send(pslMtLr(new Ss7Command.MtLrRequest(
+                "periodic", 300, 3600, null, null, null, "10.20.30.40", true, null))));
+
+        LocationType type = (LocationType) dialog.pslArgs[0];
+        assertEquals(LocationEstimateType.activateDeferredLocation, type.getLocationEstimateType());
+        assertNotNull(type.getDeferredLocationEventType());
+        assertTrue(type.getDeferredLocationEventType().getPeriodicLDR());
+        assertFalse(type.getDeferredLocationEventType().getMsAvailable());
+
+        assertNull("no area event for a periodic trigger", dialog.pslArgs[16]);
+        assertNotNull("H-GMLC is mandatory for a deferred MT-LR", dialog.pslArgs[17]);
+        // GSN-Address: first octet = type IPv4 (0) << 6 | length 4, then the address.
+        assertArrayEquals(new byte[] {0x04, 10, 20, 30, 40},
+                ((GSNAddress) dialog.pslArgs[17]).getData());
+        assertTrue("MoLrShortCircuitIndicator", Boolean.TRUE.equals(dialog.pslArgs[18]));
+        PeriodicLDRInfo info = (PeriodicLDRInfo) dialog.pslArgs[19];
+        assertNotNull(info);
+        assertEquals(300, info.getReportingInterval());
+        // reportingAmount is a COUNT of reports: 3600 s / 300 s = 12.
+        assertEquals(12, info.getReportingAmount());
+    }
+
+    @Test
+    public void pslBuildsAreaMtLrWithEnteringBitAndAreaIdentification() {
+        DialogStub dialog = new DialogStub(null);
+        assertTrue(outbound(dialog).send(pslMtLr(new Ss7Command.MtLrRequest(
+                "areaEntering", null, null, "locationAreaId", "6301", null,
+                "10.20.30.40", false, null))));
+
+        LocationType type = (LocationType) dialog.pslArgs[0];
+        assertTrue(type.getDeferredLocationEventType().getEnteringIntoArea());
+        assertFalse(type.getDeferredLocationEventType().getPeriodicLDR());
+
+        AreaEventInfo area = (AreaEventInfo) dialog.pslArgs[16];
+        assertNotNull(area);
+        assertEquals(OccurrenceInfo.oneTimeEvent, area.getOccurrenceInfo());
+        AreaDefinition definition = (AreaDefinition) area.getAreaDefinition();
+        assertEquals(1, definition.getAreaList().size());
+        assertEquals(AreaType.locationAreaId, definition.getAreaList().get(0).getAreaType());
+        // "6301" is 2 octets of AreaIdentification, carried verbatim.
+        assertEquals(2, definition.getAreaList().get(0).getAreaIdentification().getData().length);
+        assertEquals(0x63, definition.getAreaList().get(0).getAreaIdentification().getData()[0] & 0xFF);
+        assertEquals(0x01, definition.getAreaList().get(0).getAreaIdentification().getData()[1] & 0xFF);
+        assertNull("no periodic info for an area trigger", dialog.pslArgs[19]);
+    }
+
+    @Test
+    public void pslRejectsPeriodicOutsideTheOmaMlpProductLimit() {
+        DialogStub dialog = new DialogStub(null);
+        MapGmlcOutbound outbound = outbound(dialog);
+        try {
+            outbound.send(pslMtLr(new Ss7Command.MtLrRequest(
+                    "periodic", 5_000_000, 10_000_000, null, null, null, "10.20.30.40", false,
+                    null)));
+            fail("expected interval x amount limit rejection");
+        } catch (IllegalStateException expected) {
+            assertTrue(String.valueOf(expected.getCause())
+                    .contains("8639999"));
+        }
+    }
+
+    @Test
+    public void pslRejectsDeferredWithoutHgmlc() {
+        DialogStub dialog = new DialogStub(null);
+        MapGmlcOutbound outbound = outbound(dialog);
+        try {
+            outbound.send(pslMtLr(new Ss7Command.MtLrRequest(
+                    "ueAvailable", null, null, null, null, null, null, false, null)));
+            fail("expected missing H-GMLC rejection");
+        } catch (IllegalStateException expected) {
+            assertTrue(String.valueOf(expected.getCause()).contains("H-GMLC"));
+        }
+    }
+
+    @Test
+    public void pslAreaInsideIsMultipleTimeAndArcShapeSetsTheArcBit() {
+        DialogStub dialog = new DialogStub(null);
+        assertTrue(outbound(dialog).send(pslMtLr(new Ss7Command.MtLrRequest(
+                "areaEvent", null, null, "cellGlobalId", "36f01000010001", "inside",
+                "10.20.30.40", false, "ellipsoidArc"))));
+
+        LocationType type = (LocationType) dialog.pslArgs[0];
+        assertTrue(type.getDeferredLocationEventType().getBeingInsideArea());
+        assertEquals(OccurrenceInfo.multipleTimeEvent,
+                ((AreaEventInfo) dialog.pslArgs[16]).getOccurrenceInfo());
+        SupportedGADShapes shapes = (SupportedGADShapes) dialog.pslArgs[11];
+        assertTrue(shapes.getEllipsoidArc());
+        assertFalse("arc must not be encoded as polygon", shapes.getPolygon());
+    }
+
+    @Test
+    public void pslRejectsNonIpHgmlc() {
+        DialogStub dialog = new DialogStub(null);
+        MapGmlcOutbound outbound = outbound(dialog);
+        try {
+            outbound.send(pslMtLr(new Ss7Command.MtLrRequest(
+                    "ueAvailable", null, null, null, null, null, "251900000099", false, null)));
+            fail("expected GSN-Address rejection");
+        } catch (IllegalStateException expected) {
+            assertTrue(String.valueOf(expected.getCause()).contains("IPv4/IPv6"));
+        }
+    }
+
+    private static boolean boolAt(Object[] args, int index) {
+        return Boolean.TRUE.equals(args[index]);
+    }
+
+    @Test
+    public void pslRejectsUnknownPrivacyActionAndCleansDialog() {        DialogStub dialog = new DialogStub(null);
         MapGmlcOutbound outbound = outbound(dialog);
 
         try {
@@ -205,10 +377,17 @@ public class MapGmlcOutboundTest {
     }
 
     private static MapGmlcOutbound outbound(DialogStub dialog) {
+        return outboundWithProvider(dialog).outbound();
+    }
+
+    private record Wired(MapGmlcOutbound outbound, ProviderStub provider) { }
+
+    private static Wired outboundWithProvider(DialogStub dialog) {
         MAPDialog dialogProxy = combinedDialog(dialog);
-        MAPProvider provider = proxy(MAPProvider.class, new ProviderStub(dialogProxy));
+        ProviderStub provider = new ProviderStub(dialogProxy);
+        MAPProvider mapProvider = proxy(MAPProvider.class, provider);
         ParameterFactory sccp = proxy(ParameterFactory.class, MapGmlcOutboundTest::defaultValue);
-        return new MapGmlcOutbound(provider, sccp);
+        return new Wired(new MapGmlcOutbound(mapProvider, sccp), provider);
     }
 
     private static MAPDialog combinedDialog(DialogStub handler) {
@@ -223,10 +402,14 @@ public class MapGmlcOutboundTest {
     }
 
     private static Ss7Command.MapAtiRequest ati() {
+        return ati(Ss7Command.MapRequestedNodes.NONE);
+    }
+
+    private static Ss7Command.MapAtiRequest ati(Ss7Command.MapRequestedNodes nodes) {
         return new Ss7Command.MapAtiRequest(
                 "corr-ati", HLR, GMLC, "251911000001", "251900000002",
                 "csDomain", true, true, true, true, true, true, true,
-                0, null, -1);
+                nodes, 0, null, -1);
     }
 
     private static Ss7Command.MapSendRoutingInformation sri() {
@@ -240,11 +423,26 @@ public class MapGmlcOutboundTest {
     }
 
     private static Ss7Command.MapProvideSubscriberInfo psi() {
+        return psi(Ss7Command.MapRequestedNodes.NONE);
+    }
+
+    private static Ss7Command.MapProvideSubscriberInfo psi(Ss7Command.MapRequestedNodes nodes) {
         return new Ss7Command.MapProvideSubscriberInfo(
                 "corr-psi", Ss7Address.of("251900000003", 7), GMLC,
                 "636010000000001", null, "csDomain",
                 true, true, true, true, true, true, true,
-                0, null, -1);
+                nodes, 0, null, -1);
+    }
+
+    /** Deferred MT-LR PSL (TS 29.002 §8.5.3): the trigger replaces the current-location estimate. */
+    private static Ss7Command.MapProvideSubscriberLocation pslMtLr(Ss7Command.MtLrRequest mtLr) {
+        return new Ss7Command.MapProvideSubscriberLocation(
+                "corr-psl", Ss7Address.of("251900000003", 8), GMLC,
+                "activateDeferredLocation", "251900000002", "valueAddedServices",
+                false, "636010000000001", null, null, null,
+                "normalPriority", null, null, false,
+                "delaytolerant", false, null, 42, null,
+                null, null, mtLr, 0, null, -1);
     }
 
     private static Ss7Command.MapSendRoutingInfoForLcs sriLcs() {
@@ -267,7 +465,7 @@ public class MapGmlcOutboundTest {
                 "normalPriority", 100, null, false,
                 "delaytolerant", false, "bestEffort", 7, 1,
                 callSessionUnrelated, callSessionRelated,
-                0, null, -1);
+                null, 0, null, -1);
     }
 
     private static Ss7Command.MapSubscriberLocationReportResponse slrResponse() {
@@ -335,6 +533,7 @@ public class MapGmlcOutboundTest {
         private final MAPServiceCallHandling callHandling;
         private final MAPServiceLsm lsm;
         private final MAPParameterFactory parameters;
+        private volatile Object[] requestedInfoArgs;
 
         private ProviderStub(MAPDialog dialog) {
             this.dialog = dialog;
@@ -345,7 +544,63 @@ public class MapGmlcOutboundTest {
             mobility = proxy(MAPServiceMobility.class, service);
             callHandling = proxy(MAPServiceCallHandling.class, service);
             lsm = proxy(MAPServiceLsm.class, service);
-            parameters = proxy(MAPParameterFactory.class, MapGmlcOutboundTest::defaultValue);
+            parameters = proxy(MAPParameterFactory.class,
+                    (proxy, method, args) -> {
+                        // Real objects for the IEs the new tests inspect: a stub proxy
+                        // would answer false/null for every bit and prove nothing.
+                        switch (method.getName()) {
+                            case "createRequestedInfo":
+                                // Only the arguments matter here (eps flag at [8],
+                                // requestedNodes at [10]); the returned IE is unused
+                                // by the production code, and jSS7's *constructor*
+                                // argument order differs from its factory order.
+                                requestedInfoArgs = args;
+                                return defaultValue(proxy, method, args);
+                            case "createLocationType":
+                                return new LocationTypeImpl((LocationEstimateType) args[0],
+                                        (DeferredLocationEventType) args[1]);
+                            case "createDeferredLocationEventType":
+                                return new DeferredLocationEventTypeImpl(bool(args[0]),
+                                        bool(args[1]), bool(args[2]), bool(args[3]), bool(args[4]));
+                            case "createPeriodicLDRInfo":
+                                return new PeriodicLDRInfoImpl((Integer) args[0], (Integer) args[1],
+                                        (ReportingOptionMilliseconds) args[2]);
+                            case "createAreaEventInfo":
+                                return new AreaEventInfoImpl((AreaDefinition) args[0],
+                                        (OccurrenceInfo) args[1], (Integer) args[2]);
+                            case "createAreaDefinition":
+                                return new AreaDefinitionImpl(castAreas(args[0]));
+                            case "createArea":
+                                return new AreaImpl((AreaType) args[0], (AreaIdentification) args[1]);
+                            case "createAreaIdentification":
+                                return new AreaIdentificationImpl((byte[]) args[0]);
+                            case "createGSNAddress":
+                                if (args.length == 2) {
+                                    return new GSNAddressImpl((GSNAddressAddressType) args[0],
+                                            (byte[]) args[1]);
+                                }
+                                return new GSNAddressImpl((byte[]) args[0]);
+                            case "createSupportedGADShapes":
+                                return new SupportedGADShapesImpl(bool(args[0]), bool(args[1]),
+                                        bool(args[2]), bool(args[3]), bool(args[4]), bool(args[5]),
+                                        bool(args[6]));
+                            default:
+                                return defaultValue(proxy, method, args);
+                        }
+                    });
+        }
+
+        private static boolean bool(Object value) {
+            return Boolean.TRUE.equals(value);
+        }
+
+        @SuppressWarnings("unchecked")
+        private static ArrayList<Area> castAreas(Object value) {
+            return (ArrayList<Area>) value;
+        }
+
+        private Object[] requestedInfoArgs() {
+            return requestedInfoArgs;
         }
 
         @Override

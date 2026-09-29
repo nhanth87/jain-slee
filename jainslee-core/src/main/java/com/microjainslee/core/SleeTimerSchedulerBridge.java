@@ -29,12 +29,21 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class SleeTimerSchedulerBridge {
 
-    private static final String LOCAL_NODE_ID = "micro-jainslee";
+    private static final String DEFAULT_NODE_ID = "micro-jainslee";
     private static final TimerType SLEE_TIMER_TYPE = TimerType.SLEE_TIMER;
 
     private final TimerScheduler scheduler;
     private final EventRouter eventRouter;
     private final AtomicLong nextTimerId = new AtomicLong(1);
+    /**
+     * ADR 0007 D6 — one id per SBB entity. {@code System.identityHashCode} was used
+     * before; identity hashes are not unique, so {@code cancelAll} for one SBB
+     * could cancel another SBB's timers when their hashes collided.
+     */
+    private final AtomicLong nextOwnerId = new AtomicLong(1);
+    private final ConcurrentHashMap<SbbLocalObject, Long> ownerIds = new ConcurrentHashMap<SbbLocalObject, Long>();
+    /** ADR 0007 D6 — real node id in every {@link TimerRecord}, not a constant shared by all nodes. */
+    private volatile String nodeId = DEFAULT_NODE_ID;
     private final ConcurrentHashMap<Long, TimerTarget> targetsByTimerId = new ConcurrentHashMap<Long, TimerTarget>();
     private final ConcurrentHashMap<SbbLocalObject, ActivityContextInterface> aciBySbb =
             new ConcurrentHashMap<SbbLocalObject, ActivityContextInterface>();
@@ -50,12 +59,24 @@ public final class SleeTimerSchedulerBridge {
         return new SleeTimerSchedulerBridge(eventRouter, adapter);
     }
 
+    /** Set by the container once the node id is known (cluster bound or configured). */
+    public void setNodeId(String nodeId) {
+        if (nodeId != null && !nodeId.isBlank()) {
+            this.nodeId = nodeId;
+        }
+    }
+
+    public String getNodeId() {
+        return nodeId;
+    }
+
     public void bindActivityContext(SbbLocalObject sbbLocalObject, ActivityContextInterface aci) {
         aciBySbb.put(sbbLocalObject, aci);
     }
 
     public void unbindActivityContext(SbbLocalObject sbbLocalObject) {
         aciBySbb.remove(sbbLocalObject);
+        ownerIds.remove(sbbLocalObject);          // same lifetime as the ACI binding — no leak
     }
 
     public long schedule(SbbLocalObject sbbLocalObject, long delayMillis) {
@@ -68,7 +89,7 @@ public final class SleeTimerSchedulerBridge {
                 dialogId,
                 SLEE_TIMER_TYPE,
                 now + delayMillis,
-                LOCAL_NODE_ID,
+                nodeId,
                 1,
                 now);
         targetsByTimerId.put(timerId, new TimerTarget(sbbLocalObject, aci));
@@ -82,7 +103,10 @@ public final class SleeTimerSchedulerBridge {
     }
 
     public void cancelAll(SbbLocalObject sbbLocalObject) {
-        scheduler.cancelAll(dialogIdFor(sbbLocalObject));
+        Long ownerId = ownerIds.remove(sbbLocalObject);
+        if (ownerId != null) {
+            scheduler.cancelAll(ownerId);
+        }
         for (java.util.Map.Entry<Long, TimerTarget> entry : targetsByTimerId.entrySet()) {
             if (entry.getValue().sbbLocalObject == sbbLocalObject) {
                 targetsByTimerId.remove(entry.getKey(), entry.getValue());
@@ -94,6 +118,7 @@ public final class SleeTimerSchedulerBridge {
         scheduler.stop();
         targetsByTimerId.clear();
         aciBySbb.clear();
+        ownerIds.clear();
     }
 
     public TimerScheduler getScheduler() {
@@ -120,8 +145,8 @@ public final class SleeTimerSchedulerBridge {
         return new AnonymousActivityContext("timer-sbb-" + sbbLocalObject.getSbbID());
     }
 
-    private static long dialogIdFor(SbbLocalObject sbbLocalObject) {
-        return System.identityHashCode(sbbLocalObject);
+    private long dialogIdFor(SbbLocalObject sbbLocalObject) {
+        return ownerIds.computeIfAbsent(sbbLocalObject, k -> nextOwnerId.getAndIncrement());
     }
 
     private static final class TimerTarget {

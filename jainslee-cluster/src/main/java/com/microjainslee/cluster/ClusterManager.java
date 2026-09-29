@@ -292,6 +292,51 @@ public class ClusterManager {
      * @return a started, ready-to-use Infinispan cache
      */
     public <K, V> Cache<K, V> getCache(String name, CacheMode mode) {
+        return getCache(name, mode, false);
+    }
+
+    /**
+     * ADR 0007 R3 — like {@link #getCache(String, CacheMode)} but, when
+     * {@code awaitInitialTransfer} is {@code true}, the first call on a joining
+     * node blocks until the cache holds the cluster's current contents.
+     *
+     * <p>
+     * Use it for caches whose <b>absence</b> of an entry is a decision: OTID
+     * ranges (an empty cache hides an overlap), dialog leases (an empty cache
+     * looks like "nobody owns it"). Without it a node that just joined answers
+     * from an empty replica.
+     *
+     * @param awaitInitialTransfer block the first access until state transfer ends
+     */
+    public <K, V> Cache<K, V> getCache(String name, CacheMode mode, boolean awaitInitialTransfer) {
+        return defineCache(name, mode, awaitInitialTransfer, null);
+    }
+
+    /**
+     * ADR 0007 D12 — a cache whose contents are a <b>fence</b>: dialog leases,
+     * OTID ranges. Three properties together:
+     * <ul>
+     *   <li>the first access on a joining node waits for state transfer, so an
+     *       empty replica is never mistaken for "nobody owns it";</li>
+     *   <li>{@code whenSplit = DENY_READ_WRITES}: on a partition, the side without
+     *       a majority of this cache's members gets {@code AvailabilityException}
+     *       on every read and write — it cannot believe its stale copy, so it
+     *       stops transmitting. With two SS7 nodes this needs a third member
+     *       (the witness, {@link ClusterWitness}) that also defines the cache;</li>
+     *   <li>{@code mergePolicy} decides conflicting entries when the partition
+     *       heals.</li>
+     * </ul>
+     * In local (non-cluster) mode the partition settings are ignored.
+     *
+     * @param mergePolicy conflict resolution on merge, e.g. {@link RaDialogLeaseMergePolicy}
+     */
+    public <K, V> Cache<K, V> getFencedCache(String name, CacheMode mode,
+            org.infinispan.conflict.EntryMergePolicy<K, V> mergePolicy) {
+        return defineCache(name, mode, true, Objects.requireNonNull(mergePolicy, "mergePolicy"));
+    }
+
+    private <K, V> Cache<K, V> defineCache(String name, CacheMode mode, boolean awaitInitialTransfer,
+            org.infinispan.conflict.EntryMergePolicy<K, V> mergePolicy) {
         Objects.requireNonNull(name, "cache name is required");
         Objects.requireNonNull(mode, "cache mode is required");
         @SuppressWarnings("unchecked")
@@ -304,7 +349,12 @@ public class ClusterManager {
         // Avoid expensive JGroups marshal validation in tests; production
         // embedders can override this by passing a custom configuration.
         if (clusterMode && mode.isClustered()) {
-            builder.clustering().stateTransfer().awaitInitialTransfer(false);
+            builder.clustering().stateTransfer().awaitInitialTransfer(awaitInitialTransfer);
+            if (mergePolicy != null) {
+                builder.clustering().partitionHandling()
+                        .whenSplit(org.infinispan.partitionhandling.PartitionHandling.DENY_READ_WRITES)
+                        .mergePolicy(mergePolicy);
+            }
         }
         Configuration configuration = builder.build();
         cacheManager.defineConfiguration(name, configuration);
@@ -348,9 +398,11 @@ public class ClusterManager {
             return false;
         }
         for (var member : members) {
-            String s = String.valueOf(member);
-            // JGroups Address.toString() may be the logical name or embed it.
-            if (candidateNodeId.equals(s) || s.contains(candidateNodeId)) {
+            // The transport nodeName is the JGroups logical name, which is what
+            // Address.toString() returns. Exact match only: a substring match
+            // reported "ss7-1" present while only "ss7-10" was, which would keep
+            // a dead node's dialogs from ever being reclaimed.
+            if (candidateNodeId.equals(String.valueOf(member))) {
                 return true;
             }
         }

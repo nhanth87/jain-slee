@@ -53,8 +53,14 @@ public class MicroJainsleeRecorder {
                                                             int sbbTypePoolMinIdle,
                                                             String eventDelivery,
                                                             boolean offHeapEnabled,
-                                                            String offHeapStorageDir) {
-        MicroSleeConfiguration config = MicroSleeConfiguration.builder()
+                                                            String offHeapStorageDir,
+                                                            boolean clusterEnabled,
+                                                            String clusterNodeId,
+                                                            String clusterStack,
+                                                            String clusterInitialHosts,
+                                                            int fanInQueueCapacity,
+                                                            int fanInDrainBatchSize) {
+        MicroSleeConfiguration.Builder builder = MicroSleeConfiguration.builder()
                 .eventRouterBufferSize(bufferSize)
                 .preferVirtualThreads(preferVirtualThreads)
                 .sbbPoolMin(sbbPoolMin)
@@ -64,7 +70,18 @@ public class MicroJainsleeRecorder {
                 .eventDeliveryMode(EventDeliveryMode.parse(eventDelivery))
                 .offHeapEnabled(offHeapEnabled)
                 .offHeapStorageDir(offHeapStorageDir != null ? offHeapStorageDir : "")
-                .build();
+                // ADR 0007 P1 — cluster config. Previously unreachable from
+                // application.properties: the runtime accepted the flag but
+                // nothing read it at start(), and this adapter had no key for it.
+                .clusterEnabled(clusterEnabled)
+                .clusterStack(clusterStack)
+                .clusterInitialHosts(clusterInitialHosts)
+                .fanInQueueCapacity(fanInQueueCapacity)
+                .fanInDrainBatchSize(fanInDrainBatchSize);
+        if (clusterNodeId != null && !clusterNodeId.isBlank()) {
+            builder.nodeId(clusterNodeId);
+        }
+        MicroSleeConfiguration config = builder.build();
         // quarkus:dev live-reload re-runs static-init: stop the previous container
         // so its Disruptor workers do not keep spinning after replacement.
         MicroSleeContainer previous = container;

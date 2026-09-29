@@ -117,8 +117,27 @@
                     <argLine>-Xss1m</argLine>
                     <!-- Allow the cluster test to spend a few extra seconds
                          waiting for the 2-node JGroups view to form. -->
-                    <forkedProcessTimeoutInSeconds>120</forkedProcessTimeoutInSeconds>
+                    <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
                 </configuration>
+            </plugin>
+            <!-- ADR 0007 D11: publish InProcessCluster (N real JGroups members in one
+                 JVM) so RA modules can test cross-node behaviour without copying it. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                        <configuration>
+                            <includes>
+                                <include>com/microjainslee/cluster/InProcessCluster*.class</include>
+                                <include>jgroups-tcp-file-ping.xml</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

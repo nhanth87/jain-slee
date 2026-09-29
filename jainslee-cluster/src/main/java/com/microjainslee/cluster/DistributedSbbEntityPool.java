@@ -11,6 +11,7 @@
 package com.microjainslee.cluster;
 
 import com.microjainslee.api.Sbb;
+import com.microjainslee.core.SbbEntityPoolContract;
 import com.microjainslee.api.annotations.CmpField;
 import com.microjainslee.core.VirtualThreadSbbEntityPool;
 
@@ -86,7 +87,7 @@ import java.util.function.Supplier;
  * SBBs that hold non-serializable state (sockets, buffers, …) must keep those
  * fields out of {@code @CmpField} accessors.
  */
-public final class DistributedSbbEntityPool {
+public final class DistributedSbbEntityPool implements SbbEntityPoolContract {
 
     /** Name of the Infinispan cache that stores per-entity CMP snapshots. */
     public static final String CACHE_NAME = "sbb-entity-state";
@@ -160,6 +161,7 @@ public final class DistributedSbbEntityPool {
     // Local-pool façade
     // ---------------------------------------------------------------
 
+    @Override
     public VirtualThreadSbbEntityPool.SbbEntity acquire(String sbbId, Supplier<Sbb> factory) {
         Objects.requireNonNull(sbbId, "sbbId");
         Objects.requireNonNull(factory, "factory");
@@ -182,12 +184,14 @@ public final class DistributedSbbEntityPool {
         return delegate.acquire(sbbId, factory);
     }
 
+    @Override
     public VirtualThreadSbbEntityPool.SbbEntity acquire(String sbbId, long entityId, Sbb sbb) {
         Objects.requireNonNull(sbbId, "sbbId");
         Objects.requireNonNull(sbb, "sbb");
         return delegate.acquire(sbbId, entityId, sbb);
     }
 
+    @Override
     public void release(VirtualThreadSbbEntityPool.SbbEntity entity) {
         if (entity == null) {
             return;
@@ -316,10 +320,12 @@ public final class DistributedSbbEntityPool {
         return checkpointConfig;
     }
 
+    @Override
     public VirtualThreadSbbEntityPool.SbbEntity findEntity(String sbbId) {
         return delegate.findEntity(sbbId);
     }
 
+    @Override
     public int size() {
         return delegate.size();
     }

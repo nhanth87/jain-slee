@@ -74,6 +74,17 @@ public final class RaActivityOwnerCaches {
         ownerCache.put(owner.dialogId(), owner);
     }
 
+    /**
+     * ADR 0007 H — refresh an owner record only if it is still exactly
+     * {@code expected}. A blind {@code put} let a zombie overwrite the node that
+     * took the dialog over.
+     */
+    public boolean replaceOwner(RaDialogOwner expected, RaDialogOwner next) {
+        Objects.requireNonNull(expected, "expected");
+        Objects.requireNonNull(next, "next");
+        return ownerCache.replace(expected.dialogId(), expected, next);
+    }
+
     public RaDialogOwner getOwner(String activityId) {
         return activityId == null ? null : ownerCache.get(activityId);
     }

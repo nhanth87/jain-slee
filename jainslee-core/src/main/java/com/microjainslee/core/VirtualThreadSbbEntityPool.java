@@ -44,7 +44,16 @@ import java.util.function.Supplier;
  * internal {@link EntitySlotPool}. When the entity is released the slot (and
  * its parked virtual thread) is returned for reuse by a future session.
  */
-public final class VirtualThreadSbbEntityPool {
+/**
+ * Default local entity pool: one pinned virtual thread per live entity, recycled
+ * through {@link EntitySlotPool}.
+ *
+ * <p>
+ * Implements {@link SbbEntityPool}. ADR 0007 D4 removed the {@code final}
+ * modifier that previously made this class impossible to wrap, so the cluster
+ * pool can drive the same router hot path.
+ */
+public class VirtualThreadSbbEntityPool implements SbbEntityPoolContract {
 
     private static final Logger LOG = LogManager.getLogger(VirtualThreadSbbEntityPool.class);
 
@@ -342,6 +351,7 @@ public final class VirtualThreadSbbEntityPool {
         return arena;
     }
 
+    @Override
     public SbbEntity acquire(String sbbId, Supplier<Sbb> factory) {
         if (shuttingDown) {
             throw new IllegalStateException("SbbEntityPool is shutting down");
@@ -368,6 +378,7 @@ public final class VirtualThreadSbbEntityPool {
         return fresh;
     }
 
+    @Override
     public SbbEntity acquire(String sbbId, long entityId, Sbb sbb) {
         if (shuttingDown) {
             throw new IllegalStateException("SbbEntityPool is shutting down");
@@ -396,6 +407,7 @@ injectOffHeapForPrebuilt(sbb, sbbId);
     /**
      * Release the entity for {@code sbbId} and return its slot to the idle pool.
      */
+    @Override
     public void release(SbbEntity entity) {
         if (entity == null) {
             return;
@@ -440,6 +452,7 @@ injectOffHeapForPrebuilt(sbb, sbbId);
         return true;
     }
 
+    @Override
     public SbbEntity findEntity(String sbbId) {
         if (sbbId == null) {
             return null;
@@ -459,6 +472,7 @@ injectOffHeapForPrebuilt(sbb, sbbId);
         return max;
     }
 
+    @Override
     public int size() {
         return entities.size();
     }

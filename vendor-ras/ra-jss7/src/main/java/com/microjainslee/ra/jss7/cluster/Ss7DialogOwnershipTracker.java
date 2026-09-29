@@ -135,9 +135,18 @@ public final class Ss7DialogOwnershipTracker {
         if (localNodeId.equals(owner.ownerNodeId())) {
             RaDialogOwner refreshed = new RaDialogOwner(
                     dialogId, owner.ownerNodeId(), owner.raName(), owner.generation(), now);
-            localOwners.put(dialogId, refreshed);
-            if (clusterCaches != null) {
-                clusterCaches.putOwner(refreshed);
+            if (clusterCaches == null || clusterCaches.replaceOwner(owner, refreshed)) {
+                localOwners.put(dialogId, refreshed);
+                owner = refreshed;
+            } else {
+                // ADR 0007 H — someone took the dialog over. Never write back over them.
+                localOwners.remove(dialogId);
+                RaDialogOwner current = clusterCaches.getOwner(dialogId);
+                LOG.warn("[ra-jss7] dialog {} no longer owned here (now {}) — refresh dropped",
+                        dialogId, current != null ? current.ownerNodeId() : "nobody");
+                if (current != null) {
+                    owner = current;
+                }
             }
         }
         TcapDialogMeta previous = localMeta.get(dialogId);
@@ -179,9 +188,10 @@ public final class Ss7DialogOwnershipTracker {
             return Optional.of(local);
         }
         if (clusterCaches != null) {
+            // ADR 0007 I — never cache a remote owner locally: it turns one read into
+            // a permanent belief that survives the takeover.
             RaDialogOwner remote = clusterCaches.getOwner(dialogId);
             if (remote != null) {
-                localOwners.put(dialogId, remote);
                 return Optional.of(remote);
             }
         }

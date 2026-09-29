@@ -115,9 +115,12 @@ public final class RaOwnershipTracker {
         if (localNodeId.equals(owner.ownerNodeId())) {
             RaDialogOwner refreshed = new RaDialogOwner(
                     activityId, owner.ownerNodeId(), owner.raName(), owner.generation(), now);
-            localOwners.put(activityId, refreshed);
-            if (caches != null) {
-                caches.putOwner(refreshed);
+            if (caches == null || caches.replaceOwner(owner, refreshed)) {
+                localOwners.put(activityId, refreshed);
+            } else {
+                // ADR 0007 H — taken over elsewhere; never write back over the new owner.
+                localOwners.remove(activityId);
+                LOG.warn("[{}] activity {} no longer owned here — refresh dropped", raName, activityId);
             }
         }
         RaSessionMeta previous = localMeta.get(activityId);
@@ -153,9 +156,9 @@ public final class RaOwnershipTracker {
             return Optional.of(local);
         }
         if (caches != null) {
+            // ADR 0007 I — never cache a remote owner locally.
             RaDialogOwner remote = caches.getOwner(activityId);
             if (remote != null) {
-                localOwners.put(activityId, remote);
                 return Optional.of(remote);
             }
         }

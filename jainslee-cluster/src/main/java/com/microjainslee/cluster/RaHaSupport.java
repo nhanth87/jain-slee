@@ -17,6 +17,7 @@ import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -35,6 +36,23 @@ public final class RaHaSupport {
      */
     public static final String PROP_STICKY_FORWARD = "jainslee.ra.sticky.forward";
 
+    /**
+     * ADR 0007 D2 — inbound cross-node <b>event</b> routing. Defaults
+     * {@code true}, unlike the command-side flag above, and the asymmetry is
+     * deliberate:
+     *
+     * <ul>
+     * <li>Forwarding a <b>command/request</b> to a node that does not own the
+     * peer connection is a protocol change — the sync-path REJECT is honest.</li>
+     * <li>Forwarding a <b>response</b> to the node that already accepted the
+     * client's TCP connection is pure routing. The socket exists on exactly one
+     * heap; this is the only way to write to it. Without it the canonical
+     * HTTP-in-on-one-node / MAP-out-on-another scenario silently drops every
+     * response.</li>
+     * </ul>
+     */
+    public static final String PROP_STICKY_FORWARD_EVENTS = RaStickyEventBus.PROP_STICKY_FORWARD_EVENTS;
+
     private final String raName;
     private final String localNodeId;
     private final RaHaMetrics metrics;
@@ -42,27 +60,35 @@ public final class RaHaSupport {
     private final RaStickyRouter router;
     private final RaCheckpointBridge checkpointBridge;
     private final RaActivityOwnerCaches caches; // nullable
+    private final ClusterManager clusterManager; // nullable — needed for the event bus
     private final boolean stickyForwardEnabled;
+    private final boolean stickyEventForwardEnabled;
     private RaStickyCommandBus stickyBus; // nullable
+    private RaStickyEventBus stickyEventBus; // nullable
 
     private RaHaSupport(
             String raName,
             String localNodeId,
             RaActivityOwnerCaches caches,
+            ClusterManager clusterManager,
             RaHaMetrics metrics) {
         this.raName = Objects.requireNonNull(raName, "raName");
         this.localNodeId = Objects.requireNonNull(localNodeId, "localNodeId");
         this.metrics = metrics == null ? new RaHaMetrics() : metrics;
         this.caches = caches;
+        this.clusterManager = clusterManager;
         this.tracker = new RaOwnershipTracker(localNodeId, raName, caches, this.metrics);
         this.router = new RaStickyRouter(tracker);
         this.checkpointBridge = new RaCheckpointBridge(this.metrics);
         this.stickyForwardEnabled = Boolean.parseBoolean(
                 System.getProperty(PROP_STICKY_FORWARD, "false"));
+        // ADR 0007 D2 — inbound event routing defaults ON (see PROP_STICKY_FORWARD_EVENTS).
+        this.stickyEventForwardEnabled = Boolean.parseBoolean(
+                System.getProperty(PROP_STICKY_FORWARD_EVENTS, "true"));
     }
 
     public static RaHaSupport localOnly(String raName, String localNodeId) {
-        return new RaHaSupport(raName, localNodeId, null, new RaHaMetrics());
+        return new RaHaSupport(raName, localNodeId, null, null, new RaHaMetrics());
     }
 
     public static RaHaSupport create(ClusterManager clusterManager, String raName) {
@@ -72,7 +98,7 @@ public final class RaHaSupport {
             nodeId = "local-" + raName;
         }
         RaActivityOwnerCaches caches = RaActivityOwnerCaches.ensureCaches(clusterManager, raName);
-        return new RaHaSupport(raName, nodeId, caches, new RaHaMetrics());
+        return new RaHaSupport(raName, nodeId, caches, clusterManager, new RaHaMetrics());
     }
 
     public String raName() {
@@ -122,6 +148,7 @@ public final class RaHaSupport {
                 LOG.warn("[{}] sticky bus stop failed: {}", raName, e.toString());
             }
         }
+        stopStickyEventBus();
         tracker.clearAll();
     }
 
@@ -163,6 +190,72 @@ public final class RaHaSupport {
 
     public boolean stickyForwardEnabled() {
         return stickyForwardEnabled;
+    }
+
+    // ── ADR 0007 D2 — inbound cross-node event routing ─────────────────────
+
+    /**
+     * Start the inbound event bus. The executor receives
+     * {@code (activityId, payload)} and MUST re-inject through the RA's
+     * <b>local</b> {@code RaBootstrapPort.fireEvent} path so the local ACNF
+     * resolves the activity and the SBB runs on the node holding the client
+     * connection.
+     *
+     * @param localExecutor delivers {@code (activityId, payload)} locally
+     */
+    public void startStickyEventBus(BiConsumer<String, Serializable> localExecutor) {
+        if (clusterManager == null) {
+            return;
+        }
+        stopStickyEventBus();
+        RaStickyEventBus bus = new RaStickyEventBus(localNodeId, raName, clusterManager,
+                localExecutor, metrics);
+        bus.start();
+        this.stickyEventBus = bus;
+    }
+
+    public void stopStickyEventBus() {
+        RaStickyEventBus bus = this.stickyEventBus;
+        this.stickyEventBus = null;
+        if (bus != null) {
+            try {
+                bus.stop();
+            } catch (RuntimeException e) {
+                LOG.warn("[{}] sticky event bus stop failed: {}", raName, e.toString());
+            }
+        }
+    }
+
+    /**
+     * Forward an inbound protocol response to the node that owns the activity.
+     * Returns {@code false} when event forwarding is disabled, when the target
+     * is this node (nothing to do), or when no bus is running.
+     *
+     * @param targetNodeId node holding the client connection
+     * @param activityId   activity-context name
+     * @param eventType    original event class name, for logging
+     * @param payload      portable, allow-list-clean POJO
+     */
+    public boolean forwardEvent(String targetNodeId, String activityId, String eventType,
+                                Serializable payload) {
+        if (!stickyEventForwardEnabled) {
+            metrics.stickyReject();
+            LOG.warn("[{}] sticky EVENT forward disabled activity={} ({}={})", raName, activityId,
+                    PROP_STICKY_FORWARD_EVENTS, false);
+            return false;
+        }
+        RaStickyEventBus bus = this.stickyEventBus;
+        if (bus == null) {
+            metrics.stickyReject();
+            LOG.warn("[{}] sticky event bus not started — cannot route activity={} to node={}",
+                    raName, activityId, targetNodeId);
+            return false;
+        }
+        return bus.forward(targetNodeId, activityId, eventType, payload);
+    }
+
+    public boolean stickyEventForwardEnabled() {
+        return stickyEventForwardEnabled;
     }
 
     /** Read-only: is this node the connection owner for {@code activityId}? */

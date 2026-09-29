@@ -49,6 +49,11 @@ public final class Jss7TcapDialogFailoverPort
     private final Ss7DialogClusterCaches clusterCaches; // nullable
     private final TcapFailoverMetrics metrics;
     private final MapDialogRehydrator mapRehydrator; // nullable
+    /**
+     * ADR 0007 D3 — must win the dialog lease before importing. {@code null} =
+     * unclustered / legacy: import unconditionally.
+     */
+    private volatile java.util.function.LongPredicate takeoverGuard;
 
     public Jss7TcapDialogFailoverPort(
             Supplier<TCAPProvider> tcapProvider,
@@ -80,6 +85,25 @@ public final class Jss7TcapDialogFailoverPort
         this.clusterCaches = clusterCaches;
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.mapRehydrator = mapRehydrator;
+    }
+
+    /**
+     * Install the lease check a takeover must pass. It is called with the local
+     * OTID and must return {@code true} only when this node now owns the dialog
+     * lease (CAS won, previous owner gone from the view).
+     */
+    public void setTakeoverGuard(java.util.function.LongPredicate guard) {
+        this.takeoverGuard = guard;
+    }
+
+    private boolean takeoverAllowed(long localOtid) {
+        java.util.function.LongPredicate guard = this.takeoverGuard;
+        if (guard == null || guard.test(localOtid)) {
+            return true;
+        }
+        LOG.warn("[ra-jss7] takeover of otid={} refused by the dialog lease (owner alive or partition minority)",
+                localOtid);
+        return false;
     }
 
     public TcapFailoverMetrics metrics() {
@@ -119,8 +143,9 @@ public final class Jss7TcapDialogFailoverPort
             metrics.importFail();
             return false;
         }
-        // Pending invokes: recreate TCAP with invokeId table, then refuse resume.
-        if (payload.hasPendingInvokes()) {
+        // Pending invokes that were NOT captured (legacy payload): recreate TCAP with
+        // the invokeId table, then refuse resume. Captured ones (jSS7 M1) resume.
+        if (payload.hasUnrestorablePendingInvokes()) {
             metrics.pendingInvokeAbort();
             LOG.warn("[ra-jss7] importPayload({}): pending invoke-ids — recreate+abort policy (no CONTINUE resume)",
                     payload.localOtid());
@@ -209,6 +234,10 @@ public final class Jss7TcapDialogFailoverPort
             metrics.takeoverFail();
             return false;
         }
+        if (!takeoverAllowed(localOtid)) {
+            metrics.takeoverFail();
+            return false;
+        }
         boolean ok = importPayload(payload);
         if (ok) {
             metrics.takeoverOk();
@@ -234,7 +263,7 @@ public final class Jss7TcapDialogFailoverPort
             metrics.continueResolveFail();
             return null;
         }
-        if (payload.hasPendingInvokes()) {
+        if (payload.hasUnrestorablePendingInvokes()) {
             metrics.pendingInvokeAbort();
             metrics.continueResolveFail();
             LOG.warn("[ra-jss7] CONTINUE miss otid={}: pending invoke-ids — refuse resume (new BEGIN required)",
@@ -243,6 +272,10 @@ public final class Jss7TcapDialogFailoverPort
         }
         ParameterFactory pf = parameterFactory.get();
         if (pf == null) {
+            metrics.continueResolveFail();
+            return null;
+        }
+        if (!takeoverAllowed(localOtid)) {
             metrics.continueResolveFail();
             return null;
         }
@@ -289,7 +322,7 @@ public final class Jss7TcapDialogFailoverPort
                 toPortable(snap.getRemoteAddress()),
                 snap.getState() == null ? "Idle" : snap.getState().name(),
                 snap.getApplicationContextOid(),
-                snap.getIdleDeadlineNanos(),
+                0L,                                   // legacy nanoTime field: meaningless off-JVM
                 snap.getNetworkId(),
                 snap.getLocalSsn(),
                 snap.getRemotePc(),
@@ -297,7 +330,37 @@ public final class Jss7TcapDialogFailoverPort
                 snap.isDpSentInBegin(),
                 snap.getInvokeIdTaken(),
                 System.currentTimeMillis(),
-                snap.getPreferredAspName());
+                snap.getPreferredAspName(),
+                snap.getIdleDeadlineEpochMs(),
+                toPortable(snap.getPendingInvokes()));
+    }
+
+    /** ADR 0007 Q — carry jSS7 M1 pending invokes across the cluster. */
+    static TcapDialogSnapshotPayload.PendingInvokeState[] toPortable(TcapDialogSnapshot.PendingInvoke[] pending) {
+        if (pending == null) {
+            return new TcapDialogSnapshotPayload.PendingInvokeState[0];
+        }
+        TcapDialogSnapshotPayload.PendingInvokeState[] out =
+                new TcapDialogSnapshotPayload.PendingInvokeState[pending.length];
+        for (int i = 0; i < pending.length; i++) {
+            TcapDialogSnapshot.PendingInvoke p = pending[i];
+            out[i] = new TcapDialogSnapshotPayload.PendingInvokeState(p.getInvokeId(), p.getInvokeClass(),
+                    p.getLocalOperationCode(), p.getInvokeTimeoutMs(), p.getRemainingMillis());
+        }
+        return out;
+    }
+
+    static TcapDialogSnapshot.PendingInvoke[] toJss7(TcapDialogSnapshotPayload.PendingInvokeState[] pending) {
+        if (pending == null) {
+            return null;
+        }
+        TcapDialogSnapshot.PendingInvoke[] out = new TcapDialogSnapshot.PendingInvoke[pending.length];
+        for (int i = 0; i < pending.length; i++) {
+            TcapDialogSnapshotPayload.PendingInvokeState p = pending[i];
+            out[i] = new TcapDialogSnapshot.PendingInvoke(p.invokeId(), p.invokeClass(), p.localOperationCode(),
+                    p.invokeTimeoutMs(), p.remainingMillis());
+        }
+        return out;
     }
 
     static TcapDialogSnapshot toJss7Snapshot(TcapDialogSnapshotPayload payload, ParameterFactory pf) {
@@ -317,42 +380,26 @@ public final class Jss7TcapDialogFailoverPort
                 remote,
                 state,
                 payload.applicationContextOid(),
-                payload.idleDeadlineNanos(),
+                // ADR 0007 Q: wall clock (jSS7 M2). 0 = legacy payload → fresh idle window.
+                payload.idleDeadlineEpochMs(),
                 payload.networkId(),
                 payload.localSsn(),
                 payload.remotePc(),
                 payload.seqControl(),
                 payload.dpSentInBegin(),
                 payload.invokeIdTaken(),
-                payload.preferredAspName());
+                payload.preferredAspName(),
+                toJss7(payload.pendingInvokes()));
     }
 
     static PortableSccpAddress toPortable(SccpAddress addr) {
-        if (addr == null) {
-            return null;
-        }
-        String ri = addr.getAddressIndicator() != null
-                && addr.getAddressIndicator().getRoutingIndicator() != null
-                ? addr.getAddressIndicator().getRoutingIndicator().name()
-                : "ROUTING_BASED_ON_DPC_AND_SSN";
-        String gt = addr.getGlobalTitle() != null ? addr.getGlobalTitle().getDigits() : null;
-        return new PortableSccpAddress(ri, addr.getSignalingPointCode(), addr.getSubsystemNumber(), gt);
+        return SccpAddressCodec.toPortable(addr);
     }
 
     static SccpAddress toSccp(PortableSccpAddress portable, ParameterFactory pf) {
         if (portable == null) {
             throw new IllegalArgumentException("local/remote address required for import");
         }
-        RoutingIndicator ri;
-        try {
-            ri = RoutingIndicator.valueOf(portable.routingIndicator());
-        } catch (RuntimeException e) {
-            ri = RoutingIndicator.ROUTING_BASED_ON_DPC_AND_SSN;
-        }
-        org.restcomm.protocols.ss7.sccp.parameter.GlobalTitle gt = null;
-        if (portable.globalTitleDigits() != null && !portable.globalTitleDigits().isBlank()) {
-            gt = pf.createGlobalTitle(portable.globalTitleDigits());
-        }
-        return pf.createSccpAddress(ri, gt, portable.pointCode(), portable.subsystemNumber());
+        return SccpAddressCodec.toSccp(portable, pf);
     }
 }

@@ -27,6 +27,8 @@ import com.microjainslee.ra.jss7.collab.Ss7ProtocolAdapter;
 import com.microjainslee.ra.jss7.collab.Ss7TcapListener;
 import com.microjainslee.ra.jss7.command.Ss7Command;
 import com.microjainslee.ra.jss7.event.Ss7Event;
+import com.microjainslee.ra.jss7.event.Ss7MapEvent;
+import com.microjainslee.cluster.RaDialogOwner;
 import com.microjainslee.ra.jss7.transport.Ss7Stack;
 
 import org.apache.logging.log4j.LogManager;
@@ -84,8 +86,18 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     private volatile Ss7DialogOwnershipTracker ownershipTracker;
     private volatile StickyRaCommandRouter stickyRouter;
     private volatile IspnStickyCommandBus stickyBus;
+    /** ADR 0007 D2 — HA bundle; also owns the inbound sticky-EVENT bus. */
+    private volatile com.microjainslee.cluster.RaHaSupport haSupport;
     private volatile TcapDialogFailoverPort failoverPort;
     private volatile SctpEndpointFailoverCoordinator endpointCoordinator;
+    /** ADR 0007 D11 — forwards non-owned DTIDs to their owner; null when unclustered. */
+    private volatile com.microjainslee.ra.jss7.cluster.Ss7InboundDialogRouter inboundRouter;
+    /** ADR 0007 D3/D12 — activity claims + per-dialog leases (the transmit fence); null when unclustered. */
+    private volatile com.microjainslee.cluster.RaDialogLeaseCaches leases;
+    /** dialogId → OTID lease key claimed by this node; the heartbeat's liveness source. */
+    private final Map<String, String> dialogLeaseKeys = new ConcurrentHashMap<>();
+    /** The values of {@link #dialogLeaseKeys}, as a set: O(1) liveness per lease. */
+    private final java.util.Set<String> liveDialogLeaseKeys = ConcurrentHashMap.newKeySet();
     private final TcapFailoverMetrics failoverMetrics = new TcapFailoverMetrics();
     /** Gate A — RA-only SBB checkpoint (SBBs must not call this). */
     private final RaCheckpointBridge checkpointBridge = new RaCheckpointBridge();
@@ -348,11 +360,225 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         if (caches != null) {
             stickyBus = new IspnStickyCommandBus(nodeId, caches, this::sendOutboundLocal);
             stickyBus.start();
+            // ADR 0007 D2 / P2 — inbound cross-node event routing (R1).
+            //
+            // Without this the canonical scenario drops every response: a
+            // TC-CONTINUE lands on THIS node, acnf.lookup(dialogId) finds no local
+            // binding (the HTTP connection and the SLEE activity live on the other
+            // node's heap), and the delivery dies. The peer STP is free to send the
+            // CONTINUE to whichever ASP of the AS it loadshares onto.
+            startStickyEventBus(nodeId, clusterManager);
         } else {
             stickyBus = null;
         }
         wireFailoverPort(caches);
         wireEndpointCoordinator(nodeId, caches);
+        wireInboundRouter();
+    }
+
+    /**
+     * ADR 0007 D11 — in cluster mode every node is a full SS7 node (one ASP of the
+     * shared AS) with a disjoint OTID range. A CONTINUE/END/ABORT the STP delivers
+     * here for another node's dialog is forwarded to that node as raw PDU bytes.
+     *
+     * <p>
+     * Cluster mode without a range, or with an overlapping one, fails activation:
+     * routing by DTID would otherwise deliver to the wrong node, and an HA feature
+     * that silently degrades must not start.
+     */
+    private void wireInboundRouter() {
+        ClusterManager cm = clusterManager;
+        Ss7Stack s = stack;
+        if (cm == null || !cm.isClusterMode() || s == null) {
+            return;
+        }
+        long[] range = otidRange();
+        if (range[0] <= 0 || range[1] <= range[0]) {
+            throw new IllegalStateException("[" + raName + "] cluster mode requires a TCAP OTID range "
+                    + "(dialogIdRangeStart/End) disjoint from every other node — ADR 0007 D11");
+        }
+        com.microjainslee.ra.jss7.cluster.Ss7InboundDialogRouter router =
+                new com.microjainslee.ra.jss7.cluster.Ss7InboundDialogRouter(raName, cm,
+                        new com.microjainslee.cluster.ClusterUnicast(cm),
+                        () -> {
+                            Ss7Stack st = stack;
+                            return st != null ? st.tcapProvider() : null;
+                        },
+                        () -> {
+                            Ss7Stack st = stack;
+                            return st != null && st.sccpProvider() != null
+                                    ? st.sccpProvider().getParameterFactory()
+                                    : null;
+                        },
+                        failoverMetrics);
+        com.microjainslee.cluster.RaDialogLeaseCaches dialogLeases =
+                com.microjainslee.cluster.RaDialogLeaseCaches.create(cm, raName);
+        dialogLeases.setLocalLiveness(this::leaseStillInUse);
+        this.leases = dialogLeases;
+        if (failoverPort instanceof com.microjainslee.ra.jss7.cluster.Jss7TcapDialogFailoverPort port) {
+            // A survivor imports a dialog only after winning its lease.
+            port.setTakeoverGuard(otid -> dialogLeases.takeOver(dialogLeaseKey(otid)));
+        }
+        router.start(range[0], range[1]);
+        this.inboundRouter = router;
+    }
+
+    /** Heartbeat liveness: renew only leases that protect a dialog / activity still on this node. */
+    private boolean leaseStillInUse(String key) {
+        if (key.startsWith(com.microjainslee.ra.jss7.cluster.Ss7TransmitFence.ACTIVITY_PREFIX)) {
+            String dialogId = key.substring(com.microjainslee.ra.jss7.cluster.Ss7TransmitFence.ACTIVITY_PREFIX.length());
+            return sessions.containsKey(dialogId) || dialogLeaseKeys.containsKey(dialogId);
+        }
+        return liveDialogLeaseKeys.contains(key);
+    }
+
+    /** Lease key of a TCAP dialog: its local OTID (the transaction the fence protects). */
+    static String dialogLeaseKey(long otid) {
+        return com.microjainslee.ra.jss7.cluster.Ss7TransmitFence.dialogLeaseKey(otid);
+    }
+
+    /** Idempotency claim of an app activity id (one BEGIN per activity, cluster-wide). */
+    static String activityClaimKey(String dialogId) {
+        return com.microjainslee.ra.jss7.cluster.Ss7TransmitFence.activityClaimKey(dialogId);
+    }
+
+    /**
+     * ADR 0007 M — the TCAP OTID behind an RA dialog id: the id itself when it is
+     * numeric (inbound dialogs), else the adapter's correlation map (outbound
+     * dialogs named by the app, e.g. {@code gmlc-<uuid>}). {@code 0} when unknown.
+     */
+    long otidOf(String dialogId) {
+        long parsed = parseOtid(dialogId);
+        if (parsed > 0 || dialogId == null) {
+            return parsed;
+        }
+        for (Ss7ProtocolAdapter a : adapters) {
+            Long id = a.localDialogIdOf(dialogId);
+            if (id != null && id > 0) {
+                return id;
+            }
+        }
+        return 0L;
+    }
+
+    /** @return {start, end} of this node's configured OTID range ({0, 0} when unset). */
+    private long[] otidRange() {
+        if (ss7Config != null && ss7Config.tcap() != null) {
+            return new long[] { ss7Config.tcap().dialogIdRangeStart(), ss7Config.tcap().dialogIdRangeEnd() };
+        }
+        return new long[] { config.dialogIdRangeStart(), config.dialogIdRangeEnd() };
+    }
+
+    /** Test / admin access: the D11 router, or {@code null}. */
+    public com.microjainslee.ra.jss7.cluster.Ss7InboundDialogRouter inboundRouter() {
+        return inboundRouter;
+    }
+
+    /**
+     * ADR 0007 D2 — start the inbound sticky-event bus and teach this RA to
+     * re-inject a forwarded event through its own <b>local</b> bootstrap port.
+     *
+     * <p>
+     * The executor runs on the node that OWNS the activity, so
+     * {@code acnf.lookup(activityId)} hits a real binding and the SBB executes
+     * where the client's connection lives. Events arriving the normal way (this
+     * node owns the dialog) never touch this path.
+     *
+     * <p>
+     * The payload must be a portable {@code com.microjainslee.*} POJO: jSS7
+     * {@code MAPMessage} objects are not allow-listed and cannot be shipped.
+     */
+    private void startStickyEventBus(String nodeId, com.microjainslee.cluster.ClusterManager cm) {
+        try {
+            com.microjainslee.cluster.RaHaSupport ha =
+                    com.microjainslee.cluster.RaHaSupport.create(cm, raName);
+            this.haSupport = ha;
+            ha.startStickyEventBus(this::deliverStickyEventLocal);
+            LOG.info("[ra-jss7] sticky EVENT bus started node={} "
+                    + "(inbound cross-node response routing enabled)", nodeId);
+        } catch (RuntimeException e) {
+            // Never fail raActive() because HA wiring failed — log loudly instead.
+            LOG.error("[ra-jss7] sticky EVENT bus failed to start; cross-node responses "
+                    + "will be dropped: " + e.toString(), e);
+        }
+    }
+
+    /**
+     * Re-inject an event forwarded from another node, on this node's local path.
+     * Callers already filtered to envelopes addressed to this node.
+     *
+     * @param activityId activity-context name (the correlation key)
+     * @param payload    portable POJO produced by the sending RA
+     */
+    private void deliverStickyEventLocal(String activityId, java.io.Serializable payload) {
+        RaBootstrapPort bp = bootstrap;
+        if (bp == null || !active.get()) {
+            LOG.warn("[ra-jss7] sticky event for activity={} dropped: RA not active", activityId);
+            return;
+        }
+        SleeEvent event = rebuildStickyEvent(activityId, payload);
+        if (event == null) {
+            return;
+        }
+        try {
+            MutableSession existing = sessions.get(activityId);
+            // Reuse the live handle when this node already has the dialog; otherwise
+            // let the bootstrap mint one — the container binds the activity name
+            // either way, which is what makes acnf.lookup() resolve locally.
+            ActivityHandle handle = existing != null
+                    ? existing.activityHandle
+                    : bp.createActivityHandle(activityId);
+            bp.fireEvent(event, handle, null);
+            LOG.debug("[ra-jss7] delivered sticky event {} for activity={}",
+                    event.getClass().getSimpleName(), activityId);
+        } catch (RuntimeException e) {
+            LOG.error("[ra-jss7] sticky event delivery failed for activity=" + activityId, e);
+        }
+    }
+
+    /**
+     * Turn a portable payload back into a deliverable {@link SleeEvent}.
+     *
+     * <p>
+     * <b>Only {@code MapEventPayload} is accepted.</b> The {@link Ss7MapEvent} /
+     * {@link Ss7Event} records are deliberately NOT {@code Serializable}: both
+     * interfaces are sealed and no permitted subtype implements it, which the
+     * compiler can prove — so no {@code SleeEvent} can ever travel the cluster
+     * bus, by construction rather than by convention. That is the correct
+     * outcome: {@code Ss7MapEvent.Service} carries a jSS7 {@code MAPMessage},
+     * which is outside the marshalling allow-list and not stable across stack
+     * versions. The receiving node therefore materialises
+     * {@link Ss7MapEvent.Remote} from the portable summary instead.
+     *
+     * <p>
+     * Returns {@code null} for an unknown payload — never throws, because a
+     * malformed envelope must not kill the bus listener.
+     */
+    /**
+     * Turn a portable payload back into a deliverable {@link SleeEvent}.
+     *
+     * <p>
+     * <b>Only {@code MapEventPayload} is accepted.</b> The {@link Ss7MapEvent} /
+     * {@link Ss7Event} records are deliberately NOT {@code Serializable}: both
+     * interfaces are sealed and no permitted subtype implements it, which the
+     * compiler can prove — so no {@code SleeEvent} can ever travel the cluster
+     * bus, by construction rather than by convention. That is the correct
+     * outcome: {@code Ss7MapEvent.Service} carries a jSS7 {@code MAPMessage},
+     * which is outside the marshalling allow-list and not stable across stack
+     * versions. The receiving node therefore materialises
+     * {@link Ss7MapEvent.Remote} from the portable summary instead.
+     *
+     * <p>
+     * Returns {@code null} for an unknown payload — never throws, because a
+     * malformed envelope must not kill the bus listener.
+     */
+    private SleeEvent rebuildStickyEvent(String activityId, java.io.Serializable payload) {
+        if (payload instanceof com.microjainslee.ra.jss7.cluster.MapEventPayload mapPayload) {
+            return new Ss7MapEvent.Remote(activityId, mapPayload.typeName(), mapPayload);
+        }
+        LOG.warn("[ra-jss7] sticky event for activity={} carries unknown payload type {} — dropped",
+                activityId, payload == null ? "null" : payload.getClass().getName());
+        return null;
     }
 
     private void wireEndpointCoordinator(String nodeId, Ss7DialogClusterCaches caches) {
@@ -416,6 +642,22 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     }
 
     private void teardownOwnership() {
+        com.microjainslee.cluster.RaDialogLeaseCaches dialogLeases = leases;
+        leases = null;
+        if (dialogLeases != null) {
+            dialogLeases.stop();
+        }
+        dialogLeaseKeys.clear();
+        liveDialogLeaseKeys.clear();
+        com.microjainslee.ra.jss7.cluster.Ss7InboundDialogRouter router = inboundRouter;
+        inboundRouter = null;
+        if (router != null) {
+            try {
+                router.stop();
+            } catch (RuntimeException e) {
+                LOG.warn("inbound dialog router stop failed: {}", e.toString());
+            }
+        }
         SctpEndpointFailoverCoordinator coord = endpointCoordinator;
         endpointCoordinator = null;
         if (coord != null) {
@@ -437,6 +679,15 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         stickyRouter = null;
         ownershipTracker = null;
         failoverPort = null;
+        com.microjainslee.cluster.RaHaSupport ha = this.haSupport;
+        this.haSupport = null;
+        if (ha != null) {
+            try {
+                ha.stopStickyEventBus();
+            } catch (RuntimeException e) {
+                LOG.warn("sticky event bus stop failed: {}", e.toString());
+            }
+        }
     }
 
     private void clearMissingDialogResolver() {
@@ -454,15 +705,9 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     }
 
     private void logOtidRangeGuidance() {
-        long start;
-        long end;
-        if (ss7Config != null && ss7Config.tcap() != null) {
-            start = ss7Config.tcap().dialogIdRangeStart();
-            end = ss7Config.tcap().dialogIdRangeEnd();
-        } else {
-            start = config.dialogIdRangeStart();
-            end = config.dialogIdRangeEnd();
-        }
+        long[] range = otidRange();
+        long start = range[0];
+        long end = range[1];
         if (start > 0 && end > start) {
             LOG.info("[ra-jss7] TCAP OTID range configured: [{}, {}] — keep non-overlapping across RA nodes",
                     start, end);
@@ -480,6 +725,17 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
             LOG.warn("RA not active — dropping {} on {}", event.getClass().getSimpleName(), dialogId);
             return;
         }
+        // ADR 0007 D2 / P2 — R1: this node holds the TCAP dialog but NOT the
+        // client's connection. If the cluster says another node owns the activity,
+        // hand the response over instead of firing into a local activity that
+        // does not exist here (which used to die with
+        // IllegalStateException: Unknown activity handle).
+        // Superseded by D11 when the inbound router runs: a PDU only reaches
+        // publish() on the node that owns the dialog, which is also where the SBB
+        // and the client connection live.
+        if (inboundRouter == null && tryForwardToActivityOwner(dialogId, event)) {
+            return;
+        }
         boolean created = !sessions.containsKey(dialogId);
         MutableSession s = sessions.computeIfAbsent(dialogId,
                 id -> new MutableSession(id, bootstrap.createActivityHandle(id)));
@@ -493,9 +749,94 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         }
     }
 
+    /**
+     * ADR 0007 D2 — forward an inbound response to the node owning the activity.
+     *
+     * <p>
+     * Returns {@code true} when the event was handed to the sticky-event bus, in
+     * which case the caller must NOT also fire it locally (that would deliver the
+     * response twice).
+     *
+     * <p>
+     * Only consulted when the cluster positively reports a <b>different</b> owner.
+     * An unknown owner falls through to local delivery: inventing a remote hop
+     * for an activity nobody claimed would strand the response.
+     */
+    private boolean tryForwardToActivityOwner(String dialogId, SleeEvent event) {
+        com.microjainslee.cluster.RaHaSupport ha = this.haSupport;
+        if (ha == null || !ha.isClustered() || !ha.stickyEventForwardEnabled()) {
+            return false;
+        }
+        String ownerNodeId = lookupRemoteOwnerNodeId(dialogId);
+        if (ownerNodeId == null) {
+            return false;   // unknown / owned here — deliver locally
+        }
+        java.io.Serializable payload = toStickyPayload(dialogId, event);
+        if (payload == null) {
+            return false;   // not portable — fall back to local delivery + log
+        }
+        return ha.forwardEvent(ownerNodeId, dialogId, event.getClass().getSimpleName(), payload);
+    }
+
+    /**
+     * @return the node owning the activity when it is known AND not this node;
+     *         {@code null} when unknown or local.
+     */
+    private String lookupRemoteOwnerNodeId(String activityId) {
+        try {
+            Ss7DialogOwnershipTracker tracker = this.ownershipTracker;
+            if (tracker == null) {
+                return null;
+            }
+            String nodeId = tracker.lookupOwner(activityId).map(RaDialogOwner::ownerNodeId).orElse(null);
+            if (nodeId == null || nodeId.equals(tracker.localNodeId())) {
+                return null;   // unknown, or ours — deliver locally
+            }
+            return nodeId;
+        } catch (RuntimeException e) {
+            LOG.debug("[ra-jss7] owner lookup failed for {} — delivering locally", activityId, e);
+            return null;
+        }
+    }
+
+    /**
+     * Flatten an inbound event into an allow-list-clean payload.
+     * Returns {@code null} for events with no portable form.
+     */
+    private java.io.Serializable toStickyPayload(String dialogId, SleeEvent event) {
+        if (event instanceof Ss7MapEvent.Service svc) {
+            return com.microjainslee.ra.jss7.cluster.MapEventPayload.of(dialogId, svc.type(), svc.message());
+        }
+        if (event instanceof Ss7MapEvent.Dialog) {
+            // A dialog-lifecycle notice carries no payload worth shipping; the
+            // authoritative dialog state lives in the owner's TCAP snapshot.
+            return com.microjainslee.ra.jss7.cluster.MapEventPayload.of(dialogId, null, null);
+        }
+        if (event instanceof Ss7MapEvent.Error err) {
+            return com.microjainslee.ra.jss7.cluster.MapEventPayload.of(dialogId, null, null);
+        }
+        return null;
+    }
+
+    /** The OTID is from this node's range: the claim only fails on a partition minority. */
+    private void claimDialogLease(String dialogId) {
+        com.microjainslee.cluster.RaDialogLeaseCaches dialogLeases = leases;
+        long otid = dialogLeases != null ? otidOf(dialogId) : 0L;
+        if (otid <= 0) {
+            return;
+        }
+        dialogLeaseKeys.put(dialogId, dialogLeaseKey(otid));
+        liveDialogLeaseKeys.add(dialogLeaseKey(otid));
+        if (!dialogLeases.tryClaim(dialogLeaseKey(otid))) {
+            LOG.warn("[ra-jss7] dialog lease for {} (otid {}) not acquired — later sends will be fenced",
+                    dialogId, otid);
+        }
+    }
+
     private void trackInbound(String dialogId, SleeEvent event, boolean sessionCreated) {
         Ss7DialogOwnershipTracker tracker = ownershipTracker;
         if (event instanceof Ss7Event.TcapBegin || sessionCreated) {
+            claimDialogLease(dialogId);
             if (tracker != null) {
                 tracker.onDialogOpened(dialogId, parseOtid(dialogId), null, 0, 0, stateOf(event), null);
             }
@@ -523,7 +864,7 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         if (port == null || dialogId == null) {
             return;
         }
-        long otid = parseOtid(dialogId);
+        long otid = otidOf(dialogId);          // ADR 0007 M: app-named dialogs too
         if (otid <= 0) {
             return;
         }
@@ -564,6 +905,13 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
             return;
         }
         StickyRaCommandRouter.Decision decision = router.decide(cmd, isM3uaRouteReady());
+        if (decision.action() == StickyRaCommandRouter.Action.SEND_LOCAL) {
+            String fenced = fenceBeforeTransmit(cmd);
+            if (fenced != null) {
+                decision = new StickyRaCommandRouter.Decision(StickyRaCommandRouter.Action.REJECT,
+                        decision.owner(), fenced);
+            }
+        }
         switch (decision.action()) {
             case REJECT -> {
                 failoverMetrics.stickyReject();
@@ -572,6 +920,7 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                 }
                 LOG.warn("[ra-jss7] sticky REJECT {}: {}",
                         cmd.getClass().getSimpleName(), decision.reason());
+                rejectToSbb(cmd, decision.reason());
             }
             case FORWARD_REMOTE -> {
                 IspnStickyCommandBus bus = stickyBus;
@@ -584,6 +933,49 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                 bus.forward(decision.owner().ownerNodeId(), cmd);
             }
             case SEND_LOCAL -> sendOutboundLocal(cmd);
+        }
+    }
+
+    /**
+     * ADR 0007 D3 / D12 — the last check before a command reaches the wire.
+     *
+     * <ul>
+     *   <li>A dialog-creating command first claims its activity id cluster-wide:
+     *       a client retry of the same activity on another node is refused here
+     *       instead of producing a second BEGIN towards the HLR.</li>
+     *   <li>Any other command must pass the dialog lease fence: this incarnation
+     *       still owns the TCAP transaction and the lease cache is available. On
+     *       the minority side of a partition the cache is unavailable, so a
+     *       zombie that still holds its SCTP association does not transmit.</li>
+     * </ul>
+     *
+     * @return {@code null} to proceed, else the refusal reason
+     */
+    private String fenceBeforeTransmit(Ss7Command cmd) {
+        com.microjainslee.cluster.RaDialogLeaseCaches dialogLeases = leases;
+        return dialogLeases == null ? null
+                : new com.microjainslee.ra.jss7.cluster.Ss7TransmitFence(dialogLeases, this::otidOf).check(cmd);
+    }
+
+    /**
+     * ADR 0007 L — a refused command must reach the SBB. Logging alone left the
+     * activity (and any parked HTTP request) waiting for its timeout.
+     */
+    private void rejectToSbb(Ss7Command cmd, String reason) {
+        String dialogId = cmd.dialogId();
+        if (dialogId == null || dialogId.isBlank() || bootstrap == null) {
+            return;
+        }
+        try {
+            publish(dialogId, new Ss7MapEvent.Dialog(dialogId, Ss7MapEvent.Kind.REJECT,
+                    "local-refusal: " + reason));
+        } catch (RuntimeException e) {
+            LOG.warn("[ra-jss7] could not report refusal of {} to the SBB: {}", dialogId, e.toString());
+        } finally {
+            MutableSession s = sessions.get(dialogId);
+            if (s != null) {
+                forceEndSession(dialogId, s);
+            }
         }
     }
 
@@ -654,6 +1046,7 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     private void afterLocalOutbound(Ss7Command cmd) {
         Ss7DialogOwnershipTracker tracker = ownershipTracker;
         if (StickyRaCommandRouter.isDialogCreating(cmd)) {
+            claimDialogLease(cmd.dialogId());
             if (tracker != null) {
                 tracker.onDialogOpened(cmd.dialogId(), parseOtid(cmd.dialogId()), null,
                         cmd.targetAddress() != null ? cmd.targetAddress().pointCode() : 0,
@@ -685,6 +1078,21 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
             Ss7DialogOwnershipTracker tracker = ownershipTracker;
             if (tracker != null) {
                 tracker.onDialogClosed(did);
+            }
+            com.microjainslee.cluster.RaDialogLeaseCaches dialogLeases = leases;
+            String otidKey = dialogLeaseKeys.remove(did);
+            if (otidKey != null) {
+                liveDialogLeaseKeys.remove(otidKey);
+            }
+            if (dialogLeases != null) {
+                if (otidKey == null) {
+                    long otid = otidOf(did);
+                    otidKey = otid > 0 ? dialogLeaseKey(otid) : null;
+                }
+                if (otidKey != null) {
+                    dialogLeases.release(otidKey);
+                }
+                dialogLeases.release(activityClaimKey(did));
             }
         }
         if (s != null) {

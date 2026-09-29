@@ -10,6 +10,8 @@
 
 package com.microjainslee.core;
 
+import com.microjainslee.core.logging.EventMdc;
+
 import com.microjainslee.api.ProfileAccessorBridge;
 import com.microjainslee.api.ProfileAccessorInvoker;
 import com.microjainslee.api.ActivityContextHandle;
@@ -98,6 +100,12 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
     private final ActivityContextPool aciPool;
     private final SbbTypeRegistry sbbTypeRegistry;
     private final EntityIdAllocator entityIdAllocator = new EntityIdAllocator();
+    /**
+     * ADR 0007 D1 — "&lt;node&gt;:" when clustered, else empty. Per-JVM counters
+     * mint the same "Type#n" on every node; with the snapshot cache keyed by
+     * entity id, two nodes would overwrite each other's entity state.
+     */
+    private volatile String entityIdPrefix = "";
     private final ConcurrentHashMap<String, Class<? extends Sbb>> entityTypesById =
             new ConcurrentHashMap<String, Class<? extends Sbb>>();
     private final ServiceRegistry serviceRegistry = new ServiceRegistry();
@@ -209,6 +217,18 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
     // true. Stored as java.lang.Object so the kernel stays free of any
     // jainslee-cluster compile-time dependency.
     private volatile Object clusterManager;
+
+    /**
+     * ADR 0007 D7 / P4-c — optional RA fan-in gateway. Created only when
+     * {@code fanInQueueCapacity > 0}; RAs then publish through it instead of
+     * hitting the disruptor ring directly.
+     */
+    private volatile RaFanInGateway fanInGateway;
+
+    /** @return the fan-in gateway, or {@code null} when disabled. */
+    public RaFanInGateway getFanInGateway() {
+        return this.fanInGateway;
+    }
     /** RA observability seam — set once by an embedder, checked on every RA path. */
     private volatile RaObserver raObserver;
 
@@ -232,6 +252,19 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
         this.sbbTypeRegistry = new SbbTypeRegistry(sbbLifecycleManager,
                 configuration.getSbbPoolMax());
         this.eventRouter.bindSbbEntityPool(this.sbbEntityPool);
+        // ADR 0007 D7 / P4-c — bind the fan-in gateway. It shipped with batch
+        // draining and a pre-allocated wrapper pool, but the container never
+        // created one, so every RA published into the 2048-slot ring directly.
+        // The gateway batches publishes (not deliveries) and applies real
+        // back-pressure to RAs when full — which is what lets ADR 0005's
+        // admission control have anything to measure. Off by default because it
+        // introduces one extra queue hop; opt in per configuration.
+        if (configuration.getFanInQueueCapacity() > 0) {
+            this.fanInGateway = new RaFanInGateway(
+                    configuration.getFanInQueueCapacity(),
+                    configuration.getFanInDrainBatchSize());
+            this.eventRouter.bindFanInGateway(this.fanInGateway);
+        }
         this.eventRouter.bindTransactionSupport(timerPort.getBridge(),
                 new DefaultErrorHandlingPolicy(timerPort.getBridge()));
         // Production P1.2 — wire the optional Narayana JTA transaction
@@ -559,9 +592,32 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                     "ClusterManager class not on classpath while validating "
                             + "DistributedSbbEntityPool constructor", cnfe);
         }
-        Object previous = this.distributedSbbEntityPool;
+        Object previous = this.distributedSbbEventPoolSwap;
+        Object previousPool = this.distributedSbbEntityPool;
         this.distributedSbbEntityPool = pool;
-        if (previous != null) {
+        // ADR 0007 D4 — REBIND THE ROUTER. Previously this method only recorded
+        // the reference, so EventRouter kept using the local pool and the
+        // Infinispan `sbb-entity-state` cache was written by nobody and read by
+        // nobody (the cross-node hydrate path in DistributedSbbEntityPool#acquire
+        // was unreachable). The barrier was that VirtualThreadSbbEntityPool was
+        // `final`; the SbbEntityPool interface removed it.
+        if (pool instanceof SbbEntityPoolContract) {
+            this.eventRouter.bindEntityPool((SbbEntityPoolContract) pool);
+            this.distributedSbbEventPoolSwap = pool;
+            LOG.info("EventRouter rebound to distributed SBB entity pool: {}",
+                    pool.getClass().getName());
+        } else if (pool != null) {
+            LOG.warn("Distributed pool {} does not implement SbbEntityPoolContract — "
+                    + "the router stays on the local pool and cross-node entity "
+                    + "hydrate is DISABLED", pool.getClass().getName());
+        } else if (previous instanceof SbbEntityPoolContract) {
+            // Clearing: fall back to the local pool rather than leaving the
+            // router pointed at a shut-down cluster pool.
+            this.eventRouter.bindEntityPool(this.sbbEntityPool);
+            this.distributedSbbEventPoolSwap = null;
+            LOG.info("EventRouter restored to the local SBB entity pool");
+        }
+        if (previousPool != null && previousPool != previous) {
             // Best effort - the embedder may have already shut it down.
             try {
                 previous.getClass().getMethod("shutdown").invoke(previous);
@@ -587,6 +643,58 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
 
     /** Optional reference to a bound DistributedSbbEntityPool, or {@code null}. */
     private volatile Object distributedSbbEntityPool;
+
+    /**
+     * ADR 0007 D4 — the pool instance {@link EventRouter} is currently bound to,
+     * which differs from {@link #distributedSbbEntityPool} only when the cluster
+     * pool does not implement {@link SbbEntityPool}. Used to decide whether
+     * rebinding needs restoring the local pool on clear.
+     */
+    private volatile Object distributedSbbEventPoolSwap;
+
+    /**
+     * ADR 0007 P2 — the container-level cross-node event ingress. Started when a
+     * cluster manager is bound; stopped on {@link #stop()}. Held as {@link Object}
+     * to preserve the {@code jainslee-core} ↔ {@code jainslee-cluster} boundary.
+     */
+    private volatile Object stickyEventIngress;
+
+    /**
+     * Publish an event to the node owning {@code activityId}.
+     *
+     * <p>
+     * Public so any RA — SS7, HTTP, gRPC, WebRTC, SIP, Diameter — can hand a
+     * response to the node holding the client's connection without knowing
+     * anything about the cluster fabric. Returns {@code false} when unclustered,
+     * when the target is this node, or when no ingress is running.
+     *
+     * @param targetNodeId node that owns the activity / client connection
+     * @param activityId   activity-context name — the correlation key
+     * @param originRaName the RA producing the event (informational)
+     * @param eventType    event class simple name (informational)
+     * @param payload      portable, allow-list-clean POJO
+     */
+    public boolean forwardEventToOwner(String targetNodeId, String activityId, String originRaName,
+                                       String eventType, java.io.Serializable payload) {
+        Object ingress = this.stickyEventIngress;
+        if (ingress == null) {
+            return false;
+        }
+        try {
+            return (Boolean) ingress.getClass()
+                    .getMethod("forward", String.class, String.class, String.class, String.class,
+                            java.io.Serializable.class)
+                    .invoke(ingress, targetNodeId, activityId, originRaName, eventType, payload);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            LOG.warn("Forward of activity={} to node={} failed: {}", activityId, targetNodeId, e.toString());
+            return false;
+        }
+    }
+
+    /** @return the bound container event ingress, or {@code null} when unclustered. */
+    public Object getStickyEventIngress() {
+        return this.stickyEventIngress;
+    }
 
     /**
      * @return the bound {@code DistributedSbbEntityPool} instance, or
@@ -706,6 +814,160 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
      * on the bound instance. Best-effort: a failure is logged and the
      * container proceeds in local mode.
      */
+    /**
+     * ADR 0007 P1 — honour {@code MicroSleeConfiguration#isClusterEnabled()}.
+     *
+     * <p>
+     * Previously the flag was accepted by the configuration builder and then
+     * ignored by {@link #start()}: the only way to populate
+     * {@code clusterManager} was an explicit {@link #bindCluster(Object)} call,
+     * which no production embedder made. Result: {@code clusterEnabled=true}
+     * silently produced a single-JVM SLEE with no warning, and every downstream
+     * HA seam (RA sticky routing, entity snapshots, activity leases) stayed
+     * inert.
+     *
+     * <p>
+     * Now {@code start()} constructs the {@code ClusterManager} reflectively
+     * when the flag is set, and <b>fails fast</b> when the flag is set but
+     * {@code jainslee-cluster} is absent — an HA feature that silently degrades
+     * to single-JVM must not start.
+     */
+    private void autoBindClusterManager() {
+        Class<?> cmClass;
+        try {
+            cmClass = Class.forName("com.microjainslee.cluster.ClusterManager");
+        } catch (ClassNotFoundException cnfe) {
+            throw new IllegalStateException(
+                    "MicroSleeConfiguration.isClusterEnabled() is true but the cluster module "
+                            + "(com.microjainslee:jainslee-cluster) is not on the classpath. "
+                            + "Add the dependency, or set clusterEnabled(false) to run single-JVM. "
+                            + "Refusing to start a container that silently lost its HA layer.", cnfe);
+        }
+        Object cm;
+        try {
+            cm = cmClass
+                    .getConstructor(this.configuration.getClass(), String.class)
+                    .newInstance(this.configuration, this.configuration.getNodeId());
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            throw new IllegalStateException(
+                    "Failed to construct com.microjainslee.cluster.ClusterManager from "
+                            + "MicroSleeConfiguration — the cluster layer cannot be started. "
+                            + "Check that the jainslee-cluster version on the classpath matches "
+                            + "jainslee-core.", e);
+        }
+        LOG.info("ADR 0007 P1 — clusterEnabled=true: auto-constructing ClusterManager (stack={}, initialHosts={}, nodeId={})",
+                this.configuration.getClusterStack(),
+                this.configuration.getClusterInitialHosts(),
+                this.configuration.getNodeId());
+        this.clusterManager = cm;
+        rebindHaSeamsOnRegisteredRas();
+    }
+
+    /**
+     * ADR 0007 D8 — best-effort node id for log/MDC labelling. Prefers the bound
+     * {@code ClusterManager}'s id, then the configured one, then the literal
+     * {@code "local"}. Never throws: labelling must not be able to fail a start.
+     */
+    private String resolveNodeIdLabel() {
+        Object cm = this.clusterManager;
+        if (cm != null) {
+            try {
+                Object id = cm.getClass().getMethod("getNodeId").invoke(cm);
+                if (id instanceof String s && !s.isBlank()) {
+                    return s;
+                }
+            } catch (ReflectiveOperationException | RuntimeException ignore) {
+                // fall through to configuration
+            }
+        }
+        String configured = this.configuration.getNodeId();
+        return (configured == null || configured.isBlank()) ? EventMdc.NODE_ID_LOCAL : configured;
+    }
+
+    /**
+ * ADR 0007 D2 — start the <b>container-level</b> cross-node event ingress.
+ *
+     * <p>
+     * Per-RA sticky event buses are not enough for the split topology this ADR
+     * exists for: when node-1 runs only {@code ra-http-server} and node-2 runs
+     * only {@code ra-jss7}, a MAP response forwarded by node-2 arrives on a cache
+     * that node-1 has no RA listening to — the response is stranded and the
+     * client waits forever. A node must be able to receive an event produced by
+     * a protocol RA it does not run, so the listener is owned by the container
+     * and addressed by activity id rather than by RA.
+     *
+     * <p>
+     * Reflective, like every other cluster seam, so {@code jainslee-core} keeps
+     * its zero-dependency boundary on {@code jainslee-cluster}.
+     *
+     * @param clusterManager the bound cluster manager
+     */
+    private void startContainerEventIngress(Object clusterManager) {
+        if (clusterManager == null) {
+            return;
+        }
+        Class<?> ingressClass;
+        try {
+            ingressClass = Class.forName("com.microjainslee.cluster.ContainerStickyEventIngress");
+        } catch (ClassNotFoundException cnfe) {
+            LOG.error("ADR 0007 P2: cluster enabled but ContainerStickyEventIngress is missing — "
+                    + "cross-node responses will be stranded. Is jainslee-cluster on the classpath?");
+            return;
+        }
+        try {
+            java.util.function.BiConsumer<String, java.io.Serializable> executor =
+                    (activityId, payload) -> deliverIngressEvent(activityId, payload);
+            Object ingress = ingressClass
+                    .getConstructor(Class.forName("com.microjainslee.cluster.ClusterManager"),
+                                    String.class, java.util.function.BiConsumer.class)
+                    .newInstance(clusterManager, resolveNodeIdLabel(), executor);
+            ingressClass.getMethod("start").invoke(ingress);
+            this.stickyEventIngress = ingress;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            // Never fail start(): a missing HA optimization must not take the
+            // container down. Say so loudly, because R1 will not work without it.
+            LOG.error("ADR 0007 P2: failed to start container sticky-event ingress — "
+                    + "cross-node responses (R1) WILL NOT be delivered to the owning node. Cause: "
+                    + e, e);
+        }
+    }
+
+    /**
+     * Re-inject an event forwarded from another node into the LOCAL activity
+     * context. This is the whole point of the ingress: {@code acnf.lookup(activityId)}
+     * now resolves on the node that holds the client's connection, so the SBB runs
+     * where the response can actually be written.
+     *
+     * @param activityId activity-context name (the correlation key)
+     * @param payload    portable POJO; the container cannot know its type, so the
+     *                   contract is that the receiving SBB dispatches on it
+     */
+    private void deliverIngressEvent(String activityId, java.io.Serializable payload) {
+        if (!(payload instanceof SleeEvent)) {
+            LOG.warn("Ingress payload for activity={} is {} — not a SleeEvent, dropped",
+                    activityId, payload == null ? "null" : payload.getClass().getName());
+            return;
+        }
+        SleeEvent event = (SleeEvent) payload;
+        try {
+            // Bind the activity locally before routing, exactly like a 3-port RA
+            // would on first sight of a dialog. Without this, acnf.lookup() inside
+            // the router would miss and the delivery would be dropped.
+            createActivityContext(activityId);
+            ActivityContextInterface aci =
+                    this.activityContextNamingFacility.lookup(activityId);
+            if (aci == null) {
+                LOG.warn("Ingress event for activity={} has no local activity context — dropped", activityId);
+                return;
+            }
+            routeEvent(event, aci);
+            LOG.debug("Delivered ingress event {} for activity={}",
+                    event.getClass().getSimpleName(), activityId);
+        } catch (RuntimeException e) {
+            LOG.error("Ingress event delivery failed for activity=" + activityId, e);
+        }
+    }
+
     private void invokeStartOnClusterManager(Object mgr) {
         if (mgr == null) {
             return;
@@ -828,7 +1090,26 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
         // after the kernel has finished its own start sequence. Bound
         // before autoDeployFromClasspathIndex() so SBBs that consult
         // ClusterManager at deploy time see a started manager.
+        //
+        // ADR 0007 P1 — this was previously a silent no-op: start() only
+        // dereferenced the `clusterManager` FIELD, which only an explicit
+        // bindCluster(...) call could populate, and isClusterEnabled() was
+        // never read. Flipping clusterEnabled=true did nothing at all — the
+        // worst possible failure mode for an HA feature.
+        if (this.clusterManager == null && this.configuration.isClusterEnabled()) {
+            autoBindClusterManager();
+        }
         invokeStartOnClusterManager(this.clusterManager);
+        // ADR 0007 D8 — stamp the real node id onto every log line. It used to be
+        // the literal "local" on all nodes, so two JVMs shipped the same lines and
+        // an active/active incident was unactionable.
+        EventMdc.setNodeId(resolveNodeIdLabel());
+        startContainerEventIngress(this.clusterManager);
+        // ADR 0007 D6 — timer records carry the real node id.
+        timerPort.getBridge().setNodeId(resolveNodeIdLabel());
+        if (this.clusterManager != null) {
+            this.entityIdPrefix = resolveNodeIdLabel() + ":";
+        }
         autoDeployFromClasspathIndex();
         // ADR 0004 P0-3 — fail fast on @InjectRa wiring mistakes before any
         // RA side effect. Escape hatch for exotic late-registration flows:
@@ -853,6 +1134,24 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
     public synchronized void stop() {
         if (state == State.STOPPED) {
             return;
+        }
+        // ADR 0007 P2 — stop the cross-node event ingress BEFORE the RA/activity
+        // teardown below, so a forwarded response arriving mid-shutdown is not
+        // routed into an activity context that is already being destroyed.
+        Object ingress = this.stickyEventIngress;
+        this.stickyEventIngress = null;
+        if (ingress != null) {
+            try {
+                ingress.getClass().getMethod("stop").invoke(ingress);
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                LOG.warn("Sticky-event ingress stop failed: {}", e.toString());
+            }
+        }
+        RaFanInGateway gateway = this.fanInGateway;
+        this.fanInGateway = null;
+        if (gateway != null) {
+            this.eventRouter.bindFanInGateway(null);
+            gateway.stop();
         }
         // Production P3 — stop supervision first so no scheduled restart
         // can race the pool shutdown below, and drop the rehydration seam
@@ -2093,7 +2392,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
         @Override
         public String allocateNew(Class<?> sbbClass) {
             Class<? extends Sbb> typed = sbbClass.asSubclass(Sbb.class);
-            String entityId = sbbClass.getSimpleName() + "#" + entityIdAllocator.allocate();
+            String entityId = entityIdPrefix + sbbClass.getSimpleName() + "#" + entityIdAllocator.allocate();
             acquireEntity(entityId, typed);
             return entityId;
         }

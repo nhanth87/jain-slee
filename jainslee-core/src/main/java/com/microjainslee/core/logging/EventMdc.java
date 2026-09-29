@@ -60,6 +60,71 @@ public final class EventMdc {
     /** Placeholder cluster node identifier until P2 ClusterManager lands. */
     public static final String NODE_ID_LOCAL = "local";
 
+    /**
+     * ADR 0007 D8 — the real cluster node id, stamped onto every log line.
+     * <p>
+     * Previously {@link #KEY_NODE_ID} was always the literal {@code "local"}, so
+     * two nodes behind one log ship produced indistinguishable lines — a direct
+     * blocker for diagnosing an active/active incident. Set once from the
+     * container at start; default keeps the {@code "local"} placeholder for
+     * single-JVM.
+     */
+    private static volatile String nodeId = NODE_ID_LOCAL;
+
+    /** Records the real cluster node id for every MDC-stamped line. */
+    public static void setNodeId(String id) {
+        nodeId = (id == null || id.isBlank()) ? NODE_ID_LOCAL : id;
+    }
+
+    /** @return the node id stamped into MDC lines. */
+    public static String nodeId() {
+        return nodeId;
+    }
+
+    /**
+     * ADR 0007 D7 / P4-d — MDC stamping is <b>off by default</b>.
+     *
+     * <p>
+     * {@code start} + {@code setSbbId} + {@code finish} + {@code clear} cost
+     * <b>15 {@code ThreadContext} put/remove operations per event delivery</b>,
+     * each writing into the thread-local map, and {@code finish} additionally
+     * allocates a {@code String} for {@code durationNs}. That was the single
+     * most expensive always-on line in the router hot path, paid even when the
+     * logger is at INFO and no pattern references these fields.
+     *
+     * <p>
+     * Enable with {@code -Djainslee.mdc.enabled=true}, or let the container
+     * enable it automatically when DEBUG is enabled for
+     * {@code com.microjainslee.core}. Turned back on, the behaviour is
+     * byte-identical to before.
+     */
+    public static final String PROP_ENABLED = "jainslee.mdc.enabled";
+
+    private static final boolean ENABLED = resolveEnabled();
+
+    private static boolean resolveEnabled() {
+        String explicit = System.getProperty(PROP_ENABLED);
+        if (explicit != null && !explicit.isBlank()) {
+            return Boolean.parseBoolean(explicit);
+        }
+        // Auto-enable when the router's own logger would actually emit these
+        // fields, so debugging needs no extra configuration.
+        try {
+            org.apache.logging.log4j.Logger l =
+                    org.apache.logging.log4j.LogManager.getLogger("com.microjainslee.core");
+            org.apache.logging.log4j.Level level = l.getLevel();
+            return level != null && level.isMoreSpecificThan(org.apache.logging.log4j.Level.INFO)
+                    && level.intLevel() <= org.apache.logging.log4j.Level.TRACE.intLevel();
+        } catch (Throwable ignore) {
+            return false;
+        }
+    }
+
+    /** @return whether MDC stamping happens at all. */
+    public static boolean isEnabled() {
+        return ENABLED;
+    }
+
     private EventMdc() {
         // no instances — utility class
     }
@@ -74,13 +139,16 @@ public final class EventMdc {
      * @param eventType event class simple name (never {@code null}).
      */
     public static void start(String sbbId, String aciName, String eventType) {
+        if (!ENABLED) {
+            return;
+        }
         ThreadContext.put(KEY_SBB_ID, sbbId == null ? "?" : sbbId);
         ThreadContext.put(KEY_ACI_NAME, aciName == null ? "?" : aciName);
         ThreadContext.put(KEY_EVENT_TYPE, eventType == null ? "?" : eventType);
         // durationNs is intentionally absent here — finish() sets it.
         // txStatus is set by finish() so we don't pre-commit the field.
         ThreadContext.put(KEY_TX_STATUS, "PENDING");
-        ThreadContext.put(KEY_NODE_ID, NODE_ID_LOCAL);
+        ThreadContext.put(KEY_NODE_ID, nodeId);
     }
 
     /**
@@ -91,6 +159,9 @@ public final class EventMdc {
      * that emitted it.
      */
     public static void setSbbId(String sbbId) {
+        if (!ENABLED) {
+            return;
+        }
         ThreadContext.put(KEY_SBB_ID, sbbId == null ? "?" : sbbId);
     }
 
@@ -108,6 +179,9 @@ public final class EventMdc {
      *                   other descriptive label — no enum is enforced).
      */
     public static void finish(long startNanos, String txStatus) {
+        if (!ENABLED) {
+            return;
+        }
         long elapsedNs = System.nanoTime() - startNanos;
         ThreadContext.put(KEY_DURATION_NS, Long.toString(elapsedNs));
         ThreadContext.put(KEY_TX_STATUS, txStatus == null ? "UNKNOWN" : txStatus);
@@ -120,6 +194,9 @@ public final class EventMdc {
      * the same pooled/virtual thread.
      */
     public static void clear() {
+        if (!ENABLED) {
+            return;
+        }
         ThreadContext.remove(KEY_SBB_ID);
         ThreadContext.remove(KEY_ACI_NAME);
         ThreadContext.remove(KEY_EVENT_TYPE);

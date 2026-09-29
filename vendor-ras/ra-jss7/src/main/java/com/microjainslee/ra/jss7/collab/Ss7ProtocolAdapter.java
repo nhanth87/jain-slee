@@ -41,4 +41,12 @@ public interface Ss7ProtocolAdapter {
     default boolean sendOutbound(OutboundCommand command) {
         return false;
     }
+
+    /**
+     * ADR 0007 M — the jSS7 local dialog id (TCAP OTID) behind an app dialog id
+     * this adapter created, or {@code null} when it does not know it.
+     */
+    default Long localDialogIdOf(String dialogId) {
+        return null;
+    }
 }

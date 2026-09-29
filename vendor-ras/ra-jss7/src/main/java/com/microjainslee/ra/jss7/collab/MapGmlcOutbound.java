@@ -79,6 +79,8 @@ final class MapGmlcOutbound {
     private final MAPProvider provider;
     private final ParameterFactory sccpFactory;
     private final Map<Long, String> localToCorrelation = new ConcurrentHashMap<>();
+    /** ADR 0007 M — reverse map so the RA can find the OTID behind an app dialog id. */
+    private final Map<String, Long> correlationToLocal = new ConcurrentHashMap<>();
 
     MapGmlcOutbound(MAPProvider provider, Ss7Stack stack) {
         this(provider, stack.sccpProvider() == null
@@ -138,12 +140,21 @@ final class MapGmlcOutbound {
 
     void forget(Long localDialogId) {
         if (localDialogId != null) {
-            localToCorrelation.remove(localDialogId);
+            String corr = localToCorrelation.remove(localDialogId);
+            if (corr != null) {
+                correlationToLocal.remove(corr, localDialogId);
+            }
         }
     }
 
     void clearAll() {
         localToCorrelation.clear();
+        correlationToLocal.clear();
+    }
+
+    /** @return the jSS7 local dialog id (OTID) behind an app correlation id, or {@code null}. */
+    Long localIdOf(String correlation) {
+        return correlation == null ? null : correlationToLocal.get(correlation.trim());
     }
 
     static MAPApplicationContext applicationContextFor(Ss7Command command) {
@@ -669,6 +680,7 @@ final class MapGmlcOutbound {
             throw new IllegalArgumentException("MAP correlation dialogId required");
         }
         localToCorrelation.put(localId, correlation.trim());
+        correlationToLocal.put(correlation.trim(), localId);
     }
 
     private static MAPApplicationContext context(MAPApplicationContextName name) {

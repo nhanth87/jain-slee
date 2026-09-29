@@ -130,6 +130,18 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     }
 
     @Override
+    public Long localDialogIdOf(String dialogId) {
+        Long id = outbound != null ? outbound.localIdOf(dialogId) : null;
+        if (id == null && gmlcOutbound != null) {
+            id = gmlcOutbound.localIdOf(dialogId);
+        }
+        if (id == null && ussdOutbound != null) {
+            id = ussdOutbound.resolveLocalId(dialogId);
+        }
+        return id;
+    }
+
+    @Override
     public boolean sendOutbound(com.microjainslee.api.OutboundCommand command) {
         MapSmsOutbound sms = this.outbound;
         if (sms != null && sms.send(command)) {

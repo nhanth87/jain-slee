@@ -46,7 +46,69 @@ public class EventRouter {
     private final Disruptor<EventWrapper> disruptor;
     private final ExecutorService executor;
     private final RingBuffer<EventWrapper> ringBuffer;
-    private volatile VirtualThreadSbbEntityPool sbbEntityPool;
+    /** Configured ring size, kept so lag can be reported without reflection. */
+    private final int ringBufferCapacity;
+
+    // ── ADR 0007 D8 — the two metrics the operator most needed and had none of ──
+
+    private final java.util.concurrent.atomic.LongAdder latchAwaitNanosTotal =
+            new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder latchAwaitCount =
+            new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder deliveryTimeouts =
+            new java.util.concurrent.atomic.LongAdder();
+
+    /**
+     * ADR 0007 D8 — <b>ring lag in slots</b>: {@code capacity - remainingCapacity()}.
+     *
+     * <p>
+     * This is the missing overload signal. Before it existed, a container
+     * wedged behind head-of-line blocking produced no counter, no gauge and no
+     * log — the Disruptor's {@code remainingCapacity()} was never called
+     * anywhere in the codebase. A sustained non-zero value is the earliest
+     * warning that publishers are outrunning the single worker.
+     *
+     * @return slots currently occupied, {@code 0} when idle
+     */
+    public int getRingLagSlots() {
+        return (int) (ringBufferCapacity - ringBuffer.remainingCapacity());
+    }
+
+    /** Configured ring capacity in slots. */
+    public int getRingCapacity() {
+        return ringBufferCapacity;
+    }
+
+    /**
+     * ADR 0007 D8 — time the SYNC delivery latch spent blocked on the single
+     * router worker.
+     *
+     * <p>
+     * In {@link EventDeliveryMode#SYNC} the router's only worker parks on
+     * {@code done.await(30, SECONDS)} for the whole SBB execution, so a MAP
+     * round trip of 300–1500 ms stalls the entire container. That stall was
+     * completely invisible: a 29-second MAP exchange was indistinguishable
+     * from a fast one. Average seconds = {@code getLatchAwaitSecondsTotal()} /
+     * {@code getLatchAwaitCount()}.
+     */
+    public double getLatchAwaitSecondsTotal() {
+        return latchAwaitNanosTotal.sum() / 1_000_000_000.0d;
+    }
+
+    /** Number of SYNC deliveries that waited on the latch. */
+    public long getLatchAwaitCount() {
+        return latchAwaitCount.sum();
+    }
+
+    /** Deliveries that hit the 30s latch timeout and were escalated to the supervisor. */
+    public long getDeliveryTimeoutCount() {
+        return deliveryTimeouts.sum();
+    }
+    /**
+     * ADR 0007 D4 — typed to the {@link SbbEntityPoolContract} seam, not the concrete
+     * local pool, so a cluster-aware pool can drive the same delivery path.
+     */
+    private volatile SbbEntityPoolContract sbbEntityPool;
     private volatile SleeTimerSchedulerBridge timerBridge;
     private volatile ErrorHandlingPolicy errorHandlingPolicy;
     private final EventDeliveryMode deliveryMode;
@@ -217,6 +279,7 @@ public class EventRouter {
             }
         });
         this.ringBuffer = disruptor.start();
+        this.ringBufferCapacity = bufferSize;
     }
 
     /**
@@ -225,6 +288,24 @@ public class EventRouter {
      */
     public void bindSbbEntityPool(VirtualThreadSbbEntityPool pool) {
         this.sbbEntityPool = pool;
+    }
+
+    /**
+     * ADR 0007 D4 — bind any {@link SbbEntityPool}, including a cluster-aware
+     * one. {@link #bindSbbEntityPool(VirtualThreadSbbEntityPool)} is kept for
+     * source compatibility with existing embedders.
+     *
+     * @param pool the pool to route deliveries through
+     */
+    public void bindEntityPool(SbbEntityPoolContract pool) {
+        this.sbbEntityPool = pool;
+    }
+
+    /**
+     * @return the bound pool, or {@code null} before the container wires one
+     */
+    public SbbEntityPoolContract getEntityPool() {
+        return this.sbbEntityPool;
     }
 
     /**
@@ -461,7 +542,7 @@ public class EventRouter {
         if (observer == null) {
             return;
         }
-        String sbbType = sbb != null ? sbb.getClass().getSimpleName() : "?";
+        String sbbType = sbb != null ? ClassNames.simpleName(sbb.getClass()) : "?";
         String entityId = localObject != null && localObject.getSbbID() != null
                 ? localObject.getSbbID().getId() : "?";
         try {
@@ -535,7 +616,9 @@ public class EventRouter {
         // observational metadata for the logging layer.
         long startNanos = System.nanoTime();
         String aciName = activityContext.getActivityContextName();
-        String eventType = event.getClass().getSimpleName();
+        // ADR 0007 D7 / P4-e — cached simple name; getSimpleName() allocated a
+        // fresh String per call on the hottest path in the SLEE.
+        String eventType = ClassNames.simpleName(event.getClass());
         EventMdc.start("?", aciName, eventType);
         String txStatus = "ROLLED_BACK";
         try {
@@ -656,7 +739,7 @@ public class EventRouter {
                 return true;
             }
         }
-        VirtualThreadSbbEntityPool pool = this.sbbEntityPool;
+        SbbEntityPoolContract pool = this.sbbEntityPool;
         VirtualThreadSbbEntityPool.SbbEntity entity =
                 findEntity(pool, localObject.getSbbID().getId(), localObject);
         if (entity == null) {
@@ -749,8 +832,13 @@ public class EventRouter {
                     event.getClass().getSimpleName());
             return false;
         }
+        // ADR 0007 D8 — measure the latch. This park is the single biggest
+        // throughput and latency cliff in the router, and it was unmeasured:
+        // a 29s MAP round trip looked identical to a fast one.
+        long latchStartNanos = System.nanoTime();
         try {
             if (!done.await(30, TimeUnit.SECONDS)) {
+                deliveryTimeouts.increment();
                 // Production P3 — the per-SBB virtual thread is wedged in
                 // user code. Report to the supervisor BEFORE throwing: it
                 // will force-restart the entity (fresh instance, abandoned
@@ -766,6 +854,10 @@ public class EventRouter {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(
                     "Interrupted delivering event to SBB " + localObject.getSbbID(), e);
+        } finally {
+            long waited = System.nanoTime() - latchStartNanos;
+            latchAwaitNanosTotal.add(waited);
+            latchAwaitCount.increment();
         }
         if (failure.get() != null) {
             handleSbbException(failure.get(), localObject, event, aci, transaction);
@@ -861,7 +953,7 @@ public class EventRouter {
     }
 
     private static VirtualThreadSbbEntityPool.SbbEntity findEntity(
-            VirtualThreadSbbEntityPool pool, String sbbId, SbbLocalObject localObject) {
+            SbbEntityPoolContract pool, String sbbId, SbbLocalObject localObject) {
         return pool.findEntity(sbbId);
     }
 

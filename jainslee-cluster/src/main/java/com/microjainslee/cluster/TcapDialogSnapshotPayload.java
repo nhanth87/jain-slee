@@ -27,7 +27,7 @@ import java.util.Objects;
  */
 public final class TcapDialogSnapshotPayload implements Serializable {
 
-    private static final long serialVersionUID = 2L;
+    private static final long serialVersionUID = 3L;
 
     private final String dialogKey;
     private final long localOtid;
@@ -45,6 +45,10 @@ public final class TcapDialogSnapshotPayload implements Serializable {
     private final boolean[] invokeIdTaken;
     private final long updatedAtEpochMs;
     private final String preferredAspName;
+    /** ADR 0007 Q — wall-clock idle deadline (jSS7 M2); 0 = unknown (legacy payload). */
+    private final long idleDeadlineEpochMs;
+    /** ADR 0007 Q — outstanding operations (jSS7 M1); {@code null} = not captured (legacy). */
+    private final PendingInvokeState[] pendingInvokes;
 
     public TcapDialogSnapshotPayload(
             String dialogKey,
@@ -84,6 +88,35 @@ public final class TcapDialogSnapshotPayload implements Serializable {
             boolean[] invokeIdTaken,
             long updatedAtEpochMs,
             String preferredAspName) {
+        this(dialogKey, localOtid, remoteOtid, localAddress, remoteAddress, trState, applicationContextOid,
+                idleDeadlineNanos, networkId, localSsn, remotePc, seqControl, dpSentInBegin, invokeIdTaken,
+                updatedAtEpochMs, preferredAspName, 0L, null);
+    }
+
+    /**
+     * ADR 0007 Q — full-fidelity snapshot: wall-clock idle deadline and the
+     * outstanding invokes, so a takeover resumes a dialog that has an operation
+     * in flight instead of refusing it.
+     */
+    public TcapDialogSnapshotPayload(
+            String dialogKey,
+            long localOtid,
+            byte[] remoteOtid,
+            PortableSccpAddress localAddress,
+            PortableSccpAddress remoteAddress,
+            String trState,
+            long[] applicationContextOid,
+            long idleDeadlineNanos,
+            int networkId,
+            int localSsn,
+            int remotePc,
+            int seqControl,
+            boolean dpSentInBegin,
+            boolean[] invokeIdTaken,
+            long updatedAtEpochMs,
+            String preferredAspName,
+            long idleDeadlineEpochMs,
+            PendingInvokeState[] pendingInvokes) {
         this.dialogKey = Objects.requireNonNull(dialogKey, "dialogKey");
         this.localOtid = localOtid;
         this.remoteOtid = remoteOtid == null ? null : remoteOtid.clone();
@@ -102,6 +135,44 @@ public final class TcapDialogSnapshotPayload implements Serializable {
                 : Arrays.copyOf(invokeIdTaken, invokeIdTaken.length);
         this.updatedAtEpochMs = updatedAtEpochMs;
         this.preferredAspName = preferredAspName;
+        this.idleDeadlineEpochMs = idleDeadlineEpochMs;
+        this.pendingInvokes = pendingInvokes == null ? null : pendingInvokes.clone();
+    }
+
+    /** Wall-clock idle deadline; 0 when the payload predates ADR 0007 Q. */
+    public long idleDeadlineEpochMs() {
+        return idleDeadlineEpochMs;
+    }
+
+    /** Outstanding operations, or {@code null} when the payload did not capture them. */
+    public PendingInvokeState[] pendingInvokes() {
+        return pendingInvokes == null ? null : pendingInvokes.clone();
+    }
+
+    /**
+     * {@code true} when invoke ids are taken but the operations themselves were
+     * not captured. Only then must a takeover refuse to resume: with the
+     * operations restored, a ReturnResult matches instead of being Rejected.
+     */
+    public boolean hasUnrestorablePendingInvokes() {
+        if (!hasPendingInvokes()) {
+            return false;
+        }
+        int taken = 0;
+        for (boolean t : invokeIdTaken) {
+            if (t) {
+                taken++;
+            }
+        }
+        return pendingInvokes == null || pendingInvokes.length < taken;
+    }
+
+    /**
+     * Allow-list-clean mirror of jSS7 {@code TcapDialogSnapshot.PendingInvoke}.
+     */
+    public record PendingInvokeState(int invokeId, int invokeClass, Long localOperationCode, long invokeTimeoutMs,
+            long remainingMillis) implements Serializable {
+        private static final long serialVersionUID = 1L;
     }
 
     public String dialogKey() {
@@ -187,16 +258,37 @@ public final class TcapDialogSnapshotPayload implements Serializable {
     }
 
     /**
-     * Minimal PC/SSN (+ optional GT digits) address for rehydrate.
+     * SCCP address for rehydrate and cross-node PDU forwarding.
      * Routing indicator name matches jSS7 {@code RoutingIndicator.name()}.
+     *
+     * <p>
+     * ADR 0007 P — the GT is kept in full (indicator, TT, NP, encoding scheme,
+     * NAI). The earlier digits-only form rebuilt a different GT after takeover,
+     * so replies from the survivor were routed on the wrong translation.
+     *
+     * @param gtIndicator Q.713 GTI 1..4, 0 = no GT, -1 = legacy digits-only
+     * @param numberingPlan / encodingSchemeCode / natureOfAddress: -1 when the GTI has none
      */
     public record PortableSccpAddress(
             String routingIndicator,
             int pointCode,
             int subsystemNumber,
-            String globalTitleDigits
+            String globalTitleDigits,
+            int gtIndicator,
+            int translationType,
+            int numberingPlan,
+            int encodingSchemeCode,
+            int natureOfAddress,
+            boolean translated
     ) implements Serializable {
-        private static final long serialVersionUID = 1L;
+        private static final long serialVersionUID = 2L;
+
+        /** Legacy digits-only address. */
+        public PortableSccpAddress(String routingIndicator, int pointCode, int subsystemNumber,
+                String globalTitleDigits) {
+            this(routingIndicator, pointCode, subsystemNumber, globalTitleDigits,
+                    globalTitleDigits == null ? 0 : -1, 0, -1, -1, -1, false);
+        }
 
         public PortableSccpAddress {
             routingIndicator = routingIndicator == null
@@ -232,15 +324,18 @@ public final class TcapDialogSnapshotPayload implements Serializable {
                 && Objects.equals(trState, that.trState)
                 && Arrays.equals(applicationContextOid, that.applicationContextOid)
                 && Arrays.equals(invokeIdTaken, that.invokeIdTaken)
-                && Objects.equals(preferredAspName, that.preferredAspName);
+                && Objects.equals(preferredAspName, that.preferredAspName)
+                && idleDeadlineEpochMs == that.idleDeadlineEpochMs
+                && Arrays.equals(pendingInvokes, that.pendingInvokes);
     }
 
     @Override
     public int hashCode() {
         int result = Objects.hash(dialogKey, localOtid, localAddress, remoteAddress, trState,
                 idleDeadlineNanos, networkId, localSsn, remotePc, seqControl, dpSentInBegin,
-                updatedAtEpochMs, preferredAspName);
+                updatedAtEpochMs, preferredAspName, idleDeadlineEpochMs);
         result = 31 * result + Arrays.hashCode(remoteOtid);
+        result = 31 * result + Arrays.hashCode(pendingInvokes);
         result = 31 * result + Arrays.hashCode(applicationContextOid);
         result = 31 * result + Arrays.hashCode(invokeIdTaken);
         return result;

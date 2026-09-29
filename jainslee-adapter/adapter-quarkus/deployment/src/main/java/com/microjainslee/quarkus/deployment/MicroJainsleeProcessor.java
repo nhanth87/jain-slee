@@ -125,7 +125,15 @@ public class MicroJainsleeProcessor {
                         buildConfig.sbbTypePoolMinIdle(),
                         buildConfig.eventDelivery(),
                         buildConfig.offHeapEnabled(),
-                        buildConfig.offHeapStorageDir().orElse(""));
+                        buildConfig.offHeapStorageDir().orElse(""),
+                        // ADR 0007 P1 — cluster wiring, now reachable from
+                        // application.properties.
+                        buildConfig.clusterEnabled(),
+                        buildConfig.clusterNodeId(),
+                        buildConfig.clusterStack(),
+                        buildConfig.clusterInitialHosts(),
+                        buildConfig.fanInQueueCapacity(),
+                        buildConfig.fanInDrainBatchSize());
         beans.produce(SyntheticBeanBuildItem.configure(MicroSleeContainer.class)
                 .scope(ApplicationScoped.class)
                 .unremovable()

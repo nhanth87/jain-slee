@@ -24,6 +24,11 @@ public final class MicroSleeConfiguration {
     // Production P2.1 — cluster layer defaults. Default mode is local
     // (R&D / single-JVM) so the kernel does not pay the JGroups cost unless
     // the embedder explicitly opts in.
+    // ADR 0007 D7 / P4-c — RA fan-in gateway. Disabled by default so today's
+    // behaviour (RAs publish straight into the disruptor ring) is unchanged.
+    private static final int DEFAULT_FAN_IN_QUEUE_CAPACITY = 0;
+    private static final int DEFAULT_FAN_IN_DRAIN_BATCH_SIZE = 64;
+
     private static final boolean DEFAULT_CLUSTER_ENABLED = false;
     private static final String DEFAULT_CLUSTER_STACK = "tcp";
     private static final String DEFAULT_CLUSTER_INITIAL_HOSTS = "localhost[7800]";
@@ -39,6 +44,8 @@ public final class MicroSleeConfiguration {
     private static final int DEFAULT_SBB_RESTART_REPLAY_CAPACITY = 256;
 
     private final int eventRouterBufferSize;
+    private final int fanInQueueCapacity;
+    private final int fanInDrainBatchSize;
     private final boolean preferVirtualThreads;
     private final int sbbPoolMin;
     private final int sbbPoolMax;
@@ -81,6 +88,8 @@ public final class MicroSleeConfiguration {
 
     private MicroSleeConfiguration(Builder builder) {
         this.eventRouterBufferSize = builder.eventRouterBufferSize;
+        this.fanInQueueCapacity = builder.fanInQueueCapacity;
+        this.fanInDrainBatchSize = builder.fanInDrainBatchSize;
         this.preferVirtualThreads = builder.preferVirtualThreads;
         this.sbbPoolMin = builder.sbbPoolMin;
         this.sbbPoolMax = builder.sbbPoolMax;
@@ -114,6 +123,26 @@ public final class MicroSleeConfiguration {
 
     public int getEventRouterBufferSize() {
         return eventRouterBufferSize;
+    }
+
+    /**
+     * ADR 0007 D7 / P4-c — capacity of the RA fan-in gateway queue.
+     * <p>
+     * {@code 0} (the default) disables the gateway entirely and preserves
+     * today's behaviour exactly: RAs publish straight into the disruptor ring.
+     * A positive value makes the container create a {@code RaFanInGateway},
+     * which batches publishes and applies back-pressure to RAs when full.
+     */
+    public int getFanInQueueCapacity() {
+        return fanInQueueCapacity;
+    }
+
+    /**
+     * ADR 0007 D7 / P4-c — events drained per fan-in iteration. Higher batches
+     * amortise the ring-buffer CAS across many RA publishes.
+     */
+    public int getFanInDrainBatchSize() {
+        return fanInDrainBatchSize;
     }
 
     public boolean isPreferVirtualThreads() {
@@ -278,6 +307,8 @@ public final class MicroSleeConfiguration {
 
     public static final class Builder {
         private int eventRouterBufferSize = DEFAULT_RING_BUFFER_SIZE;
+        private int fanInQueueCapacity = DEFAULT_FAN_IN_QUEUE_CAPACITY;
+        private int fanInDrainBatchSize = DEFAULT_FAN_IN_DRAIN_BATCH_SIZE;
         private boolean preferVirtualThreads = true;
         private int sbbPoolMin = DEFAULT_SBB_POOL_MIN;
         private int sbbPoolMax = DEFAULT_SBB_POOL_MAX;
@@ -313,6 +344,30 @@ public final class MicroSleeConfiguration {
                 throw new IllegalArgumentException("eventRouterBufferSize must be a positive power of two");
             }
             this.eventRouterBufferSize = eventRouterBufferSize;
+            return this;
+        }
+
+        /**
+         * ADR 0007 D7 / P4-c — enable the RA fan-in gateway. RAs publish into a
+         * bounded queue drained in batches; when the queue is full the RA is told
+         * to back off, which is the signal ADR 0005's admission control needs.
+         *
+         * @param capacity {@code 0} disables the gateway (default, today's behaviour)
+         */
+        public Builder fanInQueueCapacity(int capacity) {
+            if (capacity < 0) {
+                throw new IllegalArgumentException("fanInQueueCapacity must be >= 0");
+            }
+            this.fanInQueueCapacity = capacity;
+            return this;
+        }
+
+        /** Events drained per fan-in iteration (only used when the gateway is on). */
+        public Builder fanInDrainBatchSize(int batchSize) {
+            if (batchSize <= 0) {
+                throw new IllegalArgumentException("fanInDrainBatchSize must be > 0");
+            }
+            this.fanInDrainBatchSize = batchSize;
             return this;
         }
 

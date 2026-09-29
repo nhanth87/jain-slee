@@ -62,12 +62,88 @@ public final class MicrometerTelemetryPort implements TelemetryPort {
     }
 
     /**
+     * @return the cluster node id for metric labels; {@code "local"} when the
+     * container is not clustered or the id is unset.
+     */
+    private String nodeIdLabel() {
+        try {
+            String id = com.microjainslee.core.logging.EventMdc.nodeId();
+            return (id == null || id.isBlank()) ? "local" : id;
+        } catch (Throwable ignore) {
+            return "local";
+        }
+    }
+
+    /**
+     * ADR 0007 D8 — the metrics that make the three active/active requirements
+     * observable instead of theoretical.
+     *
+     * <p>
+     * Each one maps directly to a failure mode that previously had no signal at
+     * all. All are passive gauges (zero cost when not scraped).
+     */
+    private void registerActiveActiveMetrics(MeterRegistry registry, Tags tags) {
+        // ── Overload ─────────────────────────────────────────────────────────
+        // The missing back-pressure signal. remainingCapacity() was never called
+        // anywhere in the codebase; sustained non-zero = publishers outrunning
+        // the single disruptor worker.
+        io.micrometer.core.instrument.Gauge.builder("jainslee_event_ring_lag_slots",
+                container, c -> c.getEventRouter() == null ? 0 : c.getEventRouter().getRingLagSlots())
+                .description("Occupied slots in the disruptor ring; sustained non-zero means back-pressure")
+                .tags(tags)
+                .register(registry);
+
+        io.micrometer.core.instrument.Gauge.builder("jainslee_event_ring_capacity_slots",
+                container, c -> c.getEventRouter() == null ? 0 : c.getEventRouter().getRingCapacity())
+                .description("Configured disruptor ring capacity in slots")
+                .tags(tags)
+                .register(registry);
+
+        // ── Head-of-line blocking ─────────────────────────────────────────────
+        // In SYNC mode the router's ONLY worker parks on done.await(30s) for the
+        // whole SBB run. A MAP round trip therefore stalls the entire container,
+        // and was indistinguishable from a fast one.
+        io.micrometer.core.instrument.Gauge.builder("jainslee_delivery_latch_await_seconds_total",
+                container, c -> c.getEventRouter() == null ? 0d : c.getEventRouter().getLatchAwaitSecondsTotal())
+                .description("Cumulative seconds the router worker spent blocked on the delivery latch")
+                .tags(tags)
+                .register(registry);
+
+        io.micrometer.core.instrument.Gauge.builder("jainslee_delivery_latch_await_count",
+                container, c -> c.getEventRouter() == null ? 0L : c.getEventRouter().getLatchAwaitCount())
+                .description("SYNC deliveries that waited on the latch; divide the seconds gauge by this for the mean")
+                .tags(tags)
+                .register(registry);
+
+        io.micrometer.core.instrument.Gauge.builder("jainslee_delivery_timeout_total",
+                container, c -> c.getEventRouter() == null ? 0L : c.getEventRouter().getDeliveryTimeoutCount())
+                .description("Deliveries that hit the 30s latch timeout and were escalated to the SBB supervisor")
+                .tags(tags)
+                .register(registry);
+
+        // ── Correlation plumbing ──────────────────────────────────────────────
+        io.micrometer.core.instrument.Gauge.builder("jainslee_sbb_hydrate_total",
+                container, c -> c.getEventRouter() == null ? 0L : c.getEventRouter().getMissingEntityCount())
+                .description("Events dropped because the SBB entity was already recycled (lower is better)")
+                .tags(tags)
+                .register(registry);
+    }
+
+    /**
      * Register core telemetry metrics as Micrometer gauges so they appear in
      * Prometheus scrape output alongside custom app-defined metrics.
      * All gauges are passive (zero-CPU when not scraped).
      */
     private void registerCoreMetrics(MeterRegistry registry) {
-        Tags empty = Tags.empty();
+        // ADR 0007 D8 — stamp the real cluster node id on every gauge.
+        // Previously ALL 23 gauges used Tags.empty(), so two micro-jainslee
+        // nodes behind one Prometheus produced two identical, indistinguishable
+        // series. Diagnosing an active/active incident was impossible: you
+        // could not tell which node was shedding events, lagging, or timing out.
+        Tags empty = Tags.of("node", nodeIdLabel());
+
+        registerActiveActiveMetrics(registry, empty);
+
 
         // ── SBB pool metrics ──
         io.micrometer.core.instrument.Gauge.builder("jainslee_sbb_entities_total",

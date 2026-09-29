@@ -34,6 +34,59 @@ import java.util.Optional;
 public interface MicroJainsleeBuildConfig {
 
     /**
+     * ADR 0007 P1 — enable the Infinispan + JGroups cluster layer.
+     *
+     * <p>
+     * Previously the runtime accepted {@code clusterEnabled} on
+     * {@code MicroSleeConfiguration} but nothing read it at
+     * {@code start()}, and this interface had no key for it at all — so
+     * turning clustering on from {@code application.properties} was impossible.
+     * Now the flag is honoured and the container constructs the
+     * {@code ClusterManager} itself, failing fast when {@code jainslee-cluster}
+     * is absent rather than silently degrading to single-JVM.
+     */
+    @WithName("cluster-enabled")
+    @WithDefault("false")
+    boolean clusterEnabled();
+
+    /**
+     * ADR 0007 P1 — stable node id for this JVM. Should be the hostname, K8s
+     * pod name or instance id so log lines, metric labels and JGroups views stay
+     * traceable across restarts. Also the identity used by the dialog-lease
+     * fencing ({@code ownerBootEpochMs} distinguishes incarnations of the same
+     * id).
+     */
+    @WithName("cluster-node-id")
+    @WithDefault("${hostname:local}")
+    String clusterNodeId();
+
+    /** ADR 0007 P1 — JGroups transport flavour: {@code tcp} or {@code udp}. */
+    @WithName("cluster-stack")
+    @WithDefault("tcp")
+    String clusterStack();
+
+    /**
+     * ADR 0007 P1 — comma-separated JGroups TCPPING initial hosts, e.g.
+     * {@code host1[7800],host2[7800]}.
+     */
+    @WithName("cluster-initial-hosts")
+    @WithDefault("localhost[7800]")
+    String clusterInitialHosts();
+
+    /**
+     * ADR 0007 D7 — enable the RA fan-in gateway
+     * ({@code 0} = disabled, preserving today's direct RingBuffer behaviour).
+     */
+    @WithName("fan-in-queue-capacity")
+    @WithDefault("0")
+    int fanInQueueCapacity();
+
+    /** ADR 0007 D7 — events drained per fan-in iteration. */
+    @WithName("fan-in-drain-batch-size")
+    @WithDefault("64")
+    int fanInDrainBatchSize();
+
+    /**
      * Power-of-two ring-buffer size for the {@code EventRouter}'s LMAX Disruptor.
      * Larger values improve throughput at the cost of memory and worst-case latency.
      */

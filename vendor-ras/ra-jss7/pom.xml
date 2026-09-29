@@ -161,6 +161,13 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-cluster</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-core</artifactId>
             <version>${log4j.version}</version>

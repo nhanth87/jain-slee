@@ -30,6 +30,14 @@ public final class TcapFailoverMetrics {
     public static final String PENDING_INVOKE_ABORT = "ss7_tcap_failover_pending_invoke_abort_total";
     public static final String STICKY_REJECT = "ss7_tcap_sticky_reject_total";
     public static final String STICKY_MISS = "ss7_tcap_sticky_miss_total";
+    /** ADR 0007 D11 — PDU for a remote-owned DTID handed to its owner. */
+    public static final String FOREIGN_FORWARDED = "ss7_tcap_foreign_pdu_forwarded_total";
+    /** ADR 0007 D11 — PDU received from another node and injected locally. */
+    public static final String FOREIGN_RECEIVED = "ss7_tcap_foreign_pdu_received_total";
+    /** ADR 0007 D11 — owner of the DTID not in the view: fell through to takeover. */
+    public static final String FOREIGN_OWNER_ABSENT = "ss7_tcap_foreign_pdu_owner_absent_total";
+    /** ADR 0007 D11 — forward failed after hand-off: re-processed locally (takeover path). */
+    public static final String FOREIGN_SEND_FAIL = "ss7_tcap_foreign_pdu_send_fail_total";
 
     @FunctionalInterface
     public interface NamedCounterSink {
@@ -47,6 +55,10 @@ public final class TcapFailoverMetrics {
     private final AtomicLong pendingInvokeAbort = new AtomicLong();
     private final AtomicLong stickyReject = new AtomicLong();
     private final AtomicLong stickyMiss = new AtomicLong();
+    private final AtomicLong foreignForwarded = new AtomicLong();
+    private final AtomicLong foreignReceived = new AtomicLong();
+    private final AtomicLong foreignOwnerAbsent = new AtomicLong();
+    private final AtomicLong foreignSendFail = new AtomicLong();
 
     private volatile NamedCounterSink sink;
 
@@ -98,6 +110,38 @@ public final class TcapFailoverMetrics {
     /** No dialog owner for Continue/End — sticky miss. */
     public void stickyMiss() {
         bump(stickyMiss, STICKY_MISS);
+    }
+
+    public void foreignForwarded() {
+        bump(foreignForwarded, FOREIGN_FORWARDED);
+    }
+
+    public void foreignReceived() {
+        bump(foreignReceived, FOREIGN_RECEIVED);
+    }
+
+    public void foreignOwnerAbsent() {
+        bump(foreignOwnerAbsent, FOREIGN_OWNER_ABSENT);
+    }
+
+    public void foreignSendFail() {
+        bump(foreignSendFail, FOREIGN_SEND_FAIL);
+    }
+
+    public long foreignForwardedCount() {
+        return foreignForwarded.get();
+    }
+
+    public long foreignReceivedCount() {
+        return foreignReceived.get();
+    }
+
+    public long foreignOwnerAbsentCount() {
+        return foreignOwnerAbsent.get();
+    }
+
+    public long foreignSendFailCount() {
+        return foreignSendFail.get();
     }
 
     public long exportOkCount() {
@@ -158,6 +202,10 @@ public final class TcapFailoverMetrics {
         m.put(PENDING_INVOKE_ABORT, pendingInvokeAbort.get());
         m.put(STICKY_REJECT, stickyReject.get());
         m.put(STICKY_MISS, stickyMiss.get());
+        m.put(FOREIGN_FORWARDED, foreignForwarded.get());
+        m.put(FOREIGN_RECEIVED, foreignReceived.get());
+        m.put(FOREIGN_OWNER_ABSENT, foreignOwnerAbsent.get());
+        m.put(FOREIGN_SEND_FAIL, foreignSendFail.get());
         return Map.copyOf(m);
     }
 

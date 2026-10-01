@@ -134,6 +134,70 @@ public final class Ss7Stack {
         }
     }
 
+    /**
+     * Per-link truth, for the admin status page and for deciding <em>which</em> link
+     * died. {@link #isSctpAssociationUp()} answers "any association up", which on a
+     * multi-link host hides one dead link behind another healthy one — exactly how the
+     * 2026-10-01 outage stayed invisible: the kernel socket for the link carrying the
+     * HLR routes was stale inside jSS7 while another association reported up.
+     *
+     * <p>Each entry: {@code name}, {@code started}, {@code connected}, {@code up},
+     * {@code local}, {@code peer}. Pure read of jSS7 state; no recovery side effects.
+     */
+    public java.util.List<java.util.Map<String, Object>> associationDetails() {
+        java.util.List<java.util.Map<String, Object>> out = new java.util.ArrayList<>();
+        if (!started || delegate == null) {
+            return out;
+        }
+        try {
+            Management sctp = delegate.sctpManagement();
+            if (sctp == null) {
+                return out;
+            }
+            for (Association a : sctp.getAssociations().values()) {
+                java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+                put(m, "name", a.getName());
+                put(m, "started", a.isStarted());
+                put(m, "connected", a.isConnected());
+                put(m, "up", a.isUp());
+                put(m, "peer", a.getPeerAddress() + ":" + a.getPeerPort());
+                out.add(m);
+            }
+        } catch (RuntimeException ex) {
+            // Health reporting must never throw.
+        }
+        return out;
+    }
+
+    /** Per-application-server state (M3UA), same purpose: name + FSM state per AS. */
+    public java.util.List<java.util.Map<String, Object>> applicationServerDetails() {
+        java.util.List<java.util.Map<String, Object>> out = new java.util.ArrayList<>();
+        if (!started || delegate == null) {
+            return out;
+        }
+        try {
+            M3UAManagementImpl m3ua = delegate.m3uaManagement();
+            if (m3ua == null) {
+                return out;
+            }
+            for (As as : m3ua.getAppServers()) {
+                java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+                put(m, "name", as.getName());
+                put(m, "state", as.getState() == null ? null : as.getState().getName());
+                out.add(m);
+            }
+        } catch (RuntimeException ex) {
+            // Health reporting must never throw.
+        }
+        return out;
+    }
+
+    private static void put(java.util.Map<String, Object> m, String key, Object value) {
+        if (value != null) {
+            m.put(key, value);
+        }
+    }
+
     public boolean isSctpAssociationUp() {
         if (!started || delegate == null) {
             return false;

@@ -197,6 +197,21 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         return active.get() && s != null && s.isM3uaAsActive();
     }
 
+    /**
+     * Per-link / per-AS truth for admin status. A multi-link host cannot be summarised
+     * by "any association up" — that hid the dead link on 2026-10-01 for 16 hours.
+     * Empty when the RA is not active.
+     */
+    public java.util.List<java.util.Map<String, Object>> ss7AssociationDetails() {
+        Ss7Stack s = stack;
+        return active.get() && s != null ? s.associationDetails() : java.util.List.of();
+    }
+
+    public java.util.List<java.util.Map<String, Object>> ss7ApplicationServerDetails() {
+        Ss7Stack s = stack;
+        return active.get() && s != null ? s.applicationServerDetails() : java.util.List.of();
+    }
+
     /** Shared SCTP/M3UA AIMD controller. Disabled when the stack is down. */
     public org.mobicents.protocols.sctp.spi.AdaptiveSendController congestionController() {
         Ss7Stack s = stack;

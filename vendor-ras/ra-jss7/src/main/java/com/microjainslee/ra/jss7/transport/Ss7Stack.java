@@ -18,6 +18,7 @@ import org.restcomm.protocols.ss7.sccp.SccpProvider;
 import org.restcomm.protocols.ss7.tcap.api.TCAPProvider;
 
 import org.mobicents.protocols.api.Association;
+import org.mobicents.protocols.api.IpChannelType;
 import org.mobicents.protocols.api.Management;
 import org.mobicents.protocols.sctp.fstack.FstackSctpManagementImpl;
 import org.mobicents.protocols.sctp.spi.AdaptiveSendController;
@@ -28,6 +29,7 @@ import org.restcomm.protocols.ss7.sccp.RemoteSignalingPointCode;
 import org.restcomm.protocols.ss7.sccp.impl.RemoteSignalingPointCodeImpl;
 import org.restcomm.protocols.ss7.sccp.impl.SccpStackImpl;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -184,10 +186,31 @@ public final class Ss7Stack {
                 java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
                 put(m, "name", as.getName());
                 put(m, "state", as.getState() == null ? null : as.getState().getName());
+                // The AS→links mapping is what lets the GMLC tell WHICH link to restart:
+                // a link can be "connected" while its AS never reaches ACTIVE.
+                java.util.List<String> links = linksOf(as.getName());
+                if (!links.isEmpty()) {
+                    m.put("links", links);
+                }
                 out.add(m);
             }
         } catch (RuntimeException ex) {
             // Health reporting must never throw.
+        }
+        return out;
+    }
+
+    /** Configured SCTP links carried by this application server. */
+    public List<String> linksOf(String asName) {
+        List<String> out = new ArrayList<>();
+        Ss7Config cfg = fullCfg;
+        if (cfg == null || cfg.m3ua() == null || cfg.m3ua().as() == null || asName == null) {
+            return out;
+        }
+        for (Ss7Config.As as : cfg.m3ua().as()) {
+            if (as != null && asName.equals(as.name()) && as.links() != null) {
+                out.addAll(as.links());
+            }
         }
         return out;
     }
@@ -197,6 +220,166 @@ public final class Ss7Stack {
             m.put(key, value);
         }
     }
+
+    /**
+     * Result of a per-link recovery. {@code ok} means the link came back on its own:
+     * association connected AND its application server ACTIVE within the timeout.
+     */
+    public record LinkRestart(String link, boolean ok, String detail, long elapsedMs,
+                              boolean associationUp, boolean asActive, String applicationServer) { }
+
+    /** Configured SCTP link names, for admin UI and error messages. */
+    public List<String> linkNames() {
+        List<String> out = new ArrayList<>();
+        Ss7Config cfg = fullCfg;
+        if (cfg == null || cfg.sctp() == null || cfg.sctp().links() == null) {
+            return out;
+        }
+        for (Ss7Config.Link link : cfg.sctp().links()) {
+            if (link != null && link.name() != null) {
+                out.add(link.name());
+            }
+        }
+        return out;
+    }
+
+    /** M3UA application server that rides this SCTP link, or {@code null} if none. */
+    public String applicationServerFor(String linkName) {
+        Ss7Config cfg = fullCfg;
+        if (cfg == null || cfg.m3ua() == null || cfg.m3ua().as() == null) {
+            return null;
+        }
+        for (Ss7Config.As as : cfg.m3ua().as()) {
+            if (as == null || as.links() == null) {
+                continue;
+            }
+            for (String link : as.links()) {
+                if (linkName.equals(link)) {
+                    return as.name();
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Bounce ONE SCTP link in place: stop that association and start it again.
+     *
+     * <p>Deliberately narrow, because the obvious wider versions were tried on the lab
+     * host on 2026-10-01 and both broke the stack:
+     * <ul>
+     *   <li><b>No removeAssociation / addAssociation.</b> jSS7 wants a stop before the
+     *       remove ("Association name=%s is started. Stop before removing") and then
+     *       refuses the add with "Already has association". Worse, the attempt wrote a
+     *       junk entry ({@code 127.0.0.1}) into
+     *       {@code configs/ss7-persist/ra-jss7-sctp_sctp.xml}, and the next boot loaded
+     *       that file and died with an NPE in {@code addServerAssociation}. A failed
+     *       recovery must never leave the stack unable to start.</li>
+     *   <li><b>No {@code m3ua.stop()} / {@code m3ua.start()}.</b> Rebinding the ASPs
+     *       re-created every association from jSS7's own M3UA state, renamed one of them
+     *       and left {@code ss7.live=false} stack-wide. The ASP keeps its listener on
+     *       the same Association object here, so no rebind is needed at all.</li>
+     * </ul>
+     *
+     * <p>What this preserves: the Association object, its name, its ASP binding, the
+     * other links' sockets, and every protocol layer above (TCAP/SCCP/MAP). Only that
+     * one link's socket is re-established — which is what a full stack re-wire cannot
+     * offer while the other links are carrying traffic.
+     *
+     * <p>Known limit: when the Association <em>object</em> is the stale part (the
+     * 2026-10-01 failure mode, kernel ESTABLISHED + "Association is not started"), an
+     * in-place bounce cannot replace it and the caller has to escalate to the stack
+     * re-wire. See {@code docs/ss7-per-link-restart.md}.
+     *
+     * @param timeoutMs how long to wait for the link to come back
+     */
+    public LinkRestart restartAssociation(String name, int timeoutMs) {
+        long t0 = System.nanoTime();
+        if (!started || delegate == null) {
+            return restart(name, "stack-not-started", t0, false, false, null);
+        }
+        Ss7Config.Link link = linkConfig(name);
+        if (link == null) {
+            return restart(name, "unknown-link (known: " + linkNames() + ")", t0, false, false, null);
+        }
+        Management sctp = delegate.sctpManagement();
+        M3UAManagementImpl m3ua = delegate.m3uaManagement();
+        if (sctp == null || m3ua == null) {
+            return restart(name, "sctp/m3ua management unavailable", t0, false, false, null);
+        }
+        String as = applicationServerFor(name);
+        try {
+            sctp.stopAssociation(name);
+            sctp.startAssociation(name);
+            boolean up = awaitLinkUp(sctp, m3ua, name, as, Math.max(500, timeoutMs));
+            boolean asActive = as != null && isApplicationServerActive(m3ua, as);
+            return restart(name, up ? "bounced-in-place" : "still-down-after-bounce", t0,
+                    up, asActive, as);
+        } catch (Exception e) {
+            LOG.warn("[ra-jss7] per-link bounce of {} failed: {}", name, e.toString());
+            return restart(name, "error: " + e, t0, false, false, as);
+        }
+    }
+
+    private Ss7Config.Link linkConfig(String name) {
+        Ss7Config cfg = fullCfg;
+        if (cfg == null || cfg.sctp() == null || cfg.sctp().links() == null || name == null) {
+            return null;
+        }
+        for (Ss7Config.Link link : cfg.sctp().links()) {
+            if (link != null && name.equals(link.name())) {
+                return link;
+            }
+        }
+        return null;
+    }
+
+    private boolean awaitLinkUp(Management sctp, M3UAManagementImpl m3ua, String link, String as,
+                                long timeoutMs) {
+        long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+        while (System.nanoTime() < deadline) {
+            boolean assocUp = false;
+            try {
+                Association a = sctp.getAssociation(link);
+                assocUp = a != null && (a.isConnected() || a.isUp());
+            } catch (Exception ignored) {
+                // not registered yet
+            }
+            boolean asActive = as == null || isApplicationServerActive(m3ua, as);
+            if (assocUp && asActive) {
+                return true;
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isApplicationServerActive(M3UAManagementImpl m3ua, String asName) {
+        try {
+            for (As candidate : m3ua.getAppServers()) {
+                if (asName.equals(candidate.getName()) && candidate.getState() != null) {
+                    return "ACTIVE".equalsIgnoreCase(candidate.getState().getName());
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // health reporting must not throw
+        }
+        return false;
+    }
+
+    private static LinkRestart restart(String link, String detail, long t0, boolean up,
+                                       boolean asActive, String as) {
+        long ms = (System.nanoTime() - t0) / 1_000_000L;
+        LOG.info("[ra-jss7] link restart link={} as={} ok={} assocUp={} asActive={} detail={} ({} ms)",
+                link, as, up, up, asActive, detail, ms);
+        return new LinkRestart(link, up, detail, ms, up, asActive, as);
+    }
+
 
     public boolean isSctpAssociationUp() {
         if (!started || delegate == null) {

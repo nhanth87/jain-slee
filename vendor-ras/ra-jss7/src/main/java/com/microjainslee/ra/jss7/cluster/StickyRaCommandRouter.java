@@ -54,6 +54,13 @@ public final class StickyRaCommandRouter {
      */
     public Decision decide(Ss7Command command, boolean routeReady) {
         Objects.requireNonNull(command, "command");
+        if (isNodeLocalMaintenance(command)) {
+            // A per-link recovery is not a dialog and is not routable: the SCTP socket
+            // it replaces belongs to this node, and the reason it gets issued is
+            // usually that the M3UA route is NOT ready. It must never be refused for
+            // lack of a dialog owner, and it must never be forwarded to another node.
+            return new Decision(Action.SEND_LOCAL, null, "node-local maintenance command");
+        }
         String dialogId = command.dialogId();
         Optional<RaDialogOwner> ownerOpt = tracker.lookupOwner(dialogId);
 
@@ -80,6 +87,16 @@ public final class StickyRaCommandRouter {
                     "local owner but M3UA route not ready (isM3uaRouteReady=false)");
         }
         return new Decision(Action.SEND_LOCAL, owner, "local owner + route ready");
+    }
+
+    /**
+     * Commands that act on this node's own stack and have no dialog to own: today the
+     * per-link M3UA/SCTP recovery. Kept separate from {@link #isDialogCreating} so the
+     * two intents cannot be confused — a maintenance command must not claim a dialog,
+     * and a dialog command must not be sent without an owner.
+     */
+    public static boolean isNodeLocalMaintenance(Ss7Command command) {
+        return command instanceof Ss7Command.Ss7RestartLink;
     }
 
     /**

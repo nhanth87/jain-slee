@@ -90,6 +90,28 @@ public class Ss7DialogOwnershipAndStickyRouterTest {
         assertEquals(StickyRaCommandRouter.Action.SEND_LOCAL, d.action());
     }
 
+    /**
+     * A per-link recovery is node-local maintenance, not a dialog: it must be sent
+     * locally with no owner, and it must still be sent when the M3UA route is not ready
+     * \u2014 that not-ready state is usually why the recovery was requested at all.
+     * (First live attempt was rejected as "no dialog owner for Continue/End/Abort".)
+     */
+    @Test
+    public void perLinkRecoveryIsSentLocallyWithoutAnOwner() {
+        Ss7DialogOwnershipTracker tracker = new Ss7DialogOwnershipTracker(
+                manager.getNodeId(), "ra-jss7", 1, 8, caches);
+        StickyRaCommandRouter router = new StickyRaCommandRouter(tracker);
+        Ss7Command.Ss7RestartLink restart = new Ss7Command.Ss7RestartLink("L2-BP-1403", 8000);
+
+        StickyRaCommandRouter.Decision ready = router.decide(restart, true);
+        assertEquals(StickyRaCommandRouter.Action.SEND_LOCAL, ready.action());
+        assertTrue(StickyRaCommandRouter.isNodeLocalMaintenance(restart));
+        assertFalse(StickyRaCommandRouter.isDialogCreating(restart));
+
+        StickyRaCommandRouter.Decision notReady = router.decide(restart, false);
+        assertEquals(StickyRaCommandRouter.Action.SEND_LOCAL, notReady.action());
+    }
+
     @Test
     public void stickyRouterRejectsWhenNotReady() {
         Ss7DialogOwnershipTracker tracker = new Ss7DialogOwnershipTracker(

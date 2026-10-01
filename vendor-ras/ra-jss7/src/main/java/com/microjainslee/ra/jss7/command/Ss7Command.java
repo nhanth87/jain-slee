@@ -310,6 +310,35 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
     }
 
     /**
+     * Recover ONE SCTP/M3UA link by replacing its socket and re-binding the ASP, without
+     * rebuilding the protocol stack ({@link Ss7Stack#restartAssociation}).
+     *
+     * <p>Used when a MAP send fails because the M3UA layer is unusable (ASP not ACTIVE,
+     * association object stale) and the GMLC cannot tell which link is at fault: the RA
+     * answers with the per-link {@code associationUp}/{@code asActive} state, so a
+     * healthy link is never touched.
+     *
+     * @param linkName  configured SCTP link name (e.g. {@code L2-BP-1403})
+     * @param timeoutMs budget for the link to come back
+     */
+    record Ss7RestartLink(String linkName, int timeoutMs) implements Ss7Command {
+        public Ss7RestartLink(String linkName) {
+            this(linkName, 8000);
+        }
+
+        /** Not a dialog command: no peer, no dialog, so the address is a zero placeholder. */
+        @Override
+        public String dialogId() {
+            return "ss7-restart-link:" + linkName;
+        }
+
+        @Override
+        public Ss7Address targetAddress() {
+            return Ss7Address.of("0", 8);
+        }
+    }
+
+    /**
      * Deferred MT-LR trigger of a MAP ProvideSubscriberLocationRequest (TS 29.002
      * §8.5.3). {@code type} is one of {@code ueAvailable}, {@code periodic},
      * {@code areaEntering}, {@code areaLeaving}, {@code areaInside}, {@code areaEvent}

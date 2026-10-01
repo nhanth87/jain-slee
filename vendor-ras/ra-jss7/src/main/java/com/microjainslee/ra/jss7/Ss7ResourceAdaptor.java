@@ -1026,6 +1026,17 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     LOG.warn("MAP SRI not handled by any adapter: {}", sri.dialogId());
             case Ss7Command.MapSendRoutingInfoForSmResponse sriRsp ->
                     LOG.warn("MAP SRI response not handled by any adapter: {}", sriRsp.dialogId());
+            case Ss7Command.Ss7RestartLink restart -> {
+                // Per-link recovery: replaces one SCTP socket and re-binds M3UA. Runs
+                // here (on the RA's own thread, outside any dialog) and never touches
+                // TCAP/SCCP/MAP or the other links.
+                Ss7Stack.LinkRestart result = stack == null
+                        ? new Ss7Stack.LinkRestart(restart.linkName(), false, "stack-absent", 0,
+                                false, false, null)
+                        : stack.restartAssociation(restart.linkName(), restart.timeoutMs());
+                LOG.warn("[ra-jss7] per-link recovery requested link={} ok={} detail={}",
+                        restart.linkName(), result.ok(), result.detail());
+            }
             case Ss7Command.MapMtForwardSm mt ->
                     LOG.warn("MAP MT not handled by any adapter: {}", mt.dialogId());
             case Ss7Command.MapMoForwardSm mo ->

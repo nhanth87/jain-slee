@@ -21,7 +21,7 @@
         <maven.compiler.target>25</maven.compiler.target>
         <maven.compiler.release>25</maven.compiler.release>
         <quarkus.platform.version>3.37.3</quarkus.platform.version>
-        <microjainslee.version>1.2.0-SNAPSHOT</microjainslee.version>
+        <microjainslee.version>1.2.1-SNAPSHOT</microjainslee.version>
         <flexmark.version>0.64.8</flexmark.version>
         <surefire.version>3.5.4</surefire.version>
         <quarkus.build.skip>true</quarkus.build.skip>

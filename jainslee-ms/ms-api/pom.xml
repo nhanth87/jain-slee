@@ -7,7 +7,7 @@
     <parent>
         <groupId>com.microjainslee</groupId>
         <artifactId>jainslee-ms</artifactId>
-        <version>1.2.0-SNAPSHOT</version>
+        <version>1.2.1-SNAPSHOT</version>
     </parent>
 
     <artifactId>ms-api</artifactId>

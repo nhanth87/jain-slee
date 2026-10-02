@@ -1,6 +1,6 @@
 name: "Micro JAIN SLEE"
 description: "Embeddable JAIN SLEE 1.1 runtime for Quarkus applications"
-artifact: "com.microjainslee:adapter-quarkus:1.2.1-SNAPSHOT"
+artifact: "com.microjainslee:adapter-quarkus:1.2.2-SNAPSHOT"
 metadata:
   keywords:
     - jainslee

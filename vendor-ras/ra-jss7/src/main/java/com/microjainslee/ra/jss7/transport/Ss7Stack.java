@@ -288,8 +288,9 @@ public final class Ss7Stack {
      *
      * <p>Known limit: when the Association <em>object</em> is the stale part (the
      * 2026-10-01 failure mode, kernel ESTABLISHED + "Association is not started"), an
-     * in-place bounce cannot replace it and the caller has to escalate to the stack
-     * re-wire. See {@code docs/ss7-per-link-restart.md}.
+     * in-place bounce cannot replace it — use {@link #replaceAssociation} instead,
+     * which swaps the object under the same name (needs jSS7 with
+     * {@code M3UAManagement.rebindAsp}). See {@code docs/ss7-per-link-restart.md}.
      *
      * @param timeoutMs how long to wait for the link to come back
      */
@@ -329,6 +330,96 @@ public final class Ss7Stack {
         for (Ss7Config.Link link : cfg.sctp().links()) {
             if (link != null && name.equals(link.name())) {
                 return link;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Replace ONE SCTP Association object in place, keeping its name, its ASP binding
+     * and every layer above (TCAP/SCCP/MAP). For the failure mode where the object
+     * itself is stale — kernel socket dead, "Association is not started", bounce
+     * cannot help — and a stack-wide re-wire would drop the healthy links.
+     *
+     * <p>Order matters, and every step was chosen against a recorded failure:
+     * <ol>
+     *   <li>Stop the ASP first ({@code stopAsp}), so the ASP FSM is DOWN and no M3UA
+     *       timer fires mid-replace.</li>
+     *   <li>Snapshot the old object's addresses from the live object (not from config:
+     *       SERVER-side associations were accepted, not dialled).</li>
+     *   <li>{@code stopAssociation} + {@code removeAssociation} (jSS7 requires the stop
+     *       first; the remove only unlinks, it never touches the socket).</li>
+     *   <li>Re-add under the <em>same</em> name — CLIENT via {@code addAssociation},
+     *       SERVER-side via {@code addServerAssociation} with the old server name.</li>
+     *   <li>{@code rebindAsp} while the new object is still stopped (rebind refuses a
+     *       started association): the ASP drops the stale object's listener and takes
+     *       the new one. Runtime-only — the persist store is never written, because
+     *       the association name is unchanged.</li>
+     *   <li>{@code startAssociation}: the ASP handshake restarts on the fresh socket;
+     *       {@link #awaitLinkUp} waits for association + AS ACTIVE.</li>
+     * </ol>
+     *
+     * @param timeoutMs how long to wait for the link to come back
+     */
+    public LinkRestart replaceAssociation(String name, int timeoutMs) {
+        long t0 = System.nanoTime();
+        if (!started || delegate == null) {
+            return restart(name, "stack-not-started", t0, false, false, null);
+        }
+        if (linkConfig(name) == null) {
+            return restart(name, "unknown-link (known: " + linkNames() + ")", t0, false, false, null);
+        }
+        Management sctp = delegate.sctpManagement();
+        M3UAManagementImpl m3ua = delegate.m3uaManagement();
+        if (sctp == null || m3ua == null) {
+            return restart(name, "sctp/m3ua management unavailable", t0, false, false, null);
+        }
+        String as = applicationServerFor(name);
+        try {
+            String aspName = aspFactoryFor(m3ua, name);
+            if (aspName == null) {
+                return restart(name, "no AspFactory bound to " + name, t0, false, false, as);
+            }
+            Association old = sctp.getAssociation(name);
+            if (old == null) {
+                return restart(name, "association object already gone", t0, false, false, as);
+            }
+            String hostAddress = old.getHostAddress();
+            int hostPort = old.getHostPort();
+            String peerAddress = old.getPeerAddress();
+            int peerPort = old.getPeerPort();
+            IpChannelType channel = old.getIpChannelType();
+            boolean serverSide = old.getAssociationType()
+                    == org.mobicents.protocols.api.AssociationType.SERVER;
+            String serverName = old.getServerName();
+
+            m3ua.stopAsp(aspName);
+            sctp.stopAssociation(name);
+            sctp.removeAssociation(name);
+            if (serverSide) {
+                sctp.addServerAssociation(peerAddress, peerPort, serverName, name);
+            } else {
+                sctp.addAssociation(hostAddress, hostPort, peerAddress, peerPort, name, channel, null);
+            }
+            m3ua.rebindAsp(aspName, name);
+            sctp.startAssociation(name);
+
+            boolean up = awaitLinkUp(sctp, m3ua, name, as, Math.max(500, timeoutMs));
+            boolean asActive = as != null && isApplicationServerActive(m3ua, as);
+            return restart(name, up ? "replaced-object" : "still-down-after-replace", t0,
+                    up, asActive, as);
+        } catch (Exception e) {
+            LOG.warn("[ra-jss7] per-link replace of {} failed: {}", name, e.toString());
+            return restart(name, "error: " + e, t0, false, false, as);
+        }
+    }
+
+    /** AspFactory whose live Association object carries this link name, or null. */
+    private static String aspFactoryFor(M3UAManagementImpl m3ua, String linkName) {
+        for (org.restcomm.protocols.ss7.m3ua.AspFactory f : m3ua.getAspfactories()) {
+            Association a = f.getAssociation();
+            if (a != null && linkName.equals(a.getName())) {
+                return f.getName();
             }
         }
         return null;

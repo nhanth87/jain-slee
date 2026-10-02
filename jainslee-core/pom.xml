@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.microjainslee</groupId>
         <artifactId>micro-jainslee</artifactId>
-        <version>1.2.1-SNAPSHOT</version>
+        <version>1.2.2-SNAPSHOT</version>
     </parent>
     <artifactId>jainslee-core</artifactId>
     <packaging>jar</packaging>

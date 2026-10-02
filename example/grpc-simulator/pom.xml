@@ -25,7 +25,7 @@
         <protoc_artifact>com.google.protobuf:protoc:${protoc.version}</protoc_artifact>
         <protoc_grpc_artifact>io.grpc:protoc-gen-grpc-java:${grpc.version}</protoc_grpc_artifact>
         <log4j.version>2.23.1</log4j.version>
-        <microjainslee.version>1.2.1-SNAPSHOT</microjainslee.version>
+        <microjainslee.version>1.2.2-SNAPSHOT</microjainslee.version>
         <junit.version>4.13.2</junit.version>
     </properties>
 

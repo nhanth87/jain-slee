@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.microjainslee</groupId>
         <artifactId>vendor-ras</artifactId>
-        <version>1.2.1-SNAPSHOT</version>
+        <version>1.2.2-SNAPSHOT</version>
     </parent>
     <artifactId>ra-jss7</artifactId>
     <packaging>jar</packaging>
@@ -20,7 +20,7 @@
     </description>
 
     <properties>
-        <ss7.version>9.2.9-j25</ss7.version>
+        <ss7.version>9.2.10-j25</ss7.version>
         <!-- local SCTP (ethiopia-working-dir/sctp) — must match jSS7 coral-valley / ss7-config -->
         <sctp.version>2.27.32</sctp.version>
         <ss7.netty.version>4.2.11.Final</ss7.netty.version>

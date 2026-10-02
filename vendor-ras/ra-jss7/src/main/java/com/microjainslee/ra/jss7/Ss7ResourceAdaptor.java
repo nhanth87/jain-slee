@@ -1037,6 +1037,17 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                 LOG.warn("[ra-jss7] per-link recovery requested link={} ok={} detail={}",
                         restart.linkName(), result.ok(), result.detail());
             }
+            case Ss7Command.Ss7ReplaceLink replace -> {
+                // Per-link recovery step two: the Association object itself is stale,
+                // so swap it under the same name (ASP stopped, rebind, start). Same
+                // thread rules as the bounce above: no dialog, no other link touched.
+                Ss7Stack.LinkRestart result = stack == null
+                        ? new Ss7Stack.LinkRestart(replace.linkName(), false, "stack-absent", 0,
+                                false, false, null)
+                        : stack.replaceAssociation(replace.linkName(), replace.timeoutMs());
+                LOG.warn("[ra-jss7] per-link replace requested link={} ok={} detail={}",
+                        replace.linkName(), result.ok(), result.detail());
+            }
             case Ss7Command.MapMtForwardSm mt ->
                     LOG.warn("MAP MT not handled by any adapter: {}", mt.dialogId());
             case Ss7Command.MapMoForwardSm mo ->

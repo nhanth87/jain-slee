@@ -96,7 +96,8 @@ public final class StickyRaCommandRouter {
      * and a dialog command must not be sent without an owner.
      */
     public static boolean isNodeLocalMaintenance(Ss7Command command) {
-        return command instanceof Ss7Command.Ss7RestartLink;
+        return command instanceof Ss7Command.Ss7RestartLink
+                || command instanceof Ss7Command.Ss7ReplaceLink;
     }
 
     /**

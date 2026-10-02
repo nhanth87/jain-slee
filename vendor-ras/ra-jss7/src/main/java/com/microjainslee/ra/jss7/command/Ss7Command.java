@@ -339,6 +339,35 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
     }
 
     /**
+     * Replace ONE SCTP Association object in place (same name, same ASP binding).
+     *
+     * <p>Second step after {@link Ss7RestartLink}: when the Association <em>object</em>
+     * itself is stale, a bounce cannot re-establish the socket. The RA stops the ASP,
+     * swaps the object under the same name, rebinds the ASP
+     * ({@code M3UAManagement.rebindAsp}, runtime-only, no persist write) and starts
+     * again — other links untouched.
+     *
+     * @param linkName  configured SCTP link name (e.g. {@code L2-BP-1403})
+     * @param timeoutMs budget for the link to come back
+     */
+    record Ss7ReplaceLink(String linkName, int timeoutMs) implements Ss7Command {
+        public Ss7ReplaceLink(String linkName) {
+            this(linkName, 8000);
+        }
+
+        /** Not a dialog command: no peer, no dialog, so the address is a zero placeholder. */
+        @Override
+        public String dialogId() {
+            return "ss7-replace-link:" + linkName;
+        }
+
+        @Override
+        public Ss7Address targetAddress() {
+            return Ss7Address.of("0", 8);
+        }
+    }
+
+    /**
      * Deferred MT-LR trigger of a MAP ProvideSubscriberLocationRequest (TS 29.002
      * §8.5.3). {@code type} is one of {@code ueAvailable}, {@code periodic},
      * {@code areaEntering}, {@code areaLeaving}, {@code areaInside}, {@code areaEvent}

@@ -31,6 +31,7 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
     private MapSmsOutbound outbound;
     private MapGmlcOutbound gmlcOutbound;
     private MapUssdOutbound ussdOutbound;
+    private MapMobilityOutbound mobilityOutbound;
 
     @Override public String protocol() { return "MAP"; }
 
@@ -45,6 +46,7 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
         this.outbound = new MapSmsOutbound(provider, stack);
         this.gmlcOutbound = new MapGmlcOutbound(provider, stack);
         this.ussdOutbound = new MapUssdOutbound(provider, stack);
+        this.mobilityOutbound = new MapMobilityOutbound(provider);
         provider.addMAPDialogListener(this);
         try { var s = provider.getMAPServiceMobility(); s.addMAPServiceListener(this); s.activate(); } catch (Exception e) { LOG.warn("[ra-jss7] MAP service getMAPServiceMobility activate failed: {}", e.toString()); }
         try { var s = provider.getMAPServiceSms(); s.addMAPServiceListener(this); s.activate(); } catch (Exception e) { LOG.warn("[ra-jss7] MAP service getMAPServiceSms activate failed: {}", e.toString()); }
@@ -116,6 +118,7 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
         outbound = null;
         gmlcOutbound = null;
         ussdOutbound = null;
+        mobilityOutbound = null;
         publisher = null;
         provider = null;
         LOG.info("[ra-jss7] MAP adapter detached");
@@ -149,6 +152,10 @@ public final class MapProtocolAdapter implements Ss7ProtocolAdapter, org.restcom
         }
         MapGmlcOutbound gmlc = this.gmlcOutbound;
         if (gmlc != null && gmlc.send(command)) {
+            return true;
+        }
+        MapMobilityOutbound mobility = this.mobilityOutbound;
+        if (mobility != null && mobility.send(command)) {
             return true;
         }
         MapUssdOutbound ussd = this.ussdOutbound;

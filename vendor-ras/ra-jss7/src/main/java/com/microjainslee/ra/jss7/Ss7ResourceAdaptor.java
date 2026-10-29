@@ -1026,6 +1026,10 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     LOG.warn("MAP SRI not handled by any adapter: {}", sri.dialogId());
             case Ss7Command.MapSendRoutingInfoForSmResponse sriRsp ->
                     LOG.warn("MAP SRI response not handled by any adapter: {}", sriRsp.dialogId());
+            case Ss7Command.MapSendAuthenticationInfoResponse sai ->
+                    LOG.warn("MAP SAI response not handled by any adapter: {}", sai.dialogId());
+            case Ss7Command.MapReturnError err ->
+                    LOG.warn("MAP error {} not handled by any adapter: {}", err.mapErrorCode(), err.dialogId());
             case Ss7Command.Ss7RestartLink restart -> {
                 // Per-link recovery: replaces one SCTP socket and re-binds M3UA. Runs
                 // here (on the RA's own thread, outside any dialog) and never touches

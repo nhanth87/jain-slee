@@ -105,6 +105,55 @@ public sealed interface Ss7Command extends OutboundCommand, java.io.Serializable
     }
 
     /**
+     * HLR/AuC answer to MAP SendAuthenticationInfo (TS 29.002 §8.5.2) on the dialog of
+     * the received request ({@code dialogId} from the {@code Ss7MapEvent}; {@code invokeId}
+     * of the request). The vectors are computed by the application's AuC (TS 33.102 —
+     * quintuplets for UMTS/MAP v3, triplets for GSM); the RA only encodes them.
+     * Exactly one of {@code quintuplets} / {@code triplets} is non-empty.
+     */
+    record MapSendAuthenticationInfoResponse(
+            String dialogId,
+            long invokeId,
+            java.util.List<AuthQuintuplet> quintuplets,
+            java.util.List<AuthTriplet> triplets
+    ) implements Ss7Command {
+        public MapSendAuthenticationInfoResponse {
+            quintuplets = quintuplets == null ? java.util.List.of() : java.util.List.copyOf(quintuplets);
+            triplets = triplets == null ? java.util.List.of() : java.util.List.copyOf(triplets);
+            if (quintuplets.isEmpty() == triplets.isEmpty()) {
+                throw new IllegalArgumentException("exactly one of quintuplets / triplets must be given");
+            }
+        }
+
+        /** Answer on the received dialog — no new destination. */
+        @Override
+        public Ss7Address targetAddress() {
+            return null;
+        }
+    }
+
+    /** UMTS authentication vector (TS 33.102 §6.3.2): RAND, XRES, CK, IK, AUTN. */
+    record AuthQuintuplet(byte[] rand, byte[] xres, byte[] ck, byte[] ik, byte[] autn)
+            implements java.io.Serializable {
+    }
+
+    /** GSM triplet (TS 33.102 §6.8.1.2): RAND, SRES, Kc. */
+    record AuthTriplet(byte[] rand, byte[] sres, byte[] kc) implements java.io.Serializable {
+    }
+
+    /**
+     * Answer an invoke with a MAP error (TS 29.002 §17.6, e.g. 1 = unknownSubscriber,
+     * 34 = systemFailure) and close the dialog.
+     */
+    record MapReturnError(String dialogId, long invokeId, long mapErrorCode) implements Ss7Command {
+        /** Answer on the received dialog — no new destination. */
+        @Override
+        public Ss7Address targetAddress() {
+            return null;
+        }
+    }
+
+    /**
      * Answer an inbound MAP sendRoutingInfoForSM on an existing SMS dialog.
      * {@code dialogId} is the jSS7 local dialog id (decimal string) from
      * {@code Ss7MapEvent}; {@code invokeId} is the request invoke id.

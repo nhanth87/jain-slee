@@ -50,6 +50,8 @@ public final class SipRaConfig {
     private String contactUser = "mjsl";
     private long dialogIdleSecs = 300;
     private long dialogSweepIntervalSecs = 30;
+    /** RFC 3261 §17.2.1: the transaction layer answers a new INVITE with 100 Trying. */
+    private boolean autoTrying = true;
 
     // ---- accessors ----
 
@@ -145,4 +147,6 @@ public final class SipRaConfig {
     public void setDialogIdleSecs(long v) { this.dialogIdleSecs = v; }
     public long dialogSweepIntervalSecs() { return dialogSweepIntervalSecs; }
     public void setDialogSweepIntervalSecs(long v) { this.dialogSweepIntervalSecs = v; }
+    public boolean autoTrying() { return autoTrying; }
+    public void setAutoTrying(boolean v) { this.autoTrying = v; }
 }

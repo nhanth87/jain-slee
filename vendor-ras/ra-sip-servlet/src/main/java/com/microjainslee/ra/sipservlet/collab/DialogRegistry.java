@@ -52,6 +52,11 @@ public final class DialogRegistry {
         private volatile String remoteTransport;
         private volatile long lastActivityMillis;
         private final AtomicLong cseq = new AtomicLong();
+        /** RFC 3261 §13.2.2.4 — 2xx (CSeq/To-tag) already passed up for this dialog. */
+        private final java.util.Set<String> invite2xxSeen = ConcurrentHashMap.newKeySet();
+        /** Last ACK sent for a 2xx, so a retransmitted 2xx is answered by the RA. */
+        private volatile SentMessage ackFor2xx;
+        private volatile String ackFor2xxKey;
 
         Dialog(String callId, ActivityHandle handle) {
             this.callId = callId;
@@ -76,6 +81,32 @@ public final class DialogRegistry {
 
         void touchActivity() {
             this.lastActivityMillis = System.currentTimeMillis();
+        }
+
+        /**
+         * First copy of a 2xx to our INVITE (true) or a retransmission (false). Over UDP
+         * the UAS retransmits 2xx until our ACK arrives (§13.3.1.4); only the first copy
+         * is an event for the SBB.
+         */
+        public boolean firstInvite2xx(SIPResponse resp) {
+            return invite2xxSeen.add(invite2xxKey(resp));
+        }
+
+        /** ACK already sent for this 2xx, or {@code null}. */
+        public SentMessage ackFor(SIPResponse resp) {
+            String key = invite2xxKey(resp);
+            return key.equals(ackFor2xxKey) ? ackFor2xx : null;
+        }
+
+        void recordAck(SIPResponse acked, SentMessage ack) {
+            this.ackFor2xx = ack;
+            this.ackFor2xxKey = invite2xxKey(acked);
+        }
+
+        private static String invite2xxKey(SIPResponse resp) {
+            long seq = resp.getCSeq() != null ? resp.getCSeq().getSeqNumber() : -1L;
+            String tag = resp.getToTag();
+            return seq + "|" + (tag == null ? "" : tag);
         }
 
         void setReplyPeer(InetSocketAddress peer, String transport) {
@@ -287,6 +318,76 @@ public final class DialogRegistry {
     }
 
     private final Map<String, Dialog> dialogs = new ConcurrentHashMap<>();
+
+    /** Bytes put on the wire for a message, with where they went (for retransmission). */
+    public record SentMessage(byte[] wire, InetSocketAddress peer, String transport) {}
+
+    /**
+     * RFC 3261 §17.2 server transaction: created by the first copy of a request, answered
+     * by the last response sent for it. Lives for Timer J / H (64·T1 = 32 s) after creation
+     * so request retransmissions are absorbed (and re-answered) here, never fired as new
+     * events — the dialog itself may already be gone (BYE retransmitted after the 200).
+     */
+    public static final class ServerTransaction {
+        private final long createdMillis = System.currentTimeMillis();
+        private volatile SentMessage lastResponse;
+
+        public SentMessage lastResponse() {
+            return lastResponse;
+        }
+    }
+
+    /** Timer J / H — 64 × T1 (500 ms). */
+    public static final long SERVER_TX_LINGER_MILLIS = 32_000L;
+
+    private final Map<String, ServerTransaction> serverTransactions = new ConcurrentHashMap<>();
+
+    /** Transaction key: Call-ID, top Via branch, CSeq number and method (§17.2.3). */
+    public static String serverTxKey(SIPRequest req) {
+        String branch = req.getTopmostVia() != null ? req.getTopmostVia().getBranch() : null;
+        long seq = req.getCSeq() != null ? req.getCSeq().getSeqNumber() : -1L;
+        String callId = req.getCallId() != null ? req.getCallId().getCallId() : "";
+        return callId + "|" + (branch == null ? "" : branch) + "|" + seq + "|" + req.getMethod();
+    }
+
+    /**
+     * Start the server transaction for {@code req}.
+     *
+     * @return {@code null} for a new transaction, or the existing one when {@code req}
+     *         is a retransmission
+     */
+    public ServerTransaction beginServerTransaction(SIPRequest req) {
+        ServerTransaction fresh = new ServerTransaction();
+        ServerTransaction existing = serverTransactions.putIfAbsent(serverTxKey(req), fresh);
+        return existing;
+    }
+
+    /** Remember the latest response sent on {@code req}'s server transaction. */
+    public void recordServerResponse(SIPRequest req, SentMessage response) {
+        ServerTransaction tx = serverTransactions.get(serverTxKey(req));
+        if (tx != null) {
+            tx.lastResponse = response;
+        }
+    }
+
+    /** Drop server transactions past Timer J / H. */
+    public int sweepServerTransactions(long nowMillis) {
+        int before = serverTransactions.size();
+        serverTransactions.values().removeIf(tx -> nowMillis - tx.createdMillis > SERVER_TX_LINGER_MILLIS);
+        return before - serverTransactions.size();
+    }
+
+    public int serverTransactionCount() {
+        return serverTransactions.size();
+    }
+
+    /** Record the ACK sent for a 2xx on {@code callId}'s dialog. */
+    public void recordAck(String callId, SIPResponse acked, SentMessage ack) {
+        Dialog d = dialogs.get(callId);
+        if (d != null && acked != null) {
+            d.recordAck(acked, ack);
+        }
+    }
 
     /** Create-or-update the dialog for an inbound message. */
     public Dialog recordInbound(String callId, ActivityHandle handle, Object sipMessage,

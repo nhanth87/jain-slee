@@ -36,6 +36,7 @@ public class SipRaDialogLifecycleTest {
 
     private static final String CALL_ID = "lifecycle-1@10.0.0.9";
     private static final InetSocketAddress PEER = new InetSocketAddress("127.0.0.1", 45061);
+    private static final InetSocketAddress TRUNK = new InetSocketAddress("127.0.0.1", 5062);
 
     private static final class RecordingBootstrapPort implements RaBootstrapPort {
         final List<SleeEvent> firedEvents = new ArrayList<>();
@@ -105,10 +106,63 @@ public class SipRaDialogLifecycleTest {
         assertNotNull("dialog must stay for 200 BYE", ra.dialogRegistry().find(CALL_ID));
         assertTrue("activity not ended before 200 BYE", bootstrap.endedActivities.isEmpty());
 
-        ra.sendOutbound(new com.microjainslee.ra.sipservlet.command.SendResponse(CALL_ID, 200, "OK"));
+        // Local send path: this RA has no transports, so the HA sticky router (sendOutbound)
+        // would REJECT on routeReady=false — routing is not what this test is about.
+        ra.sendOutboundLocal(new com.microjainslee.ra.sipservlet.command.SendResponse(CALL_ID, 200, "OK"));
 
         assertNull("dialog state must be released after 200 BYE", ra.dialogRegistry().find(CALL_ID));
         assertEquals(List.of(CALL_ID), bootstrap.endedActivities);
+    }
+
+    @Test
+    public void farLeg200ByeDoesNotEndDialogWhileInboundByeUnanswered() {
+        ra.onRawMessage(invite(), PEER, "UDP");
+        ra.onRawMessage(bye(), PEER, "UDP");
+        // Trunk answers the BYE the SBB relayed before the SBB sent its own 200.
+        ra.onRawMessage(farBye200(), TRUNK, "UDP");
+
+        assertNotNull("near-leg BYE still owed a 200", ra.dialogRegistry().find(CALL_ID));
+        assertTrue("activity must outlive the far 200 BYE", bootstrap.endedActivities.isEmpty());
+    }
+
+    @Test
+    public void farLeg200ByeAfterDialogEndedIsCleanedUp() {
+        ra.onRawMessage(farBye200(), TRUNK, "UDP");
+
+        assertNull("stray far 200 BYE leaves no dialog behind", ra.dialogRegistry().find(CALL_ID));
+        assertEquals(List.of(CALL_ID), bootstrap.endedActivities);
+    }
+
+    @Test
+    public void inviteRetransmissionIsAbsorbedNotFired() {
+        ra.onRawMessage(invite(), PEER, "UDP");
+        ra.onRawMessage(invite(), PEER, "UDP"); // UA Timer A
+        ra.onRawMessage(invite(), PEER, "UDP");
+
+        assertEquals("one INVITE event per server transaction (RFC 3261 §17.2.3)",
+                1, bootstrap.firedEvents.size());
+        assertEquals(2, ra.retransmissionsAbsorbed());
+    }
+
+    @Test
+    public void byeRetransmissionAfterDialogEndIsAbsorbed() {
+        ra.onRawMessage(invite(), PEER, "UDP");
+        ra.onRawMessage(bye(), PEER, "UDP");
+        ra.endDialog(CALL_ID);
+        ra.onRawMessage(bye(), PEER, "UDP"); // 200 lost → UA retransmits BYE
+
+        assertEquals(2, bootstrap.firedEvents.size());
+        assertEquals(1, ra.retransmissionsAbsorbed());
+    }
+
+    @Test
+    public void retransmitted2xxToOurInviteFiresOnce() {
+        ra.onRawMessage(invite(), PEER, "UDP");
+        ra.onRawMessage(farInvite200(), TRUNK, "UDP");
+        ra.onRawMessage(farInvite200(), TRUNK, "UDP"); // trunk Timer G: no ACK yet
+
+        assertEquals(2, bootstrap.firedEvents.size());
+        assertEquals(1, ra.retransmissionsAbsorbed());
     }
 
     @Test
@@ -127,6 +181,29 @@ public class SipRaDialogLifecycleTest {
                 + "Call-ID: " + CALL_ID + "\r\n"
                 + "CSeq: 1 INVITE\r\n"
                 + "Contact: <sip:alice@10.0.0.9:5060>\r\n"
+                + "Content-Length: 0\r\n"
+                + "\r\n").getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] farInvite200() {
+        return ("SIP/2.0 200 OK\r\n"
+                + "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKfarinv\r\n"
+                + "To: <sip:gw@example.com>;tag=fstag\r\n"
+                + "From: <sip:alice@example.com>;tag=lct1\r\n"
+                + "Call-ID: " + CALL_ID + "\r\n"
+                + "CSeq: 1 INVITE\r\n"
+                + "Contact: <sip:gw@127.0.0.1:5062>\r\n"
+                + "Content-Length: 0\r\n"
+                + "\r\n").getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] farBye200() {
+        return ("SIP/2.0 200 OK\r\n"
+                + "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKfar1\r\n"
+                + "To: <sip:gw@example.com>;tag=fstag\r\n"
+                + "From: <sip:alice@example.com>;tag=lct1\r\n"
+                + "Call-ID: " + CALL_ID + "\r\n"
+                + "CSeq: 2 BYE\r\n"
                 + "Content-Length: 0\r\n"
                 + "\r\n").getBytes(StandardCharsets.US_ASCII);
     }

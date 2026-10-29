@@ -135,6 +135,13 @@ public class SipEndToEndTest {
             DatagramPacket in = new DatagramPacket(buf, buf.length);
             String response;
             try {
+                // RFC 3261 §17.2.1: the RA's transaction layer answers 100 Trying first.
+                socket.receive(in);
+                response = new String(in.getData(), 0, in.getLength(),
+                        StandardCharsets.US_ASCII);
+                assertTrue("first response must be 100 Trying, got:\n" + response,
+                        response.startsWith("SIP/2.0 100 Trying"));
+                in = new DatagramPacket(buf, buf.length);
                 socket.receive(in);
                 response = new String(in.getData(), 0, in.getLength(),
                         StandardCharsets.US_ASCII);

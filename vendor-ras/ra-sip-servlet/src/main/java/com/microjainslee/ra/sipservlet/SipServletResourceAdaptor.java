@@ -68,6 +68,8 @@ public final class SipServletResourceAdaptor {
 
     private SipRaConfig config = new SipRaConfig();
     private final Map<String, SipTransport> transports = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong retransmissionsAbsorbed =
+            new java.util.concurrent.atomic.AtomicLong();
     private RaBootstrapPort bootstrapPort;
     private SipEventClassifier classifier = new DefaultSipEventClassifier();
     private SipOutboundSender outboundSender;
@@ -76,6 +78,7 @@ public final class SipServletResourceAdaptor {
     private final Map<String, ActivityHandle> dialogs = new ConcurrentHashMap<>();
     private final AtomicBoolean active = new AtomicBoolean(false);
     private ScheduledExecutorService sweeper;
+    private volatile ClientTransactions clientTransactions;
 
     // ---- DNS / STUN / ICE ----
     private DnsResolver dnsResolver;
@@ -215,6 +218,11 @@ public final class SipServletResourceAdaptor {
             outboundSender = defaultSender;
             LOG.info("[ra-sip-servlet] default Netty outbound sender wired");
         }
+        if (defaultSender != null) {
+            NettySipOutboundSender sender = defaultSender;
+            clientTransactions = new ClientTransactions(sender::retransmit, this::onClientTimeout);
+            sender.setClientTransactions(clientTransactions);
+        }
 
         // DNS resolver
         if (config.dnsEnabled()) {
@@ -254,6 +262,7 @@ public final class SipServletResourceAdaptor {
         if (!active.compareAndSet(true, false)) return;
         teardownHa();
         if (sweeper != null) { sweeper.shutdownNow(); sweeper = null; }
+        if (clientTransactions != null) { clientTransactions.stop(); clientTransactions = null; }
         transports.values().forEach(SipTransport::stop);
         transports.clear();
         dialogs.clear();
@@ -416,6 +425,16 @@ public final class SipServletResourceAdaptor {
             return;
         }
         String callId = deriveCallId(msg);
+        ClientTransactions ctx = clientTransactions;
+        if (ctx != null && msg instanceof SIPResponse resp) {
+            ctx.onResponse(resp);
+        }
+        if (absorbRetransmission(msg, callId)) {
+            return;
+        }
+        if (config.autoTrying() && msg instanceof SIPRequest req && Request.INVITE.equals(req.getMethod())) {
+            sendTrying(req, peer, transport, callId);
+        }
         ActivityHandle handle = dialogs.computeIfAbsent(callId,
                 id -> bootstrapPort.createActivityHandle(id));
         dialogRegistry.recordInbound(callId, handle, msg, peer, transport);
@@ -429,6 +448,13 @@ public final class SipServletResourceAdaptor {
         if (isDialogTerminating(msg)) {
             // Inbound BYE: keep dialog until SBB sends final response (see sendOutbound).
             if (msg instanceof SIPRequest req && Request.BYE.equals(req.getMethod())) {
+                return;
+            }
+            // Far leg's 2xx to the BYE the SBB relayed while the near leg's inbound BYE is
+            // still unanswered: the SBB's final response ends the dialog
+            // (maybeEndDialogAfterByeAck). Ending here races it — under load the trunk
+            // answers before the SBB sends its 200, which then finds no dialog/owner.
+            if (msg instanceof SIPResponse && inboundByePending(callId)) {
                 return;
             }
             endDialog(callId);
@@ -464,6 +490,100 @@ public final class SipServletResourceAdaptor {
         } catch (RuntimeException ex) {
             LOG.warn("[ra-sip-servlet] HA publish failed callId={}: {}", callId, ex.toString());
         }
+    }
+
+    /**
+     * The RA is the SIP transaction layer (RFC 3261 §17): retransmissions never become
+     * SLEE events.
+     * <ul>
+     *   <li>Request retransmission (same Call-ID / Via branch / CSeq / method, §17.2.3):
+     *       re-send the last response of that server transaction, if any.</li>
+     *   <li>Retransmitted 2xx to our INVITE (§13.2.2.4): re-send the ACK already sent;
+     *       the SBB saw the first copy.</li>
+     * </ul>
+     * ACK is its own transaction (no response) and always passes.
+     */
+    private boolean absorbRetransmission(SIPMessage msg, String callId) {
+        if (msg instanceof SIPRequest req) {
+            if (Request.ACK.equals(req.getMethod())) {
+                return false;
+            }
+            DialogRegistry.ServerTransaction existing = dialogRegistry.beginServerTransaction(req);
+            if (existing == null) {
+                return false;
+            }
+            if (defaultSender != null) {
+                defaultSender.retransmit(existing.lastResponse());
+            }
+            retransmissionsAbsorbed.incrementAndGet();
+            LOG.debug("[ra-sip-servlet] {} retransmission absorbed callId={}", req.getMethod(), callId);
+            return true;
+        }
+        if (msg instanceof SIPResponse resp && resp.getStatusCode() / 100 == 2
+                && resp.getCSeq() != null && Request.INVITE.equals(resp.getCSeq().getMethod())) {
+            DialogRegistry.Dialog dialog = dialogRegistry.find(callId);
+            if (dialog == null || dialog.firstInvite2xx(resp)) {
+                return false;
+            }
+            if (defaultSender != null) {
+                defaultSender.retransmit(dialog.ackFor(resp));
+            }
+            retransmissionsAbsorbed.incrementAndGet();
+            LOG.debug("[ra-sip-servlet] 2xx INVITE retransmission absorbed callId={}", callId);
+            return true;
+        }
+        return false;
+    }
+
+    private void sendTrying(SIPRequest invite, InetSocketAddress peer, String transport, String callId) {
+        NettySipOutboundSender sender = defaultSender;
+        if (sender == null) {
+            return;
+        }
+        try {
+            sender.sendTrying(invite, peer, transport);
+        } catch (Exception ex) {
+            LOG.warn("[ra-sip-servlet] 100 Trying failed callId={}: {}", callId, ex.toString());
+        }
+    }
+
+    /**
+     * Timer B / F (RFC 3261 §17.1.1.2, §17.1.2.2): the TU sees a locally generated 408
+     * (§8.1.3.1) on the dialog's activity, so it can fail the other leg. A transaction of a
+     * dialog that is already gone (BYE after teardown) just ends.
+     */
+    private void onClientTimeout(SIPRequest request, DialogRegistry.SentMessage sent) {
+        String callId = request.getCallId() != null ? request.getCallId().getCallId() : null;
+        if (callId == null || !dialogRegistry.contains(callId) || !active.get()) {
+            LOG.debug("[ra-sip-servlet] {} timed out after dialog end callId={}", request.getMethod(), callId);
+            return;
+        }
+        LOG.info("[ra-sip-servlet] {} timed out (no response in {} ms) peer={} callId={}",
+                request.getMethod(), ClientTransactions.TIMEOUT_MILLIS, sent.peer(), callId);
+        onSipMessage(request.createResponse(408, "Request Timeout"), sent.peer(), sent.transport());
+    }
+
+    /** UDP request retransmissions sent by the client transaction layer. */
+    public long clientRetransmissions() {
+        ClientTransactions ctx = clientTransactions;
+        return ctx == null ? 0L : ctx.retransmissions();
+    }
+
+    /** Client transactions ended by Timer B / F. */
+    public long clientTimeouts() {
+        ClientTransactions ctx = clientTransactions;
+        return ctx == null ? 0L : ctx.timeouts();
+    }
+
+    /** Request / 2xx retransmissions handled inside the RA (never fired as events). */
+    public long retransmissionsAbsorbed() {
+        return retransmissionsAbsorbed.get();
+    }
+
+    private boolean inboundByePending(String callId) {
+        DialogRegistry.Dialog dialog = dialogRegistry.find(callId);
+        SIPRequest last = dialog == null ? null : dialog.lastRequest();
+        return last != null && Request.BYE.equals(last.getMethod());
     }
 
     /** BYE requests and final non-2xx INVITE responses terminate the dialog. */
@@ -504,6 +624,7 @@ public final class SipServletResourceAdaptor {
 
     private void sweepIdleDialogs() {
         try {
+            dialogRegistry.sweepServerTransactions(System.currentTimeMillis());
             long idleMillis = TimeUnit.SECONDS.toMillis(Math.max(1, config.dialogIdleSecs()));
             for (DialogRegistry.Dialog dialog : dialogRegistry.expireIdle(idleMillis)) {
                 LOG.info("[ra-sip-servlet] expiring idle dialog callId={} (idle>{}s)",

@@ -84,12 +84,32 @@ public final class NettySipOutboundSender implements SipOutboundSender {
     private final MessageFactoryImpl messageFactory = new MessageFactoryImpl();
     private final HeaderFactoryImpl headerFactory = new HeaderFactoryImpl();
     private final AddressFactoryImpl addressFactory = new AddressFactoryImpl();
+    /** UDP retransmission / Timer B-F for requests this sender puts on the wire. */
+    private volatile ClientTransactions clientTransactions;
 
     public NettySipOutboundSender(SipRaConfig config, DialogRegistry dialogs,
                                   Map<String, SipTransport> transports) {
         this.config = config;
         this.dialogs = dialogs;
         this.transports = transports;
+    }
+
+    public void setClientTransactions(ClientTransactions clientTransactions) {
+        this.clientTransactions = clientTransactions;
+    }
+
+    /**
+     * RFC 3261 §17.2.1: {@code 100 Trying} for a new INVITE server transaction, sent by the
+     * transaction layer so the UAC stops retransmitting while the TU works.
+     */
+    public DialogRegistry.SentMessage sendTrying(SIPRequest invite, InetSocketAddress peer, String transport)
+            throws Exception {
+        SIPResponse trying = invite.createResponse(100, "Trying");
+        DialogRegistry.SentMessage sent = transmit(trying, transport, peer);
+        if (sent != null) {
+            dialogs.recordServerResponse(invite, sent);
+        }
+        return sent;
     }
 
     /** Called by DialogRegistry owners when a dialog is torn down. */
@@ -155,7 +175,10 @@ public final class NettySipOutboundSender implements SipOutboundSender {
             ContentTypeHeader ct = headerFactory.createContentTypeHeader("application", "sdp");
             response.setContent(sdp.getBytes(StandardCharsets.UTF_8), ct);
         }
-        transmit(response, dialog.transport(), dialog.peer());
+        DialogRegistry.SentMessage sent = transmit(response, dialog.transport(), dialog.peer());
+        if (sent != null) {
+            dialogs.recordServerResponse(request, sent);
+        }
     }
 
     // ── in-dialog requests ─────────────────────────────────────────
@@ -298,7 +321,10 @@ public final class NettySipOutboundSender implements SipOutboundSender {
 
         SIPRequest ack = (SIPRequest) messageFactory.createRequest(
                 requestUri, Request.ACK, callIdHeader, cseq, from, to, vias, maxForwards);
-        transmit(ack, ackTransport, ackPeer);
+        DialogRegistry.SentMessage sent = transmit(ack, ackTransport, ackPeer);
+        if (sent != null) {
+            dialogs.recordAck(callId, response, sent);
+        }
     }
 
     private void sendCancel(String callId) throws Exception {
@@ -520,13 +546,14 @@ public final class NettySipOutboundSender implements SipOutboundSender {
 
     // ── wire helpers ───────────────────────────────────────────────
 
-    private void transmit(SIPMessage message, String transport, InetSocketAddress peer)
+    /** Encode + send; returns what went on the wire, or {@code null} when nothing was sent. */
+    private DialogRegistry.SentMessage transmit(SIPMessage message, String transport, InetSocketAddress peer)
             throws Exception {
         if (peer == null) {
             LOG.warn("[sip-out] no peer address for callId={} — dropping {}",
                     message.getCallId() != null ? message.getCallId().getCallId() : "?",
                     message.getFirstLine() == null ? "?" : message.getFirstLine().trim());
-            return;
+            return null;
         }
         String proto = transport != null ? transport.toUpperCase(Locale.ROOT) : "UDP";
         SipTransport sipTransport = transports.get(proto);
@@ -536,13 +563,34 @@ public final class NettySipOutboundSender implements SipOutboundSender {
         }
         if (sipTransport == null) {
             LOG.error("[sip-out] no transport available for {} — dropping", proto);
-            return;
+            return null;
         }
         byte[] wire = message.encodeAsBytes(proto);
         if (sipTransport.send(wire, peer)) {
             LOG.debug("[sip-out] {} {} bytes → {} via {}",
                     message.getFirstLine() == null ? "?" : message.getFirstLine().trim(),
                     wire.length, peer, proto);
+            DialogRegistry.SentMessage sent = new DialogRegistry.SentMessage(wire, peer, proto);
+            ClientTransactions ctx = clientTransactions;
+            if (ctx != null && message instanceof SIPRequest request) {
+                ctx.start(request, sent);
+            }
+            return sent;
+        }
+        return null;
+    }
+
+    /** Re-send bytes recorded earlier (retransmission answered by the RA). */
+    public void retransmit(DialogRegistry.SentMessage sent) {
+        if (sent == null) {
+            return;
+        }
+        SipTransport t = transports.get(sent.transport());
+        if (t == null) {
+            t = transports.values().stream().findFirst().orElse(null);
+        }
+        if (t != null) {
+            t.send(sent.wire(), sent.peer());
         }
     }
 

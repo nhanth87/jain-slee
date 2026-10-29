@@ -370,6 +370,11 @@ public class InitialEventSelectorDispatcher {
         return null;
     }
 
+    /** Does {@code sbbClass} declare an {@code @InitialEventSelect} method? */
+    public boolean hasInitialEventSelector(Class<?> sbbClass) {
+        return sbbClass != null && findIesMethod(sbbClass) != null;
+    }
+
     /** Size of the convergence index — useful for metrics/health. */
     public int activeConvergenceCount() {
         return convergenceIndex.size();

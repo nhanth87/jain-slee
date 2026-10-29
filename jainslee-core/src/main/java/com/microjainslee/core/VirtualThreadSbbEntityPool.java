@@ -100,6 +100,11 @@ public class VirtualThreadSbbEntityPool implements SbbEntityPoolContract {
         boolean isShutdown() {
             return slot.isShutdown();
         }
+
+        /** Caller is this entity's own event-loop thread. */
+        boolean isCurrentThread() {
+            return slot.isCurrentThread();
+        }
     }
 
     private final ConcurrentMap<String, SbbEntity> entities =

@@ -31,14 +31,28 @@ import static org.junit.Assert.assertTrue;
  */
 public class EventMdcTest {
 
+    private boolean wasEnabled;
+
     @Before
     public void resetContext() {
+        // Stamping is off unless DEBUG/TRACE (or -Djainslee.mdc.enabled=true): force it on.
+        wasEnabled = EventMdc.isEnabled();
+        EventMdc.setEnabled(true);
         EventMdc.clear();
     }
 
     @After
     public void cleanupContext() {
         EventMdc.clear();
+        EventMdc.setEnabled(wasEnabled);
+    }
+
+    @Test
+    public void offAtInfoAndAbove() {
+        EventMdc.setEnabled(false);
+        EventMdc.start("Sbb#off", "aci", "Ev");
+        assertNull(org.apache.logging.log4j.ThreadContext.get(EventMdc.KEY_SBB_ID));
+        EventMdc.setEnabled(true);
     }
 
     @Test

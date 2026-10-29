@@ -58,7 +58,9 @@ public final class SbbLocalInvoker {
 
         VirtualThreadSbbEntityPool.SbbEntity entity =
                 pool.findEntity(target.getSbbID().getId());
-        if (entity == null) {
+        if (entity == null || entity.isCurrentThread()) {
+            // Already on the entity's thread (e.g. remove() from onEvent): run inline.
+            // Submitting to our own queue and awaiting would wait on ourselves forever.
             try {
                 return action.call();
             } catch (RuntimeException e) {

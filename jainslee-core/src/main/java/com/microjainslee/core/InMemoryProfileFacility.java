@@ -167,7 +167,8 @@ public final class InMemoryProfileFacility implements ProfileTablePort, ProfileF
                     + "CMP writes may now target the wrong tables. Sanctioned paths: "
                     + "MicroSleeContainer owns its default facility; swap via "
                     + "installProfileFacility().",
-                    previous.getClass().getName());
+                    previous.getClass().getName(),
+                    new Throwable("new InMemoryProfileFacility() called from"));
         }
         ProfileFieldStoreLocator.set(this);
         LOG.debug("InMemoryProfileFacility constructed and registered with ProfileFieldStoreLocator");

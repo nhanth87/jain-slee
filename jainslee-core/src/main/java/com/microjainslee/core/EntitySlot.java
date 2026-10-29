@@ -32,6 +32,14 @@ final class EntitySlot {
 
     private static final AtomicLong SLOT_SEQUENCE = new AtomicLong();
 
+    /** Set on every entity event-loop thread. */
+    private static final ThreadLocal<Boolean> ON_ENTITY_THREAD = new ThreadLocal<>();
+
+    /** True when the caller runs inside some SBB entity's event loop (e.g. in onEvent). */
+    static boolean onEntityThread() {
+        return ON_ENTITY_THREAD.get() != null;
+    }
+
     private final long slotId = SLOT_SEQUENCE.incrementAndGet();
     private final BlockingQueue<Runnable> queue = new LinkedBlockingQueue<Runnable>();
     private final AtomicBoolean parked = new AtomicBoolean(true);
@@ -41,6 +49,8 @@ final class EntitySlot {
     private volatile String externalId;
     private volatile long entityId;
     private volatile Sbb boundSbb;
+    /** The virtual thread running {@link EventLoop} (spawned once, reused across bindings). */
+    private volatile Thread loopThread;
 
     EntitySlot(ExecutorService owner) {
         this.loopFuture = owner.submit(new EventLoop());
@@ -72,6 +82,11 @@ final class EntitySlot {
 
     boolean isShutdown() {
         return shutdown.get();
+    }
+
+    /** True when called from inside this slot's own event loop (e.g. from {@code onEvent}). */
+    boolean isCurrentThread() {
+        return loopThread == Thread.currentThread();
     }
 
     Future<?> getLoopFuture() {
@@ -117,6 +132,8 @@ final class EntitySlot {
     private final class EventLoop implements Runnable {
         @Override
         public void run() {
+            loopThread = Thread.currentThread();
+            ON_ENTITY_THREAD.set(Boolean.TRUE);
             try {
                 while (!shutdown.get()) {
                     Runnable task;

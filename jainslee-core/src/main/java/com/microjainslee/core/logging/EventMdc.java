@@ -60,6 +60,9 @@ public final class EventMdc {
     /** Placeholder cluster node identifier until P2 ClusterManager lands. */
     public static final String NODE_ID_LOCAL = "local";
 
+    private static final java.util.List<String> KEYS = java.util.List.of(
+            KEY_SBB_ID, KEY_ACI_NAME, KEY_EVENT_TYPE, KEY_DURATION_NS, KEY_TX_STATUS, KEY_NODE_ID);
+
     /**
      * ADR 0007 D8 — the real cluster node id, stamped onto every log line.
      * <p>
@@ -100,7 +103,12 @@ public final class EventMdc {
      */
     public static final String PROP_ENABLED = "jainslee.mdc.enabled";
 
-    private static final boolean ENABLED = resolveEnabled();
+    private static volatile boolean ENABLED = resolveEnabled();
+
+    /** Test hook — force stamping on/off regardless of the logger level. */
+    static void setEnabled(boolean enabled) {
+        ENABLED = enabled;
+    }
 
     private static boolean resolveEnabled() {
         String explicit = System.getProperty(PROP_ENABLED);
@@ -113,8 +121,9 @@ public final class EventMdc {
             org.apache.logging.log4j.Logger l =
                     org.apache.logging.log4j.LogManager.getLogger("com.microjainslee.core");
             org.apache.logging.log4j.Level level = l.getLevel();
-            return level != null && level.isMoreSpecificThan(org.apache.logging.log4j.Level.INFO)
-                    && level.intLevel() <= org.apache.logging.log4j.Level.TRACE.intLevel();
+            // DEBUG or TRACE only. (The old test, isMoreSpecificThan(INFO), was true for
+            // INFO/WARN/ERROR — MDC was stamped on every event in production.)
+            return level != null && level.isLessSpecificThan(org.apache.logging.log4j.Level.DEBUG);
         } catch (Throwable ignore) {
             return false;
         }
@@ -142,13 +151,14 @@ public final class EventMdc {
         if (!ENABLED) {
             return;
         }
-        ThreadContext.put(KEY_SBB_ID, sbbId == null ? "?" : sbbId);
-        ThreadContext.put(KEY_ACI_NAME, aciName == null ? "?" : aciName);
-        ThreadContext.put(KEY_EVENT_TYPE, eventType == null ? "?" : eventType);
+        // One putAll = one copy of log4j's copy-on-write context map (five puts = five).
         // durationNs is intentionally absent here — finish() sets it.
-        // txStatus is set by finish() so we don't pre-commit the field.
-        ThreadContext.put(KEY_TX_STATUS, "PENDING");
-        ThreadContext.put(KEY_NODE_ID, nodeId);
+        ThreadContext.putAll(java.util.Map.of(
+                KEY_SBB_ID, sbbId == null ? "?" : sbbId,
+                KEY_ACI_NAME, aciName == null ? "?" : aciName,
+                KEY_EVENT_TYPE, eventType == null ? "?" : eventType,
+                KEY_TX_STATUS, "PENDING",
+                KEY_NODE_ID, nodeId));
     }
 
     /**
@@ -183,8 +193,9 @@ public final class EventMdc {
             return;
         }
         long elapsedNs = System.nanoTime() - startNanos;
-        ThreadContext.put(KEY_DURATION_NS, Long.toString(elapsedNs));
-        ThreadContext.put(KEY_TX_STATUS, txStatus == null ? "UNKNOWN" : txStatus);
+        ThreadContext.putAll(java.util.Map.of(
+                KEY_DURATION_NS, Long.toString(elapsedNs),
+                KEY_TX_STATUS, txStatus == null ? "UNKNOWN" : txStatus));
     }
 
     /**
@@ -197,11 +208,6 @@ public final class EventMdc {
         if (!ENABLED) {
             return;
         }
-        ThreadContext.remove(KEY_SBB_ID);
-        ThreadContext.remove(KEY_ACI_NAME);
-        ThreadContext.remove(KEY_EVENT_TYPE);
-        ThreadContext.remove(KEY_DURATION_NS);
-        ThreadContext.remove(KEY_TX_STATUS);
-        ThreadContext.remove(KEY_NODE_ID);
+        ThreadContext.removeAll(KEYS);
     }
 }

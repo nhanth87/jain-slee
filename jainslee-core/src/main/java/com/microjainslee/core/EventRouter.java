@@ -132,6 +132,16 @@ public class EventRouter {
     private volatile SbbSupervisor sbbSupervisor;
 
     /**
+     * JAIN SLEE 1.1 §8 — runs once per attached SBB after {@link ActivityEndedEvent}
+     * was handed to it, to detach it and reclaim router-created root entities.
+     */
+    public interface ActivityEndHook {
+        void afterActivityEnded(SbbLocalObject attached, InMemoryActivityContext activity);
+    }
+
+    private volatile ActivityEndHook activityEndHook;
+
+    /**
      * Passive delivery observation (jainslee-telemetry). One volatile read
      * per delivery when unset — see {@link DispatchObserver} for the
      * implementation contract.
@@ -275,6 +285,7 @@ public class EventRouter {
                     dispatch(wrapper.event, wrapper.aci);
                 } finally {
                     wrapper.clear();
+                    drainOverflow(sequence);
                 }
             }
         });
@@ -318,6 +329,10 @@ public class EventRouter {
      */
     public void bindSbbSupervisor(SbbSupervisor supervisor) {
         this.sbbSupervisor = supervisor;
+    }
+
+    public void bindActivityEndHook(ActivityEndHook hook) {
+        this.activityEndHook = hook;
     }
 
     /**
@@ -472,6 +487,10 @@ public class EventRouter {
     }
 
     public void routeEvent(SleeEvent event, ActivityContextInterface aci) {
+        if (EntitySlot.onEntityThread()) {
+            routeFromSbb(event, aci);
+            return;
+        }
         long sequence = ringBuffer.next();
         try {
             EventWrapper wrapper = ringBuffer.get(sequence);
@@ -480,6 +499,52 @@ public class EventRouter {
         } finally {
             ringBuffer.publish(sequence);
         }
+    }
+
+    /** An event fired by an SBB while the ring was full; dispatched after {@code afterSequence}. */
+    private record Overflow(SleeEvent event, ActivityContextInterface aci, long afterSequence) {}
+
+    private final ConcurrentLinkedQueue<Overflow> overflow = new ConcurrentLinkedQueue<>();
+    private final java.util.concurrent.atomic.LongAdder overflowCount = new java.util.concurrent.atomic.LongAdder();
+
+    /**
+     * An SBB (running on its entity thread) fired an event — typically an RA command that
+     * ends an activity. Blocking on a full ring here deadlocks in SYNC delivery: the
+     * single worker waits for this very entity. So never block: when the ring is full,
+     * queue the event behind everything already claimed (the current cursor); the worker
+     * dispatches it right after that sequence, which keeps JSR 240 per-activity fire order.
+     * The ring being full guarantees the worker still has work up to the cursor.
+     */
+    private void routeFromSbb(SleeEvent event, ActivityContextInterface aci) {
+        long sequence;
+        try {
+            sequence = ringBuffer.tryNext();
+        } catch (InsufficientCapacityException full) {
+            overflow.offer(new Overflow(event, aci, ringBuffer.getCursor()));
+            overflowCount.increment();
+            return;
+        }
+        try {
+            EventWrapper wrapper = ringBuffer.get(sequence);
+            wrapper.setEvent(event);
+            wrapper.setAci(aci);
+        } finally {
+            ringBuffer.publish(sequence);
+        }
+    }
+
+    /** Worker side: dispatch overflowed SBB events whose predecessors are all done. */
+    private void drainOverflow(long processedSequence) {
+        Overflow next;
+        while ((next = overflow.peek()) != null && next.afterSequence() <= processedSequence) {
+            overflow.poll();
+            dispatch(next.event(), next.aci());
+        }
+    }
+
+    /** SBB-fired events that found the ring full and took the overflow path. */
+    public long overflowCount() {
+        return overflowCount.sum();
     }
 
     public void shutdown() {
@@ -680,6 +745,14 @@ public class EventRouter {
                     failed = true;
                     txStatus = "ROLLED_BACK";
                     break;
+                }
+            }
+            ActivityEndHook endHook = this.activityEndHook;
+            if (endHook != null && event instanceof ActivityEndedEvent) {
+                // Every attached SBB — also those whose mask skipped the event or whose
+                // handler failed: the activity is gone either way.
+                for (SbbLocalObject localObject : attached) {
+                    endHook.afterActivityEnded(localObject, activityContext);
                 }
             }
             if (!failed && deliveryMode != EventDeliveryMode.ASYNC_COMMIT) {

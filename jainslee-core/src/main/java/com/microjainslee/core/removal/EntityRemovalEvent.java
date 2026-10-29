@@ -45,6 +45,12 @@ public record EntityRemovalEvent(
         /** SBB code threw and the container rolled the entity back. */
         EXCEPTION_ROLLBACK,
         /** Hot redeploy — the SBB class was swapped out at runtime. */
-        HOT_REDEPLOY
+        HOT_REDEPLOY,
+        /**
+         * JAIN SLEE 1.1 §8.5 — the root entity's attachment count reached zero (e.g. its
+         * activity ended and the SLEE implicitly detached it) and the SLEE removed the
+         * entity tree. Normal end of life, not a failure.
+         */
+        ATTACHMENT_COUNT_ZERO
     }
 }

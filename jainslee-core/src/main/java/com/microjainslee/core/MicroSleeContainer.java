@@ -123,8 +123,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
      * This list preserves registration order; stale ids (already removed
      * from {@link #sbbs}) are skipped on read and pruned lazily.
      */
-    private final java.util.concurrent.CopyOnWriteArrayList<String> sbbRegistrationOrder =
-            new java.util.concurrent.CopyOnWriteArrayList<String>();
+    private final RegistrationOrder sbbRegistrationOrder = new RegistrationOrder();
     /**
      * GOAL 3 — programmatic registration takes priority over
      * descriptor-based (classpath sbb-index) registration. Entities that
@@ -252,6 +251,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
         this.sbbTypeRegistry = new SbbTypeRegistry(sbbLifecycleManager,
                 configuration.getSbbPoolMax());
         this.eventRouter.bindSbbEntityPool(this.sbbEntityPool);
+        this.eventRouter.bindActivityEndHook(this::afterActivityEnded);
         // ADR 0007 D7 / P4-c — bind the fan-in gateway. It shipped with batch
         // draining and a pre-allocated wrapper pool, but the container never
         // created one, so every RA published into the 2048-slot ring directly.
@@ -1499,12 +1499,14 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                     LOG.warn("SBB {} failed sbbCreate/sbbPostCreate: {}", id, ce.getMessage());
                     sbbLifecycleManager.removeEntity(sbbInstance);
                     sbbs.remove(id);
+                    sbbRegistrationOrder.remove(id);
                     sbbEntityPool.release(entity);
                     cmpFieldStore.remove(id);
                     throw new RuntimeException(ce);
                 } catch (RuntimeException re) {
                     LOG.error("SBB {} activation failed: {}", id, re.getMessage(), re);
                     sbbs.remove(id);
+                    sbbRegistrationOrder.remove(id);
                     cmpFieldStore.remove(id);
                     throw re;
                 }
@@ -1987,7 +1989,104 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
         timerPort.getBridge().bindActivityContext(sbbLocalObject, aci);
     }
 
+    /**
+     * JSLEE 1.1 §8.5 root removal is on by default. {@code -Djainslee.root-removal=off} is a
+     * NON-compliant escape hatch for hosts that still keep detached root entities alive
+     * (attach them to a NullActivity instead).
+     */
+    private static final boolean SPEC_ROOT_REMOVAL =
+            !"off".equalsIgnoreCase(System.getProperty("jainslee.root-removal", "spec"));
+
+    /**
+     * JSLEE 1.1 §7.3.4 — after {@link com.microjainslee.api.ActivityEndedEvent} was delivered
+     * the SLEE implicitly detaches every SBB entity from the ending activity context.
+     * Runs on the entity's own thread, queued behind the delivery, so the handler always
+     * sees the event first. A root whose attachment count drops to zero is then removed
+     * via {@link #onRootAttachmentCountZero}.
+     */
+    private void afterActivityEnded(SbbLocalObject attached, InMemoryActivityContext activity) {
+        VirtualThreadSbbEntityPool.SbbEntity entity = attached.getSbbID() == null
+                ? null : sbbEntityPool.findEntity(attached.getSbbID().getId());
+        if (entity == null) {
+            activity.detachImmediate(attached);
+            return;
+        }
+        try {
+            entity.submit(() -> activity.detachImmediate(attached));
+        } catch (IllegalStateException slotGone) {
+            activity.detachImmediate(attached);
+        }
+    }
+
+    /**
+     * JSLEE 1.1 §8.5 — a SLEE-created root's attachment count reached zero: remove the
+     * entity tree once the current work on the root's thread finished (the detaching
+     * transaction has committed by then). Re-checked there, since an attach may win.
+     */
+    private void onRootAttachmentCountZero(SimpleSbbLocalObject root) {
+        if (!SPEC_ROOT_REMOVAL) {
+            return;
+        }
+        Runnable removal = () -> {
+            if (!root.isRemoved() && root.getEntityState().getAttachmentCount() == 0) {
+                removeEntityTree(root);
+            }
+        };
+        VirtualThreadSbbEntityPool.SbbEntity entity = root.getSbbID() == null
+                ? null : sbbEntityPool.findEntity(root.getSbbID().getId());
+        if (entity == null) {
+            removal.run();
+            return;
+        }
+        try {
+            entity.submit(removal);
+        } catch (IllegalStateException slotGone) {
+            // already being torn down
+        }
+    }
+
+    /**
+     * Remove {@code root} and its descendants, descendants first (JSLEE 1.1 §6.8: a child
+     * is removed before the entity that created it).
+     */
+    private static void removeEntityTree(SimpleSbbLocalObject root) {
+        java.util.ArrayDeque<SimpleSbbLocalObject> pending = new java.util.ArrayDeque<>();
+        java.util.ArrayDeque<SimpleSbbLocalObject> postOrder = new java.util.ArrayDeque<>();
+        pending.push(root);
+        while (!pending.isEmpty()) {
+            SimpleSbbLocalObject node = pending.pop();
+            postOrder.push(node);
+            for (ChildRelationImpl relation : node.getEntityState().getChildRelations()) {
+                for (SbbLocalObject child : relation) {
+                    if (child instanceof SimpleSbbLocalObject simpleChild) {
+                        pending.push(simpleChild);
+                    }
+                }
+            }
+        }
+        for (SimpleSbbLocalObject node : postOrder) {
+            if (node.isRemoved()) {
+                continue;
+            }
+            node.setRemovalCause(node == root
+                    ? SimpleSbbLocalObject.RemovalCause.ATTACHMENT_COUNT_ZERO
+                    : SimpleSbbLocalObject.RemovalCause.CASCADE);
+            try {
+                node.remove();
+            } catch (RuntimeException ex) {
+                LOG.warn("SBB entity tree removal: {} failed: {}", node.getSbbID(), ex.toString());
+            }
+        }
+    }
+
     private void detachFromAllActivityContexts(SbbLocalObject sbbLocalObject) {
+        if (sbbLocalObject instanceof SimpleSbbLocalObject simple) {
+            for (InMemoryActivityContext ctx : simple.attachedContexts()) {
+                ctx.detachImmediate(simple);
+            }
+            timerPort.getBridge().unbindActivityContext(sbbLocalObject);
+            return;
+        }
         for (ActivityContextInterface aci : activityContextNamingFacility.getBoundContexts()) {
             if (aci instanceof InMemoryActivityContext) {
                 ((InMemoryActivityContext) aci).detachImmediate(sbbLocalObject);
@@ -2040,6 +2139,16 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
         if (target == null) {
             return names;
         }
+        if (target instanceof SimpleSbbLocalObject simple) {
+            // Bound contexts only, as the scan below (an unbound context has no name).
+            for (InMemoryActivityContext ctx : simple.attachedContexts()) {
+                String name = activityContextNamingFacility.resolveName(ctx);
+                if (name != null) {
+                    names.add(name);
+                }
+            }
+            return names;
+        }
         for (ActivityContextInterface aci : activityContextNamingFacility.getBoundContexts()) {
             if (aci instanceof InMemoryActivityContext) {
                 InMemoryActivityContext ctx = (InMemoryActivityContext) aci;
@@ -2075,6 +2184,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
         old.getEntityState().transitionTo(SbbLifecycleManager.State.DOES_NOT_EXIST);
         detachFromAllActivityContexts(old);
         sbbs.remove(sbbId);
+        sbbRegistrationOrder.remove(sbbId);
         entityTypesById.remove(sbbId);
         // Publish BEFORE the pool release so subscribers can still read CMP.
         entityRemovalBus.publish(new EntityRemovalEvent(sbbId,
@@ -2497,6 +2607,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
             case HOT_REDEPLOY:     return RemovalReason.HOT_REDEPLOY;
             case OPERATOR:         return RemovalReason.OPERATOR;
             case EXCEPTION_ROLLBACK: return RemovalReason.EXCEPTION_ROLLBACK;
+            case ATTACHMENT_COUNT_ZERO: return RemovalReason.ATTACHMENT_COUNT_ZERO;
             default:               return RemovalReason.SBB_SELF_REMOVE;
         }
     }
@@ -2571,6 +2682,9 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
             if (target == null) {
                 target = acquireEntity(entityId, type);
             }
+            // JSLEE 1.1 §8.5 — the SLEE created this root for an initial event; it lives
+            // exactly as long as something is attached to it.
+            target.markSleeManagedRoot(this::onRootAttachmentCountZero);
         }
         if (target != null && !target.isRemoved()) {
             activityContext.attachImmediate(target);
@@ -3061,8 +3175,12 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                         + parent.getSbb().getClass().getName() + ": " + e.getMessage(), e);
             }
         }
-        return registerSbb(childSbbId, childInstance,
+        SbbLocalObject child = registerSbb(childSbbId, childInstance,
                 new ServiceID(childSbbId, "com.microjainslee", "1.0"));
+        if (child instanceof SimpleSbbLocalObject simpleChild) {
+            simpleChild.setParent(parent); // §8.5 child attachments count towards the root
+        }
+        return child;
     }
 
     /**
@@ -3139,6 +3257,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                         registerLocalRecoverySnapshot(id, removedObject);
                         detachFromAllActivityContexts(removedObject);
                         sbbs.remove(id);
+                        sbbRegistrationOrder.remove(id);
                         entityTypesById.remove(id);
                         Sbb sbbInstance = removedObject.getSbb();
                         if (pooled && pooledType != null) {
@@ -3221,6 +3340,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                     LOG.warn("SBB {} failed sbbCreate/sbbPostCreate: {}", id, ce.getMessage());
                     sbbLifecycleManager.removeEntity(sbbInstance);
                     sbbs.remove(id);
+                    sbbRegistrationOrder.remove(id);
                     entityTypesById.remove(id);
                     sbbEntityPool.release(entity);
                     cmpFieldStore.remove(id);
@@ -3228,6 +3348,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                 } catch (RuntimeException re) {
                     LOG.error("SBB {} activation failed: {}", id, re.getMessage(), re);
                     sbbs.remove(id);
+                    sbbRegistrationOrder.remove(id);
                     entityTypesById.remove(id);
                     cmpFieldStore.remove(id);
                     throw re;
@@ -3624,6 +3745,45 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                 container.notifyRaFailure(raName);
                 throw ex;
             }
+        }
+    }
+
+    /**
+     * Insertion-ordered set of entity ids with O(1)/O(log n) add + remove. Was a
+     * CopyOnWriteArrayList: {@code addIfAbsent} scanned and copied the whole array for
+     * every new entity and ids were only pruned on the root-fallback path, so with one
+     * entity per activity (call, channel) creation cost grew linearly with uptime.
+     */
+    static final class RegistrationOrder implements Iterable<String> {
+        private final java.util.concurrent.ConcurrentHashMap<String, Long> seqById =
+                new java.util.concurrent.ConcurrentHashMap<String, Long>();
+        private final java.util.concurrent.ConcurrentSkipListMap<Long, String> idBySeq =
+                new java.util.concurrent.ConcurrentSkipListMap<Long, String>();
+        private final java.util.concurrent.atomic.AtomicLong next =
+                new java.util.concurrent.atomic.AtomicLong();
+
+        void addIfAbsent(String id) {
+            seqById.computeIfAbsent(id, k -> {
+                long seq = next.incrementAndGet();
+                idBySeq.put(seq, k);
+                return seq;
+            });
+        }
+
+        void remove(Object id) {
+            Long seq = seqById.remove(id);
+            if (seq != null) {
+                idBySeq.remove(seq, id);
+            }
+        }
+
+        int size() {
+            return seqById.size();
+        }
+
+        @Override
+        public java.util.Iterator<String> iterator() {
+            return idBySeq.values().iterator();
         }
     }
 }

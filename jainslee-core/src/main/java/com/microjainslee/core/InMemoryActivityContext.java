@@ -119,13 +119,16 @@ public final class InMemoryActivityContext implements ActivityContextInterface, 
     }
 
     public void attachImmediate(SbbLocalObject sbbLocalObject) {
-        if (sbbLocalObject != null && !attachedSbbs.contains(sbbLocalObject)) {
-            attachedSbbs.add(sbbLocalObject);
+        if (sbbLocalObject != null && attachedSbbs.addIfAbsent(sbbLocalObject)
+                && sbbLocalObject instanceof SimpleSbbLocalObject simple) {
+            simple.attachedTo(this, true);
         }
     }
 
     public void detachImmediate(SbbLocalObject sbbLocalObject) {
-        attachedSbbs.remove(sbbLocalObject);
+        if (attachedSbbs.remove(sbbLocalObject) && sbbLocalObject instanceof SimpleSbbLocalObject simple) {
+            simple.attachedTo(this, false);
+        }
     }
 
     public List<SbbLocalObject> getAttachedSbbs() {

@@ -53,6 +53,14 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
     private final Map<String, RecoverySnapshot> snapshots;
     private final AtomicLong reclaimedExpired = new AtomicLong();
     private final AtomicLong rejectedStale = new AtomicLong();
+    /**
+     * Full expiry sweeps on the hot path run at most once per {@code reclaimIntervalMs}:
+     * a sweep is O(snapshots) and every lookup re-checks {@link #isExpired} on its own
+     * entry anyway, so sweeping on every register/remove (one per entity removal) only
+     * burned CPU — 18 % of a 120 CPS Elisa profile.
+     */
+    private final long reclaimIntervalMs;
+    private volatile long nextReclaimAtMs;
 
     /** Default constructor - {@link #DEFAULT_MAX_SNAPSHOTS} + {@link #DEFAULT_TTL_MS}. */
     public SessionRecoveryServiceImpl(RehydrateCallback callback) {
@@ -74,6 +82,7 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
         this.maxSize = maxSize;
         this.ttlMs = ttlMs;
         this.callback = callback;
+        this.reclaimIntervalMs = Math.max(1L, Math.min(ttlMs / 4, 1_000L));
         final int initialCapacity = (int) Math.min(maxSize, 1024L);
         LinkedHashMap<String, RecoverySnapshot> lru = new LinkedHashMap<String, RecoverySnapshot>(
                 initialCapacity, 0.75f, /* accessOrder= */ true) {
@@ -95,7 +104,7 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
         if (snapshot.entityId() == null) {
             throw new IllegalArgumentException("snapshot.entityId is required");
         }
-        reclaimExpired();
+        reclaimExpiredIfDue(System.currentTimeMillis());
         long now = System.currentTimeMillis();
         if (isExpired(snapshot, now)) {
             reclaimedExpired.incrementAndGet();
@@ -111,7 +120,7 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
         if (entityId == null) {
             return Optional.empty();
         }
-        reclaimExpired();
+        reclaimExpiredIfDue(System.currentTimeMillis());
         RecoverySnapshot snap = snapshots.get(entityId);
         if (snap == null) {
             return Optional.empty();
@@ -129,7 +138,7 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
         if (entityId == null) {
             return Optional.empty();
         }
-        reclaimExpired();
+        reclaimExpiredIfDue(System.currentTimeMillis());
         RecoverySnapshot snap = snapshots.remove(entityId);
         if (snap == null) {
             return Optional.empty();
@@ -155,7 +164,7 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
         }
         RecoverySnapshot snap = snapshots.remove(sbbId);
         if (snap == null) {
-            reclaimExpired();
+            reclaimExpiredIfDue(System.currentTimeMillis());
             return false;
         }
         long now = System.currentTimeMillis();
@@ -205,6 +214,14 @@ public final class SessionRecoveryServiceImpl implements SessionRecoveryService 
     public int activeSnapshotCount() {
         reclaimExpired();
         return snapshots.size();
+    }
+
+    private void reclaimExpiredIfDue(long nowMs) {
+        if (nowMs < nextReclaimAtMs) {
+            return;
+        }
+        nextReclaimAtMs = nowMs + reclaimIntervalMs;
+        reclaimExpired();
     }
 
     @Override

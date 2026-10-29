@@ -49,6 +49,9 @@ public final class SbbEntityState {
     private volatile SbbLifecycleManager.State lifecycleState =
             SbbLifecycleManager.State.POOLED;
     private volatile boolean removed;
+    /** JAIN SLEE 1.1 §8.5 attachment count — number of ACIs this entity is attached to. */
+    private final java.util.concurrent.atomic.AtomicInteger attachmentCount =
+            new java.util.concurrent.atomic.AtomicInteger();
     /**
      * JAIN-SLEE 1.1 §8.6 — set of event types this entity accepts.
      * Backed by the {@link EventMask} supplied at registration time.
@@ -98,6 +101,18 @@ public final class SbbEntityState {
 
     public boolean isRemoved() {
         return removed;
+    }
+
+    public int getAttachmentCount() {
+        return attachmentCount.get();
+    }
+
+    void attached() {
+        attachmentCount.incrementAndGet();
+    }
+
+    void detached() {
+        attachmentCount.updateAndGet(n -> n > 0 ? n - 1 : 0);
     }
 
     public void markRemoved() {

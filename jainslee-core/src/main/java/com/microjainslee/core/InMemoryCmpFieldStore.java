@@ -95,23 +95,50 @@ public final class InMemoryCmpFieldStore implements CmpFieldStore {
         store.clear();
     }
 
+    /** Public no-arg {@code clone()} per class, or {@code null}; looked up once per class. */
+    private static final ClassValue<java.lang.reflect.Method> CLONE = new ClassValue<>() {
+        @Override
+        protected java.lang.reflect.Method computeValue(Class<?> type) {
+            try {
+                return type.getMethod("clone");
+            } catch (NoSuchMethodException e) {
+                return null;
+            }
+        }
+    };
+
     private static Object defensivelyCopyIfSerializable(Object value) {
         if (value == null) {
             return null;
         }
+        // Immutable values are already pass-by-value (JSR 240 §6.5.4) — share them.
+        // String has no public clone(): looking it up threw NoSuchMethodException on
+        // every CMP write (2.5 % of a 120 CPS profile).
+        if (value instanceof String || value instanceof Number || value instanceof Boolean
+                || value instanceof Character || value instanceof Enum<?> || value instanceof Record) {
+            return value;
+        }
+        switch (value) {
+            case byte[] a -> { return a.clone(); }
+            case int[] a -> { return a.clone(); }
+            case long[] a -> { return a.clone(); }
+            case Object[] a -> { return a.clone(); }
+            default -> { }
+        }
         if (value instanceof Serializable) {
             // Best-effort deep copy via clone(). For most CMP scalar types
-            // (String, Integer, Long, Boolean, byte[], ArrayList of strings,
-            // HashMap of primitives) clone() is sufficient. We avoid pulling in
-            // a deep-copy library to keep the runtime footprint tiny.
-            try {
-                java.lang.reflect.Method clone = value.getClass().getMethod("clone");
-                Object copy = clone.invoke(value);
-                if (copy != null) {
-                    return copy;
+            // (ArrayList of strings, HashMap of primitives) clone() is sufficient. We
+            // avoid pulling in a deep-copy library to keep the runtime footprint tiny.
+            java.lang.reflect.Method clone = CLONE.get(value.getClass());
+            if (clone != null) {
+                try {
+                    Object copy = clone.invoke(value);
+                    if (copy != null) {
+                        return copy;
+                    }
+                } catch (ReflectiveOperationException ignored) {
+                    // fall through and return the original reference
                 }
-            } catch (ReflectiveOperationException ignored) {
-                // fall through and return the original reference
             }
         }
         return value;

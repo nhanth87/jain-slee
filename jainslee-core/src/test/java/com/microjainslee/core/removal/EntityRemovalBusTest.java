@@ -217,7 +217,8 @@ public class EntityRemovalBusTest {
     /** 11. Sanity — all RemovalReason enum values are reachable. */
     @Test
     public void removalReason_allValuesReachable() {
-        assertEquals(6, EntityRemovalEvent.RemovalReason.values().length);
+        assertEquals(7, EntityRemovalEvent.RemovalReason.values().length);
+        assertNotNull(EntityRemovalEvent.RemovalReason.valueOf("ATTACHMENT_COUNT_ZERO"));
         assertNotNull(EntityRemovalEvent.RemovalReason.valueOf("TIMER_EXPIRED"));
         assertNotNull(EntityRemovalEvent.RemovalReason.valueOf("SBB_SELF_REMOVE"));
         assertNotNull(EntityRemovalEvent.RemovalReason.valueOf("CASCADE_CHILD"));

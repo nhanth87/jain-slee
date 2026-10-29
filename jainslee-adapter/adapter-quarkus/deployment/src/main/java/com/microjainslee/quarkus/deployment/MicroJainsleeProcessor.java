@@ -29,6 +29,7 @@ import io.quarkus.deployment.builditem.CombinedIndexBuildItem;
 import io.quarkus.deployment.builditem.FeatureBuildItem;
 import io.quarkus.deployment.builditem.ShutdownContextBuildItem;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Singleton;
 import org.jboss.jandex.ClassInfo;
 import org.jboss.jandex.DotName;
 import org.jboss.jandex.IndexView;
@@ -134,23 +135,28 @@ public class MicroJainsleeProcessor {
                         buildConfig.clusterInitialHosts(),
                         buildConfig.fanInQueueCapacity(),
                         buildConfig.fanInDrainBatchSize());
+        // @Singleton, not @ApplicationScoped: these wrap ready-made instances, and an
+        // ApplicationScoped client proxy is a *subclass* whose constructor runs
+        // MicroSleeContainer() — a second, throwaway container (EventRouter, disruptor
+        // thread, InMemoryProfileFacility) that stole the JVM-global profile binding,
+        // so app-provisioned profile tables "disappeared" (Elisa 2026-10-28).
         beans.produce(SyntheticBeanBuildItem.configure(MicroSleeContainer.class)
-                .scope(ApplicationScoped.class)
+                .scope(Singleton.class)
                 .unremovable()
                 .runtimeValue(container)
                 .done());
         beans.produce(SyntheticBeanBuildItem.configure(EventRouter.class)
-                .scope(ApplicationScoped.class)
+                .scope(Singleton.class)
                 .unremovable()
                 .runtimeValue(recorder.eventRouterOf(container))
                 .done());
         beans.produce(SyntheticBeanBuildItem.configure(TimerPort.class)
-                .scope(ApplicationScoped.class)
+                .scope(Singleton.class)
                 .unremovable()
                 .runtimeValue(recorder.timerPortOf(container))
                 .done());
         beans.produce(SyntheticBeanBuildItem.configure(MicroSleeContainer.AcnfBackend.class)
-                .scope(ApplicationScoped.class)
+                .scope(Singleton.class)
                 .unremovable()
                 .runtimeValue(recorder.acnfOf(container))
                 .done());

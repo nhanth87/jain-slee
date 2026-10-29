@@ -217,15 +217,9 @@ public final class FreeSwitchResourceAdaptor {
     private void dispatchInbound(Map<String, String> headers) {
         String name = headers.getOrDefault("Event-Name", "");
         if (name.isBlank() && headers.containsKey("_body")) {
-            // nested event body often has Event-Name= lines
-            String body = headers.get("_body");
-            for (String line : body.split("\n")) {
-                if (line.startsWith("Event-Name:")) {
-                    name = line.substring("Event-Name:".length()).trim();
-                    break;
-                }
-            }
-            headers = parseBodyHeaders(body, headers);
+            // Non-plain framing with an event body (text/event-plain is parsed by EslSession).
+            headers = parseBodyHeaders(headers.get("_body"), headers);
+            name = headers.getOrDefault("Event-Name", "");
         }
         String upper = name.toUpperCase(Locale.ROOT);
         if ("HEARTBEAT".equals(upper)) {
@@ -264,17 +258,16 @@ public final class FreeSwitchResourceAdaptor {
         if (body == null) {
             return out;
         }
-        for (String line : body.split("\n")) {
-            int c = line.indexOf(':');
-            if (c > 0) {
-                out.put(line.substring(0, c).trim(), line.substring(c + 1).trim());
-            }
-        }
+        byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        com.microjainslee.ra.freeswitch.esl.EslSession.parseLines(bytes, 0, bytes.length, out);
         return out;
     }
 
     /** Drop bulky keys before firing (hot-path). */
     private static Map<String, String> slim(Map<String, String> headers) {
+        if (!headers.containsKey("_raw") && !headers.containsKey("_body")) {
+            return headers; // fresh map per message (EslSession) — nothing to drop, no copy
+        }
         java.util.LinkedHashMap<String, String> out = new java.util.LinkedHashMap<>();
         for (var e : headers.entrySet()) {
             if ("_raw".equals(e.getKey()) || "_body".equals(e.getKey())) {

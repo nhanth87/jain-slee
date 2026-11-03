@@ -47,6 +47,11 @@ import org.restcomm.cluster.UUIDGenerator;
 /**
  * Mobius Corsac stack as the Diameter <em>connection</em> plane (TCP and/or SCTP).
  * Application bytes become SLEE events; SBBs answer via {@link DiameterCommand}.
+ *
+ * <p>One Corsac link per configured peer ({@link DiameterRaConfig#effectivePeers()}): an
+ * HSS serves the MME (S6a) and the CSCFs (Cx), a PCRF the PGW-C (Gx) and the P-CSCF (Rx).
+ * An answer leaves on the link its request arrived on; a request goes to the peer whose
+ * Destination-Host matches, else the peer serving its application, else its realm.</p>
  */
 public final class CorsacDiameterTransport implements DiameterTransport, DiameterOutboundSender {
 
@@ -62,6 +67,22 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
     private WorkerPool workerPool;
     private DiameterStack stack;
     private volatile RaBootstrapPort bootstrap;
+    /** Link id per configured peer, in configuration order (first = {@link #LINK_ID}). */
+    private volatile List<Route> routes = List.of();
+    /** Inbound request (hop-by-hop, end-to-end) → link it arrived on, for its answer. */
+    private final java.util.Map<Long, String> answerLinks = java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<Long, String>(1024, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<Long, String> eldest) {
+                    return size() > MAX_PENDING_ANSWERS;
+                }
+            });
+
+    /** Unanswered inbound requests remembered for answer routing. */
+    static final int MAX_PENDING_ANSWERS = 65_536;
+
+    /** A configured peer and the Corsac link that serves it. */
+    record Route(String linkId, DiameterRaConfig.Peer peer) {}
 
     public CorsacDiameterTransport(DiameterRaConfig config, DiameterTransportCallbacks callbacks) {
         this.config = Objects.requireNonNull(config);
@@ -77,14 +98,38 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
         return config.sctpEnabled() ? "SCTP" : "TCP";
     }
 
+    /** At least one peer link is OPEN (CER/CEA done). */
     public boolean linkUp() {
-        DiameterLink link = link();
+        for (Route r : routes) {
+            if (linkUp(r.linkId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean linkUp(String linkId) {
+        DiameterLink link = link(linkId);
         return link != null && link.isUp() && link.getPeerState() == PeerStateEnum.OPEN;
     }
 
     public boolean linkConnected() {
-        DiameterLink link = link();
-        return link != null && link.isConnected();
+        for (Route r : routes) {
+            DiameterLink link = link(r.linkId());
+            if (link != null && link.isConnected()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Peer host:port → OPEN, per configured peer (status / admin). */
+    public java.util.Map<String, Boolean> peerStates() {
+        java.util.Map<String, Boolean> out = new java.util.LinkedHashMap<>();
+        for (Route r : routes) {
+            out.put(r.peer().host() + ":" + r.peer().port(), linkUp(r.linkId()));
+        }
+        return out;
     }
 
     @Override
@@ -109,58 +154,89 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
                     2_000L,
                     0L,
                     0L);
-            InetAddress local = InetAddress.getByName(listenHost());
-            InetAddress remote = InetAddress.getByName(peerHost());
-            boolean sctp = config.sctpEnabled();
-            boolean server = !"client".equalsIgnoreCase(config.peerRole());
-            int localPort = server ? config.port() : 0;
-            stack.getNetworkManager().addLink(
-                    LINK_ID,
-                    remote,
-                    peerPort(),
-                    local,
-                    localPort,
-                    server,
-                    sctp,
-                    config.originHost(),
-                    config.realm(),
-                    config.destinationHost(),
-                    config.destinationRealm(),
-                    Boolean.FALSE);
-            // Command registration is per Diameter application package. The common
-            // commands (CER/DWR/DPR, app 0) are already registered in the stack
-            // constructor — re-registering commons here throws
-            // "request 271 is already registered for application 0". Order matters:
-            // impl package FIRST — the parser jar-scan loads concrete *Impl classes,
-            // then the compiler fallback must NOT re-load the API interfaces (their
-            // (code,isRequest) tuples collide with what the impls just registered).
-            // Each app keeps its own (code,isRequest) space, so S6a / CxDx / Gx /
-            // CreditControl never collide with one another.
-            //
-            // Packages are derived from LOADED classes: Package.getPackage(String)
-            // returns null for packages no class of has been loaded from yet, and
-            // DiameterLinkImpl NPEs on a null provider package (authApplicationPackages).
-            registerApp(ApplicationIDs.S6A,
-                    com.mobius.software.telco.protocols.diameter.commands.s6a.AuthenticationInformationRequest.class,
-                    com.mobius.software.telco.protocols.diameter.impl.commands.s6a.AuthenticationInformationRequestImpl.class);
-            registerApp(ApplicationIDs.CX_DX,
-                    com.mobius.software.telco.protocols.diameter.commands.cxdx.UserAuthorizationRequest.class,
-                    com.mobius.software.telco.protocols.diameter.impl.commands.cxdx.UserAuthorizationRequestImpl.class);
-            registerApp(ApplicationIDs.GX,
-                    com.mobius.software.telco.protocols.diameter.commands.gx.CreditControlRequest.class,
-                    com.mobius.software.telco.protocols.diameter.impl.commands.gx.CreditControlRequestImpl.class);
-            registerApp(ApplicationIDs.CREDIT_CONTROL,
-                    com.mobius.software.telco.protocols.diameter.commands.creditcontrol.CreditControlRequest.class,
-                    com.mobius.software.telco.protocols.diameter.impl.commands.creditcontrol.CreditControlRequestImpl.class);
-            stack.getNetworkManager().addNetworkListener(LINK_ID, this::onCorsacMessage);
-            stack.getNetworkManager().startLink(LINK_ID);
-            LOG.info("[diameter-ra] corsac {} role={} local={}:{} peer={}:{} (LISTEN/dial ≠ peer UP)",
-                    protocol(), config.peerRole(), local.getHostAddress(), localPort,
-                    remote.getHostAddress(), peerPort());
+            List<DiameterRaConfig.Peer> peers = config.effectivePeers();
+            long servers = peers.stream().filter(DiameterRaConfig.Peer::server).count();
+            if (servers > 1) {
+                // One listen socket per port: let the other side of extra peers dial us.
+                throw new IllegalArgumentException("at most one server-role Diameter peer per RA (port "
+                        + config.port() + "); configure the others as client");
+            }
+            List<Route> built = new java.util.ArrayList<>();
+            for (int i = 0; i < peers.size(); i++) {
+                DiameterRaConfig.Peer peer = peers.get(i);
+                String linkId = i == 0 ? LINK_ID : LINK_ID + "-" + (i + 1);
+                startLink(linkId, peer);
+                built.add(new Route(linkId, peer));
+            }
+            routes = List.copyOf(built);
         } catch (Exception e) {
             started.set(false);
             throw new IllegalStateException("corsac Diameter stack failed to start", e);
         }
+    }
+
+    private void startLink(String linkId, DiameterRaConfig.Peer peer) throws Exception {
+        InetAddress remote = InetAddress.getByName(
+                peer.host() == null || peer.host().isBlank() ? "127.0.0.1" : peer.host());
+        boolean sctp = config.sctpEnabled();
+        boolean server = peer.server();
+        InetAddress local = localBindAddress(config.host(), server, remote);
+        int localPort = server ? config.port() : 0;
+        // Server role: the peer dials from an ephemeral port — 0 = any source port.
+        int remotePort = server ? Math.max(0, peer.port()) : (peer.port() > 0 ? peer.port() : config.port());
+        stack.getNetworkManager().addLink(
+                linkId,
+                remote,
+                remotePort,
+                local,
+                localPort,
+                server,
+                sctp,
+                config.originHost(),
+                config.realm(),
+                peer.destinationHost(),
+                peer.destinationRealm(),
+                Boolean.FALSE);
+        // Command registration is per Diameter application package. The common
+        // commands (CER/DWR/DPR, app 0) are already registered in the stack
+        // constructor — re-registering commons here throws
+        // "request 271 is already registered for application 0". Order matters:
+        // impl package FIRST — the parser jar-scan loads concrete *Impl classes,
+        // then the compiler fallback must NOT re-load the API interfaces (their
+        // (code,isRequest) tuples collide with what the impls just registered).
+        // Each app keeps its own (code,isRequest) space, so S6a / CxDx / Gx / Rx /
+        // CreditControl never collide with one another.
+        //
+        // Packages are derived from LOADED classes: Package.getPackage(String)
+        // returns null for packages no class of has been loaded from yet, and
+        // DiameterLinkImpl NPEs on a null provider package (authApplicationPackages).
+        registerApp(linkId, ApplicationIDs.S6A,
+                com.mobius.software.telco.protocols.diameter.commands.s6a.AuthenticationInformationRequest.class,
+                com.mobius.software.telco.protocols.diameter.impl.commands.s6a.AuthenticationInformationRequestImpl.class);
+        registerApp(linkId, ApplicationIDs.CX_DX,
+                com.mobius.software.telco.protocols.diameter.commands.cxdx.UserAuthorizationRequest.class,
+                com.mobius.software.telco.protocols.diameter.impl.commands.cxdx.UserAuthorizationRequestImpl.class);
+        registerApp(linkId, ApplicationIDs.GX,
+                com.mobius.software.telco.protocols.diameter.commands.gx.CreditControlRequest.class,
+                com.mobius.software.telco.protocols.diameter.impl.commands.gx.CreditControlRequestImpl.class);
+        registerApp(linkId, ApplicationIDs.RX,
+                com.mobius.software.telco.protocols.diameter.commands.rx.AARequest.class,
+                com.mobius.software.telco.protocols.diameter.impl.commands.rx.AARequestImpl.class);
+        registerApp(linkId, ApplicationIDs.CREDIT_CONTROL,
+                com.mobius.software.telco.protocols.diameter.commands.creditcontrol.CreditControlRequest.class,
+                com.mobius.software.telco.protocols.diameter.impl.commands.creditcontrol.CreditControlRequestImpl.class);
+        // Corsac hands every message to every registered network listener: keep only this
+        // link's own messages, or each request is delivered (and answered) once per link.
+        stack.getNetworkManager().addNetworkListener(linkId, (message, fromLink, callback) -> {
+            if (linkId.equals(fromLink)) {
+                onCorsacMessage(message, fromLink, callback);
+            }
+        });
+        stack.getNetworkManager().startLink(linkId);
+        LOG.info("[diameter-ra] corsac {} link={} role={} local={}:{} peer={}:{} dest={}/{} apps={} (LISTEN/dial ≠ peer UP)",
+                protocol(), linkId, peer.role(), local.getHostAddress(), localPort,
+                remote.getHostAddress(), remotePort, peer.destinationHost(), peer.destinationRealm(),
+                peer.applicationIds());
     }
 
     @Override
@@ -178,9 +254,11 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
 
     @Override
     public void send(DiameterCommand cmd) {
-        DiameterLink link = link();
+        String linkId = route(cmd, routes, answerLinks, this::linkUp);
+        DiameterLink link = linkId == null ? null : link(linkId);
         if (link == null || !link.isConnected()) {
-            LOG.warn("[diameter-ra] corsac send dropped — no live link");
+            LOG.warn("[diameter-ra] corsac send dropped — no live link for {} (link={})",
+                    cmd.getClass().getSimpleName(), linkId);
             return;
         }
         try {
@@ -207,9 +285,19 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
         if (linkUp()) {
             callbacks.onPeerConnected(linkId);
         }
-        DiameterEvent event = CorsacEventBridge.toEvent(message);
+        if (message instanceof com.mobius.software.telco.protocols.diameter.commands.DiameterRequest req) {
+            answerLinks.put(answerKey(req.getHopByHopIdentifier(), req.getEndToEndIdentifier()), linkId);
+        }
+        DiameterEvent event = CorsacEventBridge.toEvent(message, wireAvps(message));
         RaBootstrapPort port = bootstrap;
-        if (event == null || port == null) {
+        if (event == null) {
+            LOG.warn("[diameter-ra] {} on {}: no Diameter command definition — not delivered",
+                    message.getClass().getName(), linkId);
+            return;
+        }
+        if (port == null) {
+            LOG.warn("[diameter-ra] {} on {}: RA not bound to a SLEE — not delivered",
+                    message.getClass().getSimpleName(), linkId);
             return;
         }
         String activity = event.sessionId() == null || event.sessionId().isBlank()
@@ -224,9 +312,10 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
      * concrete command classes (registered first); {@code apiMarker} selects the
      * provider package of API interfaces.
      */
-    private void registerApp(int applicationId, Class<?> apiMarker, Class<?> implMarker) throws Exception {
+    private void registerApp(String linkId, int applicationId, Class<?> apiMarker, Class<?> implMarker)
+            throws Exception {
         stack.getNetworkManager().registerApplication(
-                LINK_ID,
+                linkId,
                 List.<VendorSpecificApplicationId>of(),
                 List.of((long) applicationId),
                 List.of(),
@@ -234,8 +323,122 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
                 implMarker.getPackage());
     }
 
-    private DiameterLink link() {
-        return stack == null ? null : stack.getNetworkManager().getLink(LINK_ID);
+    /** Every AVP as received: re-encode the Corsac message and parse it generically. */
+    private AvpSet wireAvps(DiameterMessage message) {
+        DiameterStack s = stack;
+        if (s == null) {
+            return null;
+        }
+        try {
+            io.netty.buffer.ByteBuf buf = s.getGlobalParser().encode(message);
+            byte[] bytes;
+            try {
+                bytes = new byte[buf.readableBytes()];
+                buf.getBytes(buf.readerIndex(), bytes);
+            } finally {
+                buf.release();
+            }
+            return parser.createMessage(framed(bytes)).getAvps();
+        } catch (Exception e) {
+            LOG.warn("[diameter-ra] AVP re-parse failed for {}: {}", message.getClass().getSimpleName(), e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * One Diameter message whose header Message-Length (bytes 1..3) equals its size: the
+     * re-encoded Corsac buffer can disagree with its own header, which the jdiameter parser
+     * rejects ("Wrong length of data"). Longer buffer → cut to the header length; shorter →
+     * the header takes the real size.
+     */
+    static byte[] framed(byte[] bytes) {
+        if (bytes.length < 20) {
+            return bytes;
+        }
+        int declared = ((bytes[1] & 0xff) << 16) | ((bytes[2] & 0xff) << 8) | (bytes[3] & 0xff);
+        if (declared == bytes.length) {
+            return bytes;
+        }
+        LOG.debug("[diameter-ra] re-encoded message length header={} actual={}", declared, bytes.length);
+        if (declared >= 20 && declared < bytes.length) {
+            return java.util.Arrays.copyOf(bytes, declared);
+        }
+        byte[] fixed = bytes.clone();
+        fixed[1] = (byte) (bytes.length >>> 16);
+        fixed[2] = (byte) (bytes.length >>> 8);
+        fixed[3] = (byte) bytes.length;
+        return fixed;
+    }
+
+    private DiameterLink link(String linkId) {
+        return stack == null || linkId == null ? null : stack.getNetworkManager().getLink(linkId);
+    }
+
+    static long answerKey(Long hopByHop, Long endToEnd) {
+        long h = hopByHop == null ? 0L : hopByHop & 0xffffffffL;
+        long e = endToEnd == null ? 0L : endToEnd & 0xffffffffL;
+        return (h << 32) | e;
+    }
+
+    /**
+     * Link for an outbound command. Answer: the link its request came in on. Request: the
+     * peer whose Destination-Host matches, else one serving its application (open links
+     * first), else one in its Destination-Realm, else the first open link, else the first.
+     */
+    static String route(DiameterCommand cmd, List<Route> routes, java.util.Map<Long, String> answerLinks,
+                        java.util.function.Predicate<String> up) {
+        if (routes.isEmpty()) {
+            return null;
+        }
+        if (cmd instanceof SendDiameterAnswer ans) {
+            String linkId = answerLinks.remove(answerKey(ans.hopByHopId(), ans.endToEndId()));
+            if (linkId != null) {
+                return linkId;
+            }
+        }
+        if (cmd instanceof SendDiameterRequest req) {
+            if (req.destinationHost() != null && !req.destinationHost().isBlank()) {
+                for (Route r : routes) {
+                    if (req.destinationHost().equalsIgnoreCase(r.peer().destinationHost())) {
+                        return r.linkId();
+                    }
+                }
+            }
+            String byApp = first(routes, r -> r.peer().applicationIds().contains(req.applicationId()), up);
+            if (byApp != null) {
+                return byApp;
+            }
+            if (req.destinationRealm() != null && !req.destinationRealm().isBlank()) {
+                String byRealm = first(routes,
+                        r -> req.destinationRealm().equalsIgnoreCase(r.peer().destinationRealm()), up);
+                if (byRealm != null) {
+                    return byRealm;
+                }
+            }
+        }
+        for (Route r : routes) {
+            if (up.test(r.linkId())) {
+                return r.linkId();
+            }
+        }
+        return routes.get(0).linkId();
+    }
+
+    /** First matching route, preferring an open link. */
+    private static String first(List<Route> routes, java.util.function.Predicate<Route> match,
+                                java.util.function.Predicate<String> up) {
+        String any = null;
+        for (Route r : routes) {
+            if (match.test(r)) {
+                if (up.test(r.linkId())) {
+                    return r.linkId();
+                }
+                if (any == null) {
+                    any = r.linkId();
+                }
+            }
+        }
+        return any;
     }
 
     private IMessage toJdiameter(DiameterCommand cmd) {
@@ -257,7 +460,10 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
             msg.setRequest(false);
             msg.setHopByHopIdentifier(ans.hopByHopId());
             msg.setEndToEndIdentifier(ans.endToEndId());
-            msg.getAvps().addAvp(Avp.RESULT_CODE, ans.resultCode(), true);
+            // 0 is no Diameter result: the outcome travels as Experimental-Result (3GPP apps).
+            if (ans.resultCode() > 0) {
+                msg.getAvps().addAvp(Avp.RESULT_CODE, ans.resultCode(), true);
+            }
             addAvps(msg, ans.sessionId(), ans.avps());
             encodeStructured(msg.getAvps(), ans.avpsStructured());
             return msg;
@@ -286,21 +492,37 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
         });
     }
 
-    private String listenHost() {
-        String host = config.host();
-        if (host == null || host.isBlank() || "0.0.0.0".equals(host)) {
-            return "127.0.0.1";
+    /**
+     * Local bind address of the link. A wildcard / blank host means: a server listens on
+     * every interface; a client binds the source address the kernel routes towards the
+     * peer. (Mapping the wildcard to 127.0.0.1 left a server reachable from its own host
+     * only and a client unable to dial any non-loopback peer — e.g. container to
+     * container — so S6a/Cx never reached CER.)
+     */
+    static InetAddress localBindAddress(String host, boolean server, InetAddress remote)
+            throws java.net.UnknownHostException {
+        boolean wildcard = host == null || host.isBlank() || "0.0.0.0".equals(host.trim());
+        if (!wildcard) {
+            return InetAddress.getByName(host.trim());
         }
-        return host;
+        if (server) {
+            return InetAddress.getByName("0.0.0.0");
+        }
+        return routeSource(remote);
     }
 
-    private String peerHost() {
-        String host = config.peerHost();
-        return host == null || host.isBlank() ? "127.0.0.1" : host;
-    }
-
-    private int peerPort() {
-        return config.peerPort() > 0 ? config.peerPort() : config.port();
+    /** Source address for {@code remote} from the routing table (no packet is sent). */
+    static InetAddress routeSource(InetAddress remote) {
+        try (java.net.DatagramSocket probe = new java.net.DatagramSocket()) {
+            probe.connect(remote, 9);
+            InetAddress a = probe.getLocalAddress();
+            if (a != null && !a.isAnyLocalAddress()) {
+                return a;
+            }
+        } catch (java.io.IOException ignored) {
+            // unroutable peer: loopback below, the link reports the dial failure
+        }
+        return InetAddress.getLoopbackAddress();
     }
 
     private static AsyncCallback noop() {

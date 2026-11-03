@@ -16,6 +16,9 @@ import java.util.Map;
  * <p>{@code avps} = legacy flat {@code avpCode → string}; {@code avpsStructured}
  * = full typed/grouped/vendor AVP tree (required for S6a/Cx/Gx/Rx grouped and
  * vendor-10415 AVPs). Both are merged on encode.</p>
+ *
+ * <p>{@code resultCode} {@code 0} = no Result-Code AVP: the outcome is an
+ * Experimental-Result carried in {@code avpsStructured} (3GPP Cx / S6a codes).</p>
  */
 public record SendDiameterAnswer(
     String sessionId,

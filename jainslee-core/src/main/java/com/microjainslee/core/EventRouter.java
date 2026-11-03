@@ -833,7 +833,28 @@ public class EventRouter {
                 rehydratedCount.incrementAndGet();
                 return false;
             }
-            // Still drop if no snapshot — but the log + metric are in.
+            if (deliveryMode == EventDeliveryMode.ASYNC_COMMIT) {
+                // Never run an SBB on the router thread in ASYNC_COMMIT: a handler that
+                // waits for another event (a Diameter answer, a sibling SBB) would hold
+                // the only thread that can deliver it — the router stalls until the
+                // handler gives up. Same transaction contract as the entity path.
+                Thread.ofVirtual().name("sbb-orphan-" + sbbId).start(() ->
+                        ActivityContextTransactionRegistry.runInTransaction(transaction, () -> {
+                            long observeStart = System.nanoTime();
+                            try {
+                                handler.onEvent(event, aci);
+                                observeDelivery(localObject, sbb, observeStart, null);
+                                transaction.commit();
+                            } catch (Exception e) {
+                                observeDelivery(localObject, sbb, observeStart, e);
+                                handleSbbException(e, localObject, event, aci, transaction);
+                            } finally {
+                                ActivityContextTransactionRegistry.clear(transaction);
+                            }
+                        }));
+                return false;
+            }
+            // SYNC: deliver inline (the caller commits) — but the log + metric are in.
             long observeStart = System.nanoTime();
             try {
                 handler.onEvent(event, aci);

@@ -41,6 +41,17 @@ public final class CorsacEventBridge {
     }
 
     public static DiameterEvent toEvent(DiameterMessage msg) {
+        return toEvent(msg, null);
+    }
+
+    /**
+     * @param wire every AVP of the message as received (re-parsed from its encoding), or
+     *             {@code null}. Corsac maps the AVPs a command <em>defines</em> (Result-Code,
+     *             Experimental-Result, Server-Name, SIP-Auth-Data-Item, Subscription-Data …)
+     *             to typed getters, so without this only User-Name / Session-Id / Origin-*
+     *             and unknown AVPs reached the SBB — no Cx/S6a answer could be read.
+     */
+    public static DiameterEvent toEvent(DiameterMessage msg, org.jdiameter.api.AvpSet wire) {
         DiameterCommandDefinition def = definition(msg);
         if (def == null) {
             return null;
@@ -58,6 +69,9 @@ public final class CorsacEventBridge {
         putUtf8(avps, 264, originHost);
         putUtf8(avps, 296, originRealm);
 
+        if (wire != null) {
+            flatten(wire, avps);
+        }
         List<DiameterAvp> structured = extractStructured(msg);
 
         if (msg instanceof DiameterRequest req) {
@@ -71,6 +85,9 @@ public final class CorsacEventBridge {
         long result = 2001L;
         if (msg instanceof DiameterAnswer ans && ans.getResultCode() != null) {
             result = ans.getResultCode();
+        } else if (avps.containsKey(EXPERIMENTAL_RESULT_CODE)) {
+            // TS 29.229 / 29.272: 3GPP outcomes travel as Experimental-Result, no Result-Code.
+            result = Long.parseLong(avps.get(EXPERIMENTAL_RESULT_CODE));
         }
         return new DiameterAnswerEvent(sessionId, appId, cmd, result, hbh, ete,
                 originHost, originRealm, avps, structured);
@@ -125,8 +142,115 @@ public final class CorsacEventBridge {
         }
     }
 
+    static final int EXPERIMENTAL_RESULT_CODE = 298;
+
+    /** AVPs whose value is an Unsigned32 / Integer32 / Enumerated (rendered in decimal). */
+    private static final java.util.Set<Integer> NUMERIC = java.util.Set.of(
+            258, 259, 266, 268, 270, 277, 278, 298, 415, 416, 607, 614, 616, 624, 633,
+            1028, 1032, 1046, 1047, 1407, 1417, 1418, 1419, 513, 511, 512, 1027);
+
+    /** Grouped AVPs that are walked into (their members land in the flat map). */
+    private static final java.util.Set<Integer> GROUPED = java.util.Set.of(
+            260, 297, 603, 612, 615, 628, 1400, 1413, 1414, 1415, 1416,
+            1001, 1003, 1016, 1034, 1049, 517, 519, 1058);
+
+    /**
+     * Every AVP into {@code out} (first value per code wins, already-set codes are kept):
+     * numbers in decimal, printable UTF-8 as text, anything else as lower-case hex.
+     * Grouped AVPs contribute their members.
+     */
+    static void flatten(org.jdiameter.api.AvpSet set, Map<Integer, String> out) {
+        for (org.jdiameter.api.Avp avp : set) {
+            int code = avp.getCode();
+            try {
+                if (GROUPED.contains(code)) {
+                    flatten(avp.getGrouped(), out);
+                    continue;
+                }
+                byte[] raw = avp.getRaw();
+                if (raw == null) {
+                    continue;
+                }
+                out.putIfAbsent(code, render(code, raw));
+            } catch (org.jdiameter.api.AvpDataException ignored) {
+                // malformed member: skip it, keep the rest
+            }
+        }
+    }
+
+    static String render(int code, byte[] raw) {
+        if (NUMERIC.contains(code) && (raw.length == 4 || raw.length == 8)) {
+            long v = 0;
+            for (byte b : raw) {
+                v = (v << 8) | (b & 0xff);
+            }
+            return Long.toUnsignedString(raw.length == 4 ? v & 0xffffffffL : v);
+        }
+        if (printable(raw)) {
+            return new String(raw, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        return java.util.HexFormat.of().formatHex(raw);
+    }
+
+    private static boolean printable(byte[] raw) {
+        if (raw.length == 0) {
+            return true;
+        }
+        for (byte b : raw) {
+            int c = b & 0xff;
+            if (c < 0x20 && c != '\t' || c == 0x7f) {
+                return false;
+            }
+        }
+        // valid UTF-8 (rejects arbitrary binary with the high bit set)
+        try {
+            java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+                    .decode(java.nio.ByteBuffer.wrap(raw));
+            return true;
+        } catch (java.nio.charset.CharacterCodingException e) {
+            return false;
+        }
+    }
+
     private static DiameterCommandDefinition definition(DiameterMessage msg) {
-        return msg == null ? null : msg.getClass().getAnnotation(DiameterCommandDefinition.class);
+        return msg == null ? null : DEFINITIONS.get(msg.getClass());
+    }
+
+    /**
+     * Command definition of a Corsac message class. The annotation sits on the command
+     * <em>interface</em> (e.g. {@code UserAuthorizationRequest}); the {@code ...Impl} the stack
+     * decodes into does not carry it, and {@code @Inherited} never applies to interfaces — so
+     * {@code getClass().getAnnotation} was always null and every inbound S6a / Cx / Gx / Rx
+     * message was dropped before reaching the SLEE.
+     */
+    static DiameterCommandDefinition definitionOf(Class<?> type) {
+        return type == null ? null : DEFINITIONS.get(type);
+    }
+
+    private static final ClassValue<DiameterCommandDefinition> DEFINITIONS = new ClassValue<>() {
+        @Override
+        protected DiameterCommandDefinition computeValue(Class<?> type) {
+            return find(type, new java.util.HashSet<>());
+        }
+    };
+
+    private static DiameterCommandDefinition find(Class<?> type, java.util.Set<Class<?>> seen) {
+        for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) {
+            if (!seen.add(c)) {
+                continue;
+            }
+            DiameterCommandDefinition d = c.getAnnotation(DiameterCommandDefinition.class);
+            if (d != null) {
+                return d;
+            }
+            for (Class<?> i : c.getInterfaces()) {
+                d = find(i, seen);
+                if (d != null) {
+                    return d;
+                }
+            }
+        }
+        return null;
     }
 
     private static String sessionId(DiameterMessage msg) {

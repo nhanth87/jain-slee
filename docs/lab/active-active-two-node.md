@@ -3,6 +3,30 @@
 - **Status:** script, updated for ADR 0007 D11/D12 (symmetric nodes + witness).
   P0–P3 pass in-process (see the ADR); **no active/active claim is valid until
   this lab passes.**
+- **P6 in-process leg: PASS.** `ActiveActiveTwoNodeLabTest` runs two **real**
+  Infinispan/JGroups members over TCP loopback (not one manager faking two
+  views) and asserts:
+
+  | Scenario | What it proves | Status |
+  |----------|----------------|--------|
+  | **A** | A response produced on the SS7 node reaches the **HTTP node** that owns the socket (R1) | ✅ |
+  | **B** | The owner consumes the envelope **exactly once** — no double delivery | ✅ |
+  | **C** | A **partitioned** owner is fenced out of transmitting while a survivor takes over | ✅ |
+  | **D** | A **killed** node's lease is reclaimed instead of orphaned forever | ✅ |
+  | **G** | A restarted node re-takes its own lease with a bumped generation; the old incarnation is fenced by boot epoch | ✅ |
+
+  ```bash
+  mvn -pl jainslee-cluster test -Dtest=ActiveActiveTwoNodeLabTest
+  ```
+
+  **C is the load-bearing one.** A kill is easy — a dead node stops. C keeps the
+  zombie alive, still holding its socket, still believing it owns the dialog, and
+  asserts its `mayTransmit()` now refuses and is counted in `fenceBlocked()`.
+  That is what stops a second MAP transaction reaching the SMSC.
+
+  **Still lab-only** (needs a real STP and a real client): the SS7 wire half —
+  multi-ASP loadsharing, OTID range partitioning, CONTINUE takeover through
+  `TcapMissingDialogResolver`. §1 onward is that runbook.
 - **Related:** [ADR 0007](../../adr/0007-true-active-active.md) ·
   [ADR 0001](../../adr/0001-ss7-ra-nn-tcap-failover.md) ·
   [ss7-multi-asp-failover](../ss7-multi-asp-failover.md)
@@ -84,6 +108,27 @@ java -Dmicrojainslee.container.cluster-node-id=witness-1 \
 
 `ra-names` must list the RA names whose leases the witness votes on (the RA's
 `raName`, default `ra-jss7`).
+
+### Running two nodes under systemd (USSDGW)
+
+`build/systemd/ussdgw.service` (node1) and the new `build/systemd/ussdgw@.service`
+template (any node id) are tracked. Two operator notes that are easy to get wrong:
+
+1. **`build/systemd/install-on-digicom.sh` is intentionally gitignored** — it
+   holds Digicom-specific install commands and is never tracked on public main.
+   The template therefore has to be installed by hand on a fresh checkout:
+   ```bash
+   sudo install -m 0644 build/systemd/ussdgw@.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now ussdgw@node2
+   ```
+2. **The `flock` was NOT removed.** It is a restart-race guard; deleting it
+   re-creates the proven Digicom crash-loop. Only its path was namespaced per
+   node (`/tmp/ussdgw-%i.lock`), so N nodes coexist and each still refuses to
+   double-start. See `docs/agents/lessons.md` in the USSDGW tree.
+3. Each node needs its **own** `WorkingDirectory` (`ussdgw-<id>/`) — `run.sh`
+   hardcodes `$APP_HOME/configs`, `data/` and `logs/`, so sharing one tree would
+   collide the profile store and the config.
 
 ## 3. Verify the wiring before any traffic
 

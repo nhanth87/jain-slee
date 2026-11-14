@@ -88,6 +88,18 @@ public final class RaStickyEventBus {
     private final long maxAgeMs;
     private volatile boolean started;
 
+    /**
+     * Bounded single-threaded mailbox — delivery must never run on the JGroups
+     * thread that invoked the cache listener. {@code AbortPolicy} so saturation
+     * DROPS (and counts) instead of running on the caller.
+     */
+    private volatile java.util.concurrent.ThreadPoolExecutor mailboxExecutor;
+    private final java.util.concurrent.atomic.LongAdder dropped =
+            new java.util.concurrent.atomic.LongAdder();
+
+    /** Bounded mailbox depth. */
+    static final int MAILBOX_CAPACITY = 1024;
+
     public RaStickyEventBus(String localNodeId, String raName, ClusterManager clusterManager,
                              BiConsumer<String, Serializable> localExecutor, RaHaMetrics metrics) {
         this(localNodeId, raName, clusterManager, localExecutor, metrics, DEFAULT_MAX_AGE_MS);
@@ -109,9 +121,19 @@ public final class RaStickyEventBus {
         if (started) {
             return;
         }
+        this.mailboxExecutor = new java.util.concurrent.ThreadPoolExecutor(
+                1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+                new java.util.concurrent.ArrayBlockingQueue<>(MAILBOX_CAPACITY),
+                r -> {
+                    Thread t = new Thread(r, "ra-sticky-event-" + raName + "-" + localNodeId);
+                    t.setDaemon(true);
+                    return t;
+                },
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
         cache.addListener(this);
         started = true;
-        LOG.info("[{}] sticky EVENT bus started node={} (cache={})", raName, localNodeId, cache.getName());
+        LOG.info("[{}] sticky EVENT bus started node={} (cache={}, mailbox={})",
+                raName, localNodeId, cache.getName(), MAILBOX_CAPACITY);
     }
 
     public synchronized void stop() {
@@ -120,6 +142,19 @@ public final class RaStickyEventBus {
         }
         cache.removeListener(this);
         started = false;
+        java.util.concurrent.ThreadPoolExecutor ex = this.mailboxExecutor;
+        this.mailboxExecutor = null;
+        if (ex != null) {
+            ex.shutdown();
+            try {
+                if (!ex.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    ex.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                ex.shutdownNow();
+            }
+        }
         LOG.info("[{}] sticky EVENT bus stopped node={}", raName, localNodeId);
     }
 
@@ -154,6 +189,27 @@ public final class RaStickyEventBus {
         if (env == null || !localNodeId.equals(env.targetNodeId())) {
             return;
         }
+        // ADR 0007 P6 — this runs INSIDE the Infinispan command on a JGroups
+        // thread. Delivering to the SBB can block for the whole delivery latch,
+        // and `cache.remove()` from inside a listener is a nested cache operation
+        // that times out. Both were observed failing in the 2-node lab run.
+        // Hand off to a bounded single-threaded mailbox and return immediately.
+        String key = event.getKey();
+        java.util.concurrent.ThreadPoolExecutor ex = this.mailboxExecutor;
+        if (ex == null) {
+            return;
+        }
+        try {
+            ex.execute(() -> deliverAndAck(key, env));
+        } catch (java.util.concurrent.RejectedExecutionException full) {
+            dropped.increment();
+            LOG.error("[{}] sticky event mailbox full — dropping activity={} type={} from node={}",
+                    raName, env.activityId(), env.eventType(), env.sourceNodeId());
+        }
+    }
+
+    /** Runs on the mailbox thread, never on a JGroups thread. */
+    private void deliverAndAck(String key, StickyEventEnvelope env) {
         try {
             if (env.isStale(System.currentTimeMillis(), maxAgeMs)) {
                 // The activity moved or expired while this was in flight. Delivering
@@ -168,7 +224,16 @@ public final class RaStickyEventBus {
             LOG.warn("[{}] sticky event delivery failed activity={} type={}: {}",
                     raName, env.activityId(), env.eventType(), e.toString(), e);
         } finally {
-            cache.remove(event.getKey());
+            try {
+                cache.remove(key);
+            } catch (RuntimeException e) {
+                LOG.warn("[{}] sticky event ack (remove) failed for {}: {}", raName, key, e.toString());
+            }
         }
+    }
+
+    /** Envelopes dropped because the mailbox was saturated. */
+    public long droppedCount() {
+        return dropped.sum();
     }
 }

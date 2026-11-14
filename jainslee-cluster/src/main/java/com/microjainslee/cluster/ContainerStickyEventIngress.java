@@ -70,11 +70,26 @@ public final class ContainerStickyEventIngress {
     /** Envelope older than this is dropped — its activity moved or expired. */
     public static final long DEFAULT_MAX_AGE_MS = 120_000L;
 
+    /** Bounded mailbox so a wedged consumer cannot grow the heap. */
+    static final int MAILBOX_CAPACITY = 1024;
+
     private final String localNodeId;
     private final Cache<String, StickyEventEnvelope> cache;
     private final BiConsumer<String, Serializable> localExecutor;
     private final long maxAgeMs;
     private volatile boolean started;
+
+    /**
+     * Single-threaded mailbox, so delivery never runs on a JGroups thread and
+     * envelopes are processed in arrival order. Bounded with {@link
+     * ThreadPoolExecutor.AbortPolicy}: a wedged consumer must not grow the heap,
+     * and a rejected envelope must be DROPPED (counted) rather than executed on
+     * the caller — {@code CallerRunsPolicy} would run it on the JGroups thread,
+     * which is exactly the bug this design removes.
+     */
+    private volatile java.util.concurrent.ThreadPoolExecutor mailboxExecutor;
+    private final java.util.concurrent.atomic.LongAdder dropped =
+            new java.util.concurrent.atomic.LongAdder();
 
     public ContainerStickyEventIngress(ClusterManager clusterManager, String localNodeId,
                                        BiConsumer<String, Serializable> localExecutor) {
@@ -98,10 +113,21 @@ public final class ContainerStickyEventIngress {
         if (started) {
             return;
         }
+        // One draining thread, so arrival order is preserved. A virtual thread is wrong
+        // here: this is a long-lived drain loop, not per-message work.
+        this.mailboxExecutor = new java.util.concurrent.ThreadPoolExecutor(
+                1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+                new java.util.concurrent.ArrayBlockingQueue<>(MAILBOX_CAPACITY),
+                r -> {
+                    Thread t = new Thread(r, "sticky-event-ingress-" + localNodeId);
+                    t.setDaemon(true);
+                    return t;
+                },
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
         cache.addListener(this);
         started = true;
-        LOG.info("Container sticky-event ingress started node={} (cache={}, maxAgeMs={})",
-                localNodeId, CACHE_NAME, maxAgeMs);
+        LOG.info("Container sticky-event ingress started node={} (cache={}, maxAgeMs={}, mailbox={})",
+                localNodeId, CACHE_NAME, maxAgeMs, MAILBOX_CAPACITY);
     }
 
     public synchronized void stop() {
@@ -110,7 +136,37 @@ public final class ContainerStickyEventIngress {
         }
         cache.removeListener(this);
         started = false;
+        java.util.concurrent.ThreadPoolExecutor ex = this.mailboxExecutor;
+        this.mailboxExecutor = null;
+        if (ex != null) {
+            ex.shutdown();
+            try {
+                if (!ex.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    ex.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                ex.shutdownNow();
+            }
+        }
         LOG.info("Container sticky-event ingress stopped node={}", localNodeId);
+    }
+
+    /**
+     * Enqueue for the mailbox. Never blocks the caller (a JGroups thread) and
+     * never runs delivery on it — a saturated mailbox drops and counts.
+     */
+    private boolean offer(Runnable task) {
+        java.util.concurrent.ThreadPoolExecutor ex = this.mailboxExecutor;
+        if (ex == null) {
+            return false;
+        }
+        try {
+            ex.execute(task);
+            return true;
+        } catch (java.util.concurrent.RejectedExecutionException full) {
+            return false;
+        }
     }
 
     public String localNodeId() {
@@ -151,6 +207,31 @@ public final class ContainerStickyEventIngress {
         if (env == null || !localNodeId.equals(env.targetNodeId())) {
             return;
         }
+        // ADR 0007 P6 — THIS LISTENER RUNS INSIDE THE INFINISPAN COMMAND, on the
+        // JGroups thread. It must therefore do almost nothing:
+        //   1) delivering to the SBB blocks for as long as the SBB runs (the whole
+        //      30s delivery latch in SYNC mode), which would stall replication and
+        //      fail every concurrent writer with a TimeoutException;
+        //   2) `cache.remove()` from inside a cache listener is a nested cache
+        //      operation on the same thread — an anti-pattern that deadlocks/
+        //      times out rather than cleaning up.
+        // Both were observed failing exactly this way in the 2-node lab run.
+        // So: hand off to a single-threaded mailbox and return immediately.
+        String key = event.getKey();
+        try {
+            if (!offer(() -> deliverAndAck(key, env))) {
+                dropped.increment();
+                LOG.error("Ingress mailbox full — dropping forwarded event activity={} type={} "
+                                + "from node={}. The owning node will time out this response.",
+                        env.activityId(), env.eventType(), env.sourceNodeId());
+            }
+        } catch (RuntimeException e) {
+            LOG.error("Ingress hand-off failed for activity={}", env.activityId(), e);
+        }
+    }
+
+    /** Runs on the mailbox thread, never on a JGroups thread. */
+    private void deliverAndAck(String key, StickyEventEnvelope env) {
         try {
             if (env.isStale(System.currentTimeMillis(), maxAgeMs)) {
                 LOG.warn("Dropping stale ingress event activity={} type={} from node={} (age={}ms)",
@@ -163,8 +244,19 @@ public final class ContainerStickyEventIngress {
             LOG.error("Ingress event delivery failed activity={} type={} from ra={}",
                     env.activityId(), env.eventType(), env.raName(), e);
         } finally {
-            cache.remove(event.getKey());
+            try {
+                // Mailbox semantics: remove after local delivery so a crash before
+                // the ack leaves the entry for the next re-sender / TTL sweep.
+                cache.remove(key);
+            } catch (RuntimeException e) {
+                LOG.warn("Ingress ack (remove) failed for {}: {}", key, e.toString());
+            }
         }
+    }
+
+    /** Envelopes dropped because the mailbox was saturated. */
+    public long droppedCount() {
+        return dropped.sum();
     }
 
     @Override

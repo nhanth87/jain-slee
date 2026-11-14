@@ -72,4 +72,29 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <!-- The extension descriptor names the deployment artifact by version. Written by hand it went
+         stale: the 1.2.0-SNAPSHOT jar still pointed at adapter-quarkus-deployment:1.1.0, Quarkus ran
+         the 1.1.0 processor, and a consumer failed with "Unsatisfied dependency for type
+         MicroSleeContainer" (RAG core-service, 2026-10-23). Filtered, it follows project.version. -->
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>META-INF/quarkus-extension.properties</include>
+                    <include>META-INF/quarkus-extension.yaml</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>META-INF/quarkus-extension.properties</exclude>
+                    <exclude>META-INF/quarkus-extension.yaml</exclude>
+                </excludes>
+            </resource>
+        </resources>
+    </build>
 </project>

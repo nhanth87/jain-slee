@@ -14,10 +14,16 @@ import java.io.Serializable;
 import java.util.Objects;
 
 /** Portable sticky payload for HTTP client RA (ADR 0002). */
-public record HttpStickyPost(String sessionId, String url, String body, String contentType)
+public record HttpStickyPost(String sessionId, String url, String body, String contentType,
+                             java.util.Map<String, String> headers)
         implements Serializable {
 
+    public HttpStickyPost(String sessionId, String url, String body, String contentType) {
+        this(sessionId, url, body, contentType, java.util.Map.of());
+    }
+
     public HttpStickyPost {
+        headers = headers == null ? java.util.Map.of() : java.util.Map.copyOf(headers);
         Objects.requireNonNull(sessionId, "sessionId");
         Objects.requireNonNull(url, "url");
         body = body == null ? "" : body;

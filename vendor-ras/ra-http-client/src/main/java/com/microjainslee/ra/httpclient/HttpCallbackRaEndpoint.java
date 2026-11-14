@@ -89,7 +89,9 @@ public final class HttpCallbackRaEndpoint implements RaEndpointPort, RaCommandPo
 
     @Override
     public void sendCommand(OutboundCommand command) {
-        if (command instanceof HttpCallbackCommand.JsonPostRequest req) {
+        if (command instanceof HttpCallbackCommand.PostRequest req) {
+            delegate.sendPost(req.sessionId(), req.url(), req.body(), req.contentType(), req.headers());
+        } else if (command instanceof HttpCallbackCommand.JsonPostRequest req) {
             delegate.sendJsonPost(req.sessionId(), req.url(), req.body(), req.contentType());
         } else if (command instanceof HttpCallbackCommand.CallbackRequest req) {
             delegate.sendCallback(req.sessionId(), req.callbackUrl(), req.payload());

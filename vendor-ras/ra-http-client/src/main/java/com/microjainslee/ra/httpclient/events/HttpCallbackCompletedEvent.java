@@ -28,13 +28,34 @@ public final class HttpCallbackCompletedEvent implements SleeEvent {
     private final int statusCode;
     private final String responseBody;
     private final String errorMessage;
+    /** Response headers, names lower-cased; empty on transport failure. */
+    private final java.util.Map<String, java.util.List<String>> responseHeaders;
 
     public HttpCallbackCompletedEvent(String sessionId, int statusCode,
                                       String responseBody, String errorMessage) {
+        this(sessionId, statusCode, responseBody, errorMessage, java.util.Map.of());
+    }
+
+    public HttpCallbackCompletedEvent(String sessionId, int statusCode, String responseBody,
+                                      String errorMessage,
+                                      java.util.Map<String, java.util.List<String>> responseHeaders) {
         this.sessionId = sessionId;
         this.statusCode = statusCode;
         this.responseBody = responseBody;
         this.errorMessage = errorMessage;
+        this.responseHeaders = responseHeaders == null ? java.util.Map.of() : responseHeaders;
+    }
+
+    /** All response headers (lower-case names → values in arrival order). */
+    public java.util.Map<String, java.util.List<String>> getResponseHeaders() { return responseHeaders; }
+
+    /** Values of one response header, case-insensitive; empty when absent. */
+    public java.util.List<String> getHeaderValues(String name) {
+        if (name == null) {
+            return java.util.List.of();
+        }
+        java.util.List<String> v = responseHeaders.get(name.toLowerCase(java.util.Locale.ROOT));
+        return v == null ? java.util.List.of() : v;
     }
 
     public String getSessionId() { return sessionId; }

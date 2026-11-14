@@ -24,7 +24,8 @@ import com.microjainslee.api.OutboundCommand;
  */
 public sealed interface HttpCallbackCommand extends OutboundCommand
         permits HttpCallbackCommand.CallbackRequest,
-                HttpCallbackCommand.JsonPostRequest {
+                HttpCallbackCommand.JsonPostRequest,
+                HttpCallbackCommand.PostRequest {
 
     /**
      * Fire-and-forget callback delivery: POST an <em>envelope</em>
@@ -62,6 +63,19 @@ public sealed interface HttpCallbackCommand extends OutboundCommand
          */
         public JsonPostRequest(String sessionId, String url, String body) {
             this(sessionId, url, body, "application/json");
+        }
+    }
+
+    /**
+     * POST raw {@code body} with extra request headers (e.g. {@code Cookie}, {@code Accept},
+     * correlation ids). The RA only carries headers both ways — it keeps no session state; the
+     * response headers come back on {@link com.microjainslee.ra.httpclient.events.HttpCallbackCompletedEvent}.
+     */
+    record PostRequest(String sessionId, String url, String body, String contentType,
+                       java.util.Map<String, String> headers)
+            implements HttpCallbackCommand, OutboundCommand {
+        public PostRequest {
+            headers = headers == null ? java.util.Map.of() : java.util.Map.copyOf(headers);
         }
     }
 }

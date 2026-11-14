@@ -136,7 +136,7 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
         if (ha.isClustered()) {
             ha.startStickyBus(env -> {
                 if (env.payload() instanceof HttpStickyPost post) {
-                    postBodyLocal(post.sessionId(), post.url(), post.body(), post.contentType());
+                    postBodyLocal(post.sessionId(), post.url(), post.body(), post.contentType(), post.headers());
                 }
             });
         }
@@ -185,7 +185,7 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     public void sendCallback(String sessionId, String callbackUrl, String payload) {
         String json = "{\"sessionId\":\"" + escapeJson(sessionId)
                 + "\",\"status\":\"OK\",\"payload\":\"" + escapeJson(payload) + "\"}";
-        postBody(sessionId, callbackUrl, json, "application/json");
+        postBody(sessionId, callbackUrl, json, "application/json", Map.of());
     }
 
     /**
@@ -205,20 +205,31 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
      * {@code application/json}.
      */
     public void sendJsonPost(String sessionId, String url, String body, String contentType) {
-        postBody(sessionId, url, body == null ? "" : body, resolveContentType(contentType));
+        postBody(sessionId, url, body == null ? "" : body, resolveContentType(contentType), Map.of());
+    }
+
+    /**
+     * Like {@link #sendJsonPost(String, String, String, String)} with extra request headers.
+     * Response headers are returned on the completion event; nothing is remembered here.
+     */
+    public void sendPost(String sessionId, String url, String body, String contentType,
+                         Map<String, String> headers) {
+        postBody(sessionId, url, body == null ? "" : body, resolveContentType(contentType),
+                headers == null ? Map.of() : headers);
     }
 
     private static String resolveContentType(String contentType) {
         return contentType == null || contentType.isBlank() ? "application/json" : contentType;
     }
 
-    private void postBody(String sessionId, String url, String body, String contentType) {
+    private void postBody(String sessionId, String url, String body, String contentType,
+                          Map<String, String> headers) {
         RaHaSupport ha = haSupport;
         if (ha != null) {
             RaStickyRouter.Decision d = ha.decide(sessionId, true, active.get());
             if (d.action() == RaStickyRouter.Action.FORWARD_REMOTE && d.owner() != null) {
                 ha.forward(d.owner().ownerNodeId(), sessionId,
-                        new HttpStickyPost(sessionId, url, body, contentType));
+                        new HttpStickyPost(sessionId, url, body, contentType, headers));
                 return;
             }
             if (d.action() == RaStickyRouter.Action.REJECT) {
@@ -226,10 +237,11 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
                 return;
             }
         }
-        postBodyLocal(sessionId, url, body, contentType);
+        postBodyLocal(sessionId, url, body, contentType, headers);
     }
 
-    private void postBodyLocal(String sessionId, String url, String body, String contentType) {
+    private void postBodyLocal(String sessionId, String url, String body, String contentType,
+                               Map<String, String> headers) {
         if (url == null || url.isBlank()) {
             LOG.debug(() -> "HTTP client RA: no URL for session " + sessionId);
             return;
@@ -257,15 +269,22 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
             ha.onOpened(sessionId, "IN_FLIGHT", Map.of("url", url));
             ha.checkpointSbb(sessionId);
         }
-        attemptSend(client, sessionId, url, body, contentType, 0);
+        attemptSend(client, sessionId, url, body, contentType, headers, 0);
     }
 
     private void attemptSend(WebClient client, String sessionId, String callbackUrl,
-                             String body, String contentType, int attempt) {
-        client.postAbs(callbackUrl)
+                             String body, String contentType, Map<String, String> headers,
+                             int attempt) {
+        var request = client.postAbs(callbackUrl)
                 .timeout(requestTimeoutMs)
-                .putHeader("Content-Type", contentType)
-                .sendBuffer(Buffer.buffer(body))
+                .putHeader("Content-Type", contentType);
+        for (Map.Entry<String, String> h : headers.entrySet()) {
+            if (h.getKey() != null && h.getValue() != null
+                    && !"content-type".equalsIgnoreCase(h.getKey())) {
+                request.putHeader(h.getKey(), h.getValue());
+            }
+        }
+        request.sendBuffer(Buffer.buffer(body))
                 .onSuccess(res -> {
                     int status = res.statusCode();
                     String responseBody = res.bodyAsString();
@@ -278,20 +297,20 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
                             LOG.info("HTTP client RA: POST {} -> {} for session {}",
                                     callbackUrl, status, sessionId);
                         }
-                        completeWithSuccess(sessionId, status, responseBody);
+                        completeWithSuccess(sessionId, status, responseBody, headersOf(res.headers()));
                         return;
                     }
-                    retryOrGiveUp(client, sessionId, callbackUrl, body, contentType, attempt,
+                    retryOrGiveUp(client, sessionId, callbackUrl, body, contentType, headers, attempt,
                             "HTTP " + status, status);
                 })
                 .onFailure(ex ->
-                        retryOrGiveUp(client, sessionId, callbackUrl, body, contentType, attempt,
+                        retryOrGiveUp(client, sessionId, callbackUrl, body, contentType, headers, attempt,
                                 ex.getMessage(), 0));
     }
 
     private void retryOrGiveUp(WebClient client, String sessionId, String callbackUrl,
-                               String body, String contentType, int attempt,
-                               String reason, int lastStatus) {
+                               String body, String contentType, Map<String, String> headers,
+                               int attempt, String reason, int lastStatus) {
         if (attempt >= maxRetries || !active.get()) {
             LOG.warn("HTTP client RA: giving up after {} attempt(s) for session {} to {} ({})",
                     attempt + 1, sessionId, callbackUrl, reason);
@@ -305,22 +324,36 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
         Vertx v = this.vertx;
         if (v != null && active.get()) {
             v.setTimer(delay, id ->
-                    attemptSend(client, sessionId, callbackUrl, body, contentType, attempt + 1));
+                    attemptSend(client, sessionId, callbackUrl, body, contentType, headers, attempt + 1));
         }
     }
 
     // -- completion helpers ----------------------------------------------
 
-    private void completeWithSuccess(String sessionId, int statusCode, String responseBody) {
+    private void completeWithSuccess(String sessionId, int statusCode, String responseBody,
+                                     Map<String, java.util.List<String>> responseHeaders) {
         sessionStore.complete(sessionId, statusCode, responseBody);
         touchHaComplete(sessionId, statusCode >= 400 ? "ERROR" : "OK", statusCode);
-        fireCompletedEvent(sessionId, statusCode, responseBody, null);
+        fireCompletedEvent(sessionId, statusCode, responseBody, null, responseHeaders);
+    }
+
+    /** Vert.x MultiMap → lower-case name → values (arrival order). */
+    static Map<String, java.util.List<String>> headersOf(io.vertx.core.MultiMap mm) {
+        if (mm == null || mm.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, java.util.List<String>> out = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, String> e : mm.entries()) {
+            out.computeIfAbsent(e.getKey().toLowerCase(java.util.Locale.ROOT),
+                    k -> new java.util.ArrayList<>(1)).add(e.getValue());
+        }
+        return java.util.Collections.unmodifiableMap(out);
     }
 
     private void completeWithError(String sessionId, int statusCode, String errorMessage) {
         sessionStore.complete(sessionId, statusCode, null);
         touchHaComplete(sessionId, "ERROR", statusCode);
-        fireCompletedEvent(sessionId, statusCode, null, errorMessage);
+        fireCompletedEvent(sessionId, statusCode, null, errorMessage, Map.of());
     }
 
     private void touchHaComplete(String sessionId, String status, int statusCode) {
@@ -333,7 +366,8 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     }
 
     private void fireCompletedEvent(String sessionId, int statusCode,
-                                    String responseBody, String errorMessage) {
+                                    String responseBody, String errorMessage,
+                                    Map<String, java.util.List<String>> responseHeaders) {
         RaBootstrapPort bp = this.bootstrapPort;
         if (bp == null) {
             LOG.debug("No bootstrap port — skipping HttpCallbackCompletedEvent for session {}", sessionId);
@@ -342,7 +376,8 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
         try {
             ActivityHandle handle = bp.createActivityHandle(sessionId);
             bp.fireEvent(
-                    new HttpCallbackCompletedEvent(sessionId, statusCode, responseBody, errorMessage),
+                    new HttpCallbackCompletedEvent(sessionId, statusCode, responseBody, errorMessage,
+                            responseHeaders),
                     handle,
                     null);
         } catch (RuntimeException e) {

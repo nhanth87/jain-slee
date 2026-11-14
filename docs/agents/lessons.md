@@ -22,6 +22,11 @@ Peer hosts: ussdgw [`docs/agents/lessons.md`](../../../../worktrees/ussd-service
 | Deploy that **overwrites** Digicom/prod `configs/` or skips package | Digicom hosts are **prod-bound** (PostgreSQL, live peers) — not disposable. Package before ship; rsync jars/`lib`/UI only; never clobber `configs/`; `db-kind` build-time; **Java 25**. | root AGENTS § DIST · ussdgw/OTA packaging |
 | Async JDBC flusher dropping entity columns | INSERT must include every column the entity sets — schema migration alone does not persist fields (ussdgw CDR `gate_ms` sibling). | ussdgw `CdrDbFlusher` |
 | Tenant / network id **≠** SCCP / routing partition | Routing plane key must match (USSD `network_id` ≡ SCCP `networkId`). | ussdgw lessons |
+| Per-request SBB (HTTP, RPC) with **no `@InitialEventSelect`** | No IES → a new entity per event that is **never removed** → entity + virtual-thread leak, CPU grows with request count. Add an IES with a bounded convergence key (e.g. `api-0`…`api-7`) or remove the entity when done. The dispatcher now WARNs once per SBB class without IES. | DTP 2026-10-14: 300 requests → +285 entities; fixed `ApiSbb` → stays at 16 · `InitialEventSelectorDispatcher` |
+| Idle worker loop using **`poll(timeout)`** | Idle threads must **block** (`take()`, exit via POISON), never wake on a timer. Old `EntitySlot` polled every 50 ms → 20 wake-ups/s per idle slot; 5 000 slots ≈ one full core. | `EntitySlot.EventLoop` · `EntitySlotTest.manyIdleSlotsDoNotBurnCpu` |
+| Timer thread that **ticks while no timers exist** | When the wheel is empty, park until `schedule()` unparks (assign the thread field before `start()` so the first unpark is never lost). Old `AgronaTimerWheelFacade` woke every ~1 ms → ~18 ms CPU/s per wheel at idle. | `AgronaTimerWheelFacade` · `AgronaTimerWheelFacadeTest.idleWheelUsesNoCpu` |
+
+| GitHub push **403 `denied to nhanth87`** (stale `store`/keyring token) | Shared classic PAT at `~/.ssh/github_pat_nhanth87` (**0600**, never commit); served by `~/.ssh/gh-pat-helper.sh` wired as global `credential.https://github.com.helper` (gh keyring stays fallback). Stale `~/.git-credentials` github.com line removed (backup `.bak`). Token needs Contents read+write on nhanth87 + digicom-et. Verify write-auth with `git push --dry-run <remote> HEAD:<branch>` (authenticates, changes nothing). | 2026-11-15 dual-push unblock |
 
 ## Remember
 
@@ -58,6 +63,16 @@ Proven on `worktrees/Nextgen STP/stp-microjainslee` (Quarkus fast-jar + ra-jss7 
 - **Monitor Hub pack tab stuck at "loading…"** = missing `META-INF/resources/jainslee-admin/<raName>/panel.html` classpath resource — the API (`/api/ra/<ra>/status`) works, the static panel 404s. Ship the panel resource with the app jar.
 - **`setsid` background JVMs vs tool-timeout kills**: the killed shell's group may miss the setsid child (zombie survives) or the child may die with the group (nohup notwithstanding). Before booting: `pgrep -af "quarkus-run.jar" | grep -v "bash -c"` and kill each PID; find which PID owns a stale SCTP port by walking `/proc/<pid>/fd` inodes against `/proc/net/sctp/eps`.
 - **Per-tree `mise.toml` (`java = "zulu-25"`)** + `mise trust`; `resolve_java25` must verify the mise-resolved JDK is actually 25 (`mise where java` happily returns zulu-8 when no pin exists).
+
+## 2026-10-19 — Web UI wire: cache + compress + measure from the far end (cross-project, from GMLC)
+
+- Over our ~335 ms RTT / ~15 KB/s links a page that **renders in 6–55 ms** took **~3 s per page change** in GMLC: every asset (142 KB CSS/JS) was re-downloaded with **no `Cache-Control`, no `ETag`, no gzip**. "Next.js feels faster" was the wire, not the framework.
+- Any page this app serves: **content-hashed asset URLs + `Cache-Control: public, max-age=31536000, immutable`**; unversioned → `no-cache` + `ETag` → **304**; **gzip ≥ 1 KB** in the app (`Vary: Accept-Encoding`) — nginx `gzip on` does not compress proxied responses without `gzip_proxied any`; never pass a compressed body through `new String(...)`; **HTTP/2** on the TLS front.
+- **Measure from the user side**, before and after: `curl -w "%{time_connect} %{time_appconnect} %{time_starttransfer} %{time_total} %{size_download}"` + `curl -I` (cache-control / etag / content-encoding). Server time is not page time.
+- Law: root `AGENTS.md` § 5 · detail: root `docs/agents/lessons.md` · reference code: GMLC `AdminWire` + `AdminPageRenderer.versionStaticUrls`.
+
+- **SS7 (same date, from GMLC):** (1) sctp-impl ≤ 2.27.32 on NETTY_KERNEL: after an STP SCTP RESTART the replaced channel's late close takes the **new** association down — move to **sctp-impl 2.27.33** (`sctp` commit `3947dd2`). (2) `*.live` can stay true while one link drops every answer (`PayloadData … But ASP State=DOWN`): health per link (app vs `/proc/net/sctp/assocs`) + alarm on consecutive MAP timeouts with no answer (GMLC `Ss7LinkHealth`). (3) Do **not** run the full sctp-impl TestNG suite — GBs of log then OOM; run `-Dtest=<Class>` and delete `sctptest.log*`.
+- **digicom-nb:** `unattended-upgrades` + `needrestart` restart app services at ~06:3x UTC after library updates — read `/var/log/apt/history.log` before chasing a "crash".
 
 ## Synced 2026-10-28 — from Elisa CPS work (sip-freeswitch)
 

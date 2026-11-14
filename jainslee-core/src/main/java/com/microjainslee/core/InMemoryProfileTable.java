@@ -400,20 +400,37 @@ public final class InMemoryProfileTable implements ProfileTable {
         }
         indexRemove(idx, oldValue, profileName);
         if (newValue != null) {
-            idx.computeIfAbsent(newValue, v -> ConcurrentHashMap.newKeySet())
-               .add(profileName);
+            // compute (not computeIfAbsent + add): the add must run under the same bin lock
+            // as indexRemove's empty-bucket drop, or a concurrent remove can drop the bucket
+            // between our lookup and our add and the row silently falls out of the index.
+            idx.compute(newValue, (v, bucket) -> {
+                Set<String> b = bucket != null ? bucket : ConcurrentHashMap.newKeySet();
+                b.add(profileName);
+                return b;
+            });
         }
     }
 
-    /** Remove {@code profileName} from the bucket for {@code value} (handling null sentinel). */
+    /**
+     * Remove {@code profileName} from the bucket for {@code value} (handling null sentinel),
+     * and drop the bucket once it is empty. Unique-valued indexes (request / dialog ids)
+     * otherwise keep one empty bucket plus its key per row ever written — about 0.7 KB per
+     * removed row, i.e. unbounded heap growth at any steady create/remove rate.
+     */
     private static void indexRemove(ConcurrentHashMap<Object, Set<String>> idx,
                                     Object value, String profileName) {
         if (value == null) {
             value = NULL_SENTINEL;
         }
-        Set<String> bucket = idx.get(value);
-        if (bucket != null) {
+        idx.computeIfPresent(value, (v, bucket) -> {
             bucket.remove(profileName);
-        }
+            return bucket.isEmpty() ? null : bucket;
+        });
+    }
+
+    /** Number of distinct values held by the index on {@code attributeName} (tests / metrics). */
+    int indexBucketCount(String attributeName) {
+        ConcurrentHashMap<Object, Set<String>> idx = indexes.get(attributeName);
+        return idx == null ? 0 : idx.size();
     }
 }

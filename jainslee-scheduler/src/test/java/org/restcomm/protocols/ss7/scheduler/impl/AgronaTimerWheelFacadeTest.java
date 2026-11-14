@@ -165,4 +165,22 @@ public class AgronaTimerWheelFacadeTest {
         assertTrue(actualDelayMs >= 48 && actualDelayMs <= 100,
                 "post-idle timer fired at " + actualDelayMs + "ms (expected ~50ms)");
     }
+
+    /** With no timers the poll thread must sleep, not tick every ~1 ms. */
+    @Test
+    public void idleWheelUsesNoCpu() throws Exception {
+        Thread.sleep(200); // let the poll thread reach its idle park
+        java.lang.management.ThreadMXBean mx = java.lang.management.ManagementFactory.getThreadMXBean();
+        long id = Thread.getAllStackTraces().keySet().stream()
+                .filter(t -> t.getName().equals("agrona-timer-wheel"))
+                .findFirst().orElseThrow().threadId();
+        long before = mx.getThreadCpuTime(id);
+        Thread.sleep(1_000);
+        long cpuMs = (mx.getThreadCpuTime(id) - before) / 1_000_000;
+        assertTrue(cpuMs < 5, "idle timer wheel used " + cpuMs + " ms CPU in 1 s");
+
+        final CountDownLatch fired = new CountDownLatch(1);
+        facade.schedule(fired::countDown, 20L, TimeUnit.MILLISECONDS);
+        assertTrue(fired.await(1, TimeUnit.SECONDS), "a timer scheduled while idle still fires");
+    }
 }

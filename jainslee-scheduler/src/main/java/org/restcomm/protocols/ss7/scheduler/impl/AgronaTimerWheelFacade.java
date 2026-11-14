@@ -100,10 +100,13 @@ public final class AgronaTimerWheelFacade {
      */
     public void start() {
         if (running.compareAndSet(false, true)) {
-            pollThread = Thread.ofPlatform()
+            // Assign before starting so schedule() can always unpark the thread.
+            Thread t = Thread.ofPlatform()
                     .daemon()
                     .name("agrona-timer-wheel")
-                    .start(this::pollLoop);
+                    .unstarted(this::pollLoop);
+            pollThread = t;
+            t.start();
             LOG.info("AgronaTimerWheelFacade started (tick={}ns, slots={})",
                     TICK_NANOS, WHEEL_SIZE);
         }
@@ -125,11 +128,19 @@ public final class AgronaTimerWheelFacade {
             // After a long idle period currentTick lags real time; winding it
             // forward is only safe with no active timers (Agrona contract) and
             // avoids a poll-per-tick catch-up burst for the new timer.
-            if (wheel.timerCount() == 0) {
+            boolean wasEmpty = wheel.timerCount() == 0;
+            if (wasEmpty) {
                 wheel.currentTickTime(nowNs);
             }
             long timerId = wheel.scheduleTimer(deadlineNs);
             tasks.put(timerId, task);
+            if (wasEmpty) {
+                // The poll thread sleeps while the wheel is empty — wake it for this timer.
+                Thread t = pollThread;
+                if (t != null) {
+                    LockSupport.unpark(t);
+                }
+            }
             return () -> {
                 wheelLock.lock();
                 try {
@@ -229,15 +240,27 @@ public final class AgronaTimerWheelFacade {
         while (running.get()) {
             long nowNs = System.nanoTime();
             long parkNs = 0L;
+            boolean empty;
             wheelLock.lock();
             try {
                 wheel.poll(nowNs, collector, EXPIRY_LIMIT_PER_POLL);
+                empty = due.isEmpty() && wheel.timerCount() == 0;
                 long nextTickNs = wheel.currentTickTime();
                 if (due.isEmpty() && nowNs < nextTickNs) {
                     parkNs = Math.min(nextTickNs - nowNs, TICK_NANOS);
                 }
             } finally {
                 wheelLock.unlock();
+            }
+
+            if (empty) {
+                // No timers: sleep until schedule() unparks us (or stop() interrupts).
+                // Ticking every ~1 ms here cost CPU even when the container was idle.
+                LockSupport.park(this);
+                if (Thread.currentThread().isInterrupted()) {
+                    break;
+                }
+                continue;
             }
 
             if (!due.isEmpty()) {

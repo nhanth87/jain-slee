@@ -16,7 +16,6 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -136,20 +135,17 @@ final class EntitySlot {
             ON_ENTITY_THREAD.set(Boolean.TRUE);
             try {
                 while (!shutdown.get()) {
-                    Runnable task;
-                    try {
-                        task = queue.poll(50, TimeUnit.MILLISECONDS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return;
-                    }
+                    Runnable task = queue.poll();
                     if (task == null) {
+                        // Idle: block until work or POISON arrives. Polling with a timeout here
+                        // woke every idle slot 20x/s and burned CPU proportional to pool size.
                         parked.set(true);
-                        if (queue.isEmpty()) {
-                            continue;
+                        try {
+                            task = queue.take();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
                         }
-                        parked.set(false);
-                        continue;
                     }
                     if (task == POISON) {
                         return;

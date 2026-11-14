@@ -10,6 +10,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased] — 2026-08-24 — ADR 0004 Runtime Wiring Hardening (P0)
 
+### Fixed
+
+- **Idle entity slots burned CPU** — `EntitySlot` event loop polled its queue every 50 ms, so every
+  idle slot woke 20×/s (5 000 idle slots ≈ one full core). The loop now blocks on `take()` and exits
+  on the existing POISON task. Test: `EntitySlotTest`.
+- **Idle timer wheel ticked every ~1 ms** — `AgronaTimerWheelFacade` now parks while no timers are
+  pending and `schedule()` unparks it (thread field set before `start()`). Test:
+  `AgronaTimerWheelFacadeTest.idleWheelUsesNoCpu`.
+- **Warn on SBBs without `@InitialEventSelect`** — such SBBs get a new entity per event that is never
+  removed (per-request traffic leaks entities and slot threads). `InitialEventSelectorDispatcher` logs
+  one WARN per SBB class.
+
 ### Changed
 
 - **Profile CMP binding (BREAKING for workarounds, not source)** — the

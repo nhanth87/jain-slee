@@ -19,6 +19,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Method;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
@@ -73,6 +74,22 @@ public class InitialEventSelectorDispatcher {
     }
 
     private final SbbEntityPool pool;
+
+    /** SBB classes already warned about missing IES (warn once per class). */
+    private final Set<Class<?>> warnedNoIes = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Without an IES every event gets a new entity, and nothing removes it, so each entity
+     * (and its slot thread) lives until shutdown. Fine for a handful of events; a leak for
+     * per-request traffic such as HTTP.
+     */
+    private void warnNoIesOnce(Class<?> sbbClass) {
+        if (warnedNoIes.add(sbbClass)) {
+            LOG.warn("SBB {} has no @InitialEventSelect: every event creates a new entity that is never "
+                    + "removed. For per-request events (HTTP, RPC) add an IES with a bounded convergence "
+                    + "key, or remove the entity when done.", sbbClass.getSimpleName());
+        }
+    }
 
     /** convergenceName → entityId (e.g. USSD: "447911123456:d5" → "sbb-uuid-001"). */
     private final ConcurrentHashMap<String, String> convergenceIndex = new ConcurrentHashMap<>();
@@ -144,6 +161,7 @@ public class InitialEventSelectorDispatcher {
         // No IES declared → default behaviour: always allocate new entity
         // (preserves backward compat for stateless SBBs).
         if (iesMethod == null) {
+            warnNoIesOnce(sbbClass);
             String newId = pool.allocateNew(sbbClass);
             LOG.trace("No IES → new entity {} for {}", newId, sbbClass.getSimpleName());
             return newId;

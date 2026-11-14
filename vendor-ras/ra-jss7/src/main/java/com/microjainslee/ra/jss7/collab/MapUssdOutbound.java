@@ -30,6 +30,7 @@ import org.restcomm.protocols.ss7.map.api.primitives.NumberingPlan;
 import org.restcomm.protocols.ss7.map.api.primitives.USSDString;
 import org.restcomm.protocols.ss7.map.api.service.supplementary.MAPDialogSupplementary;
 import org.restcomm.protocols.ss7.map.datacoding.CBSDataCodingSchemeImpl;
+import java.nio.charset.StandardCharsets;
 import org.restcomm.protocols.ss7.map.primitives.USSDStringImpl;
 import org.restcomm.protocols.ss7.sccp.parameter.GlobalTitle;
 import org.restcomm.protocols.ss7.sccp.parameter.ParameterFactory;
@@ -127,7 +128,7 @@ final class MapUssdOutbound {
         }
         try {
             CBSDataCodingScheme dcs = new CBSDataCodingSchemeImpl(cmd.dataCoding());
-            USSDString ussd = new USSDStringImpl(clip(cmd.text()), dcs, null);
+            USSDString ussd = ussdString(cmd.text(), dcs);
             if (cmd.endDialog()) {
                 supp.addProcessUnstructuredSSResponse(cmd.invokeId(), dcs, ussd);
                 supp.close(false);
@@ -137,7 +138,7 @@ final class MapUssdOutbound {
             }
             LOG.info("[ra-jss7] USSD MO reply localDialog={} end={} dcs=0x{} textLen={}",
                     localId, cmd.endDialog(), Integer.toHexString(cmd.dataCoding()),
-                    clip(cmd.text()).length());
+                    fitUssd(cmd.text(), dcs).length());
         } catch (MAPException | RuntimeException e) {
             LOG.error("[ra-jss7] USSD MO reply failed id={}: {}", localId, e.toString());
             throw new IllegalStateException("MAP USSD MO reply failed: " + e.getMessage(), e);
@@ -173,7 +174,7 @@ final class MapUssdOutbound {
             remember(dialog.getLocalDialogId(), cmd.dialogId());
 
             CBSDataCodingScheme dcs = new CBSDataCodingSchemeImpl(cmd.dataCoding());
-            USSDString ussd = new USSDStringImpl(clip(cmd.text()), dcs, null);
+            USSDString ussd = ussdString(cmd.text(), dcs);
             ISDNAddressString msisdn = msisdnAddress(pf, cmd.msisdn());
             if (cmd.processUnstructured()) {
                 dialog.addProcessUnstructuredSSRequest(dcs, ussd, null, msisdn);
@@ -231,7 +232,7 @@ final class MapUssdOutbound {
         }
         try {
             CBSDataCodingScheme dcs = new CBSDataCodingSchemeImpl(cmd.dataCoding());
-            USSDString ussd = new USSDStringImpl(clip(cmd.text()), dcs, null);
+            USSDString ussd = ussdString(cmd.text(), dcs);
             if (cmd.notifyOnly()) {
                 supp.addUnstructuredSSNotifyRequest(dcs, ussd, null, null);
             } else {
@@ -240,7 +241,7 @@ final class MapUssdOutbound {
             supp.send();
             LOG.info("[ra-jss7] USSD NI continue corr={} localDialog={} notify={} dcs=0x{} textLen={}",
                     cmd.dialogId(), localId, cmd.notifyOnly(),
-                    Integer.toHexString(cmd.dataCoding()), clip(cmd.text()).length());
+                    Integer.toHexString(cmd.dataCoding()), fitUssd(cmd.text(), dcs).length());
         } catch (MAPException | RuntimeException e) {
             LOG.error("[ra-jss7] USSD NI continue failed corr={}: {}", cmd.dialogId(), e.toString());
             throw new IllegalStateException("MAP USSD NI continue failed: " + e.getMessage(), e);
@@ -418,8 +419,58 @@ final class MapUssdOutbound {
         }
     }
 
-    private static String clip(String text) {
+    /** MAP USSD-String ::= OCTET STRING (SIZE (1..160)) — TS 29.002 maxUSSD-StringLength. */
+    static final int MAX_USSD_OCTETS = 160;
+
+    /**
+     * USSD string for the wire. GSM 8-bit needs an explicit charset — jSS7 throws
+     * "gsm8Charset is not defined" for DCS 0x44 when it is null — so ISO-8859-1 is passed
+     * (ignored for GSM-7 and UCS-2).
+     */
+    static USSDString ussdString(String text, CBSDataCodingScheme dcs) throws MAPException {
+        return new USSDStringImpl(fitUssd(text, dcs), dcs, StandardCharsets.ISO_8859_1);
+    }
+
+    /**
+     * Longest prefix of {@code text} whose encoding in {@code dcs} fits 160 octets: 182 GSM-7
+     * septets (extension characters count two), 160 8-bit octets, or 80 UCS-2 units. The old
+     * fixed 160-character cut overflowed UCS-2 (81..160 characters = 162..320 octets, rejected by
+     * the encoder) and cut GSM-7 short. Never splits a surrogate pair.
+     */
+    static String fitUssd(String text, CBSDataCodingScheme dcs) {
         String t = text == null ? "" : text;
-        return t.length() > 160 ? t.substring(0, 160) : t;
+        if (encodedOctets(t, dcs) <= MAX_USSD_OCTETS) {
+            return t;
+        }
+        int lo = 0;
+        int hi = t.length();
+        while (lo < hi) {
+            int mid = (lo + hi + 1) >>> 1;
+            if (encodedOctets(safePrefix(t, mid), dcs) <= MAX_USSD_OCTETS) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return safePrefix(t, lo);
+    }
+
+    private static String safePrefix(String t, int len) {
+        int end = len;
+        if (end > 0 && end < t.length() && Character.isHighSurrogate(t.charAt(end - 1))) {
+            end--;
+        }
+        return t.substring(0, end);
+    }
+
+    private static int encodedOctets(String t, CBSDataCodingScheme dcs) {
+        if (t.isEmpty()) {
+            return 0;
+        }
+        try {
+            return new USSDStringImpl(t, dcs, StandardCharsets.ISO_8859_1).getEncodedString().length;
+        } catch (MAPException e) {
+            return Integer.MAX_VALUE;
+        }
     }
 }

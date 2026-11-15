@@ -19,7 +19,6 @@ import org.apache.logging.log4j.Logger;
 
 import java.util.Collections;
 import java.util.Map;
-import java.util.WeakHashMap;
 
 /**
  * JAIN-SLEE 1.1 §6.3 — SBB lifecycle state machine.
@@ -41,12 +40,12 @@ public class SbbLifecycleManager {
 
     private static final Logger LOG = LogManager.getLogger(SbbLifecycleManager.class);
 
-    // §VT-PINNING: The states map uses Collections.synchronizedMap (synchronized
-    // internally) but is only accessed during lifecycle transitions
-    // (create/activate/passivate/remove), NOT on the SBB event-delivery hot
-    // path. Safe for virtual threads.
-    private final Map<Sbb, State> states =
-            Collections.synchronizedMap(new WeakHashMap<Sbb, State>());
+    // One entry per live SBB object. Lifecycle transitions happen for every request once
+    // activities are ended (an entity is created and removed per event), so this map is on the
+    // hot path: it must not be a single lock. It used to be a synchronized WeakHashMap — one lock
+    // for the whole container, held while it also purged dead keys — and request threads queued
+    // behind it. Entries are removed when an SBB reaches DOES_NOT_EXIST, so no weak keys needed.
+    private final Map<Sbb, State> states = new java.util.concurrent.ConcurrentHashMap<>();
 
     public SbbLifecycleManager() {
     }
@@ -186,6 +185,15 @@ public class SbbLifecycleManager {
     }
 
     private void transition(Sbb sbb, State next) {
-        states.put(sbb, next);
+        if (next == State.DOES_NOT_EXIST) {
+            states.remove(sbb);
+        } else {
+            states.put(sbb, next);
+        }
+    }
+
+    /** Number of SBB objects this manager is tracking (diagnostics, leak checks). */
+    public int trackedCount() {
+        return states.size();
     }
 }

@@ -18,4 +18,13 @@ public interface ActivityContextInterface {
     String getActivityContextName();
     void attach(SbbLocalObject sbbLocalObject);
     void detach(SbbLocalObject sbbLocalObject);
+
+    /**
+     * JSR 240 §7.4 — the activity object this context represents: a {@link NullActivity} for
+     * contexts made by {@link NullActivityFactory#createNullActivity(String)}, otherwise
+     * whatever the owner attached (may be {@code null} for legacy contexts).
+     */
+    default Object getActivity() {
+        return null;
+    }
 }

@@ -36,6 +36,8 @@ public final class InMemoryActivityContext implements ActivityContextInterface, 
             new ConcurrentHashMap<String, ReentrantLock>();
     private volatile ConcurrencyControl concurrencyControl = ConcurrencyControl.TRANSACTION;
     private volatile boolean suspended;
+    /** JSR 240 §7.4 activity object (a NullActivity for SLEE-owned contexts). */
+    private volatile Object activity;
 
     public InMemoryActivityContext(String name) {
         if (name == null || name.trim().isEmpty()) {
@@ -47,6 +49,15 @@ public final class InMemoryActivityContext implements ActivityContextInterface, 
     @Override
     public String getActivityContextName() {
         return name;
+    }
+
+    @Override
+    public Object getActivity() {
+        return activity;
+    }
+
+    void setActivity(Object activity) {
+        this.activity = activity;
     }
 
     @Override

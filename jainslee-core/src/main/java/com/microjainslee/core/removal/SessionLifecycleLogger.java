@@ -53,6 +53,12 @@ public final class SessionLifecycleLogger implements Consumer<EntityRemovalEvent
             return;
         }
         observedCount.incrementAndGet();
+        // Every request now ends its activity, so an entity is removed for every event the
+        // gateway handles. Logging each one at INFO wrote tens of thousands of lines a second;
+        // keep it as a debug trace and build nothing unless it is switched on.
+        if (!JUL.isLoggable(java.util.logging.Level.FINE)) {
+            return;
+        }
         // Single-line, fixed-width, machine-greppable. We avoid building a
         // complex object[] for the formatter to keep the hot path cheap -
         // entity removal is not on the per-event critical path but the bus
@@ -64,7 +70,7 @@ public final class SessionLifecycleLogger implements Consumer<EntityRemovalEvent
             sb.append(" convergence=").append(event.convergenceKey());
         }
         sb.append(" tMs=").append(event.timestampMs());
-        JUL.info(sb.toString());
+        JUL.fine(sb.toString());
     }
 
     /** Total events observed by this subscriber instance. */

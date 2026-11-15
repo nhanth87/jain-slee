@@ -238,10 +238,14 @@ public class EventRouter {
             t.setDaemon(true);
             return t;
         };
-        // BlockingWaitStrategy parks the consumer when the ring is empty (near-zero
-        // idle CPU). YieldingWaitStrategy / BusySpinWaitStrategy burn a full core
-        // while idle — fine for saturated latency benches, hostile for examples
-        // and quarkus:dev (multiple reloads left several spinning workers).
+        // The router thread sleeps when there is nothing to do (no CPU burnt while idle);
+        // Yielding / BusySpin strategies would keep a whole core busy.
+        //
+        // "Lite" blocking: a producer takes the wake-up lock only when the router thread is
+        // actually asleep. Plain BlockingWaitStrategy took that lock on EVERY publish, so with
+        // several threads publishing at once they queued on it, and the router thread sat waiting
+        // for slots they had claimed but not yet published (USSDGW HTTP bench: ~2.5k events/s,
+        // producers blocked most of the time).
         @SuppressWarnings("deprecation")
         Disruptor<EventWrapper> built = new Disruptor<EventWrapper>(
                 new EventFactory<EventWrapper>() {
@@ -253,7 +257,7 @@ public class EventRouter {
                 bufferSize,
                 threadFactory,
                 ProducerType.MULTI,
-                new BlockingWaitStrategy());
+                new LiteBlockingWaitStrategy());
         this.disruptor = built;
         // LMAX defaults to FatalExceptionHandler, which KILLS the single
         // disruptor-worker thread on the first dispatch exception — after

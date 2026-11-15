@@ -151,7 +151,7 @@ public final class ResourceAdaptorContextBuilder {
         SleeTimerSchedulerBridge bridge = container.getTimerBridge();
         TimerFacility timer = wrapTimerBridge(bridge);
         TraceFacility trace = LogbackTraceFacility.INSTANCE;
-        NullActivityFactory nullAct = name -> container.createActivityContext(name);
+        NullActivityFactory nullAct = container.getNullActivityFactory();
         EventLookupFacility eventLookup = SimpleEventLookupFacility.INSTANCE;
 
         ResourceAdaptorContextImpl ctx = ResourceAdaptorContextImpl.builder(raEntityName)

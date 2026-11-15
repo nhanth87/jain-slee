@@ -1938,19 +1938,61 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
     }
 
     public InMemoryActivityContext createActivityContext(String name) {
-        // §7 — pull from the JCTools-backed ACI pool when available. The
-        // pooled instances come pre-allocated from a placeholder name, so
-        // we transparently substitute the caller's name. If the pool is
-        // exhausted (created >= max) the factory allocates a fresh one.
-        InMemoryActivityContext aci = aciPool.acquire();
-        // Re-bind to the caller's name. The pool supplies a name field
-        // that is final, so we use a dedicated InMemoryActivityContext if
-        // we ever need to preserve the original; here the pool's factory
-        // uses a placeholder that callers always overwrite via the
-        // naming facility anyway, so re-binding is a no-op for the name
-        // field but we still rebind into the naming facility.
+        // The context carries its REAL name. Pooled instances were all named "__pool__" (the
+        // pool's placeholder) and never released back, so the pool reused nothing — but every
+        // per-activity entity id derived from getActivityContextName() collapsed to
+        // "<SbbType>/__pool__": ONE entity, one slot thread, for every activity of a mapped SBB
+        // type. That serialised a whole gateway's HTTP plane (USSDGW bench 2026-11-15: ~1-4k/s
+        // ceiling). Logs, MDC and timer bindings saw "__pool__" too.
+        InMemoryActivityContext aci = new InMemoryActivityContext(name);
         activityContextNamingFacility.bind(name, aci);
         return aci;
+    }
+
+    /**
+     * JSR 240 §7.10 Null Activity factory, micro-jainslee form: one call creates the activity,
+     * its context and the ACNF binding (see {@link com.microjainslee.api.NullActivity}).
+     */
+    public com.microjainslee.api.NullActivityFactory getNullActivityFactory() {
+        return this::createNullActivity;
+    }
+
+    /**
+     * JSR 240 §7.10 — a SLEE-owned activity bound under {@code name}. Fire events on the returned
+     * context with {@link #routeEvent}; end it with
+     * {@code ((NullActivity) aci.getActivity()).endActivity()}.
+     */
+    public InMemoryActivityContext createNullActivity(String name) {
+        InMemoryActivityContext aci = createActivityContext(name);
+        aci.setActivity(new ContainerNullActivity(this, aci));
+        return aci;
+    }
+
+    /** §7.10.1 endActivity: ActivityEndedEvent behind queued events, then §7.8.3 unbind. */
+    private static final class ContainerNullActivity implements com.microjainslee.api.NullActivity {
+        private final MicroSleeContainer container;
+        private final InMemoryActivityContext aci;
+        private final java.util.concurrent.atomic.AtomicBoolean ended =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        ContainerNullActivity(MicroSleeContainer container, InMemoryActivityContext aci) {
+            this.container = container;
+            this.aci = aci;
+        }
+
+        @Override
+        public void endActivity() {
+            if (!ended.compareAndSet(false, true)) {
+                return;
+            }
+            String name = aci.getActivityContextName();
+            container.routeEvent(new com.microjainslee.api.ActivityEndedEvent(() -> name), aci);
+            // §7.8.3: the names of an ended activity context are removed from the ACNF — only
+            // while they still point at THIS context (a later activity may reuse the name).
+            if (container.activityContextNamingFacility.lookup(name) == aci) {
+                container.activityContextNamingFacility.unbind(name);
+            }
+        }
     }
 
     /**
@@ -2934,6 +2976,34 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
      * The port is automatically wrapped in an {@link ObservingRaCommandPort}
      * so the {@link RaObserver} sees every {@code sendCommand} call.
      */
+    /**
+     * Register several entities of one resource adaptor and bind them to one link name
+     * (JAIN SLEE 1.1: many RA entities per RA type, SBBs bind through a link name).
+     *
+     * <p>Each entity is registered and activated like any other RA under its own name (for
+     * example {@code http-callback-ra#0}), so it has its own lifecycle, metrics and HA ownership.
+     * {@code @InjectRa(name = linkName)} and {@link #getRaCommandPort(String)} for the link name
+     * return a {@link RaEntityGroup} that hands each command to one member — the same member for
+     * every command of a session.</p>
+     */
+    public RaEntityGroup registerRaEntityGroup(String linkName, java.util.List<? extends RaEndpointPort> entities) {
+        if (linkName == null || linkName.isBlank()) {
+            throw new IllegalArgumentException("linkName is required");
+        }
+        java.util.List<RaCommandPort> members = new java.util.ArrayList<>(entities.size());
+        for (RaEndpointPort entity : entities) {
+            if (linkName.equals(entity.getRaName())) {
+                throw new IllegalArgumentException("entity name must differ from the link name: " + linkName);
+            }
+            registerRa(entity);
+            members.add(getRaCommandPort(entity.getRaName()));
+        }
+        RaEntityGroup group = new RaEntityGroup(linkName, members);
+        registerRaCommandPort(linkName, group);
+        LOG.info("Registered RA entity group [{}] with {} entities", linkName, members.size());
+        return group;
+    }
+
     public void registerRaCommandPort(String name, RaCommandPort port) {
         RaCommandPort wrapped = new ObservingRaCommandPort(name, port, this);
         raCommandPorts.put(name, wrapped);

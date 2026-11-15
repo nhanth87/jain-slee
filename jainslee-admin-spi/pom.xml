@@ -28,8 +28,8 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <!-- Align with ss7-config / ra-jss7 (2.15.x). 2.18 databind + 2.15 core → NoSuchMethodError. -->
-            <version>2.15.2</version>
+            <!-- Must match jackson-core: jainslee-pom imports jackson-bom so every jackson-* artifact agrees. -->
+            <version>2.23.0</version>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>

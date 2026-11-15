@@ -18,16 +18,16 @@
         <maven.compiler.release>25</maven.compiler.release>
         <okhttp.version>4.12.0</okhttp.version>
         <!-- gRPC aligned with the examples (grpc-java, netty-shaded transport) -->
-        <grpc.version>1.82.1</grpc.version>
+        <grpc.version>1.85.1</grpc.version>
         <gson.version>2.11.0</gson.version>
-        <!-- Vert.x 4.5.10 = the engine under Quarkus 3.15 (quarkus-vertx-http/quarkus-grpc) -->
-        <vertx.version>4.5.10</vertx.version>
+        <!-- Vert.x 4.5.x = the engine under Quarkus 3.x (Quarkus 3.40 ships 4.5.35); Vert.x 5 needs Quarkus 4 -->
+        <vertx.version>4.5.36</vertx.version>
         <!-- Camel 4.8.x = the core under Camel Quarkus 3.15.x (Quarkus 3.15 LTS) -->
-        <camel.version>4.8.1</camel.version>
-        <!-- Must match jainslee-core's log4j (2.24.3). Older 2.23.1 lacks
+        <camel.version>4.23.0</camel.version>
+        <!-- Must match jainslee-core's log4j (2.26.1). Older 2.23.1 lacks
              FlowMessageFactory.INSTANCE, so api/core skew → NoSuchFieldError
              in any RA test that pulls jainslee-core transitively. -->
-        <log4j.version>2.24.3</log4j.version>
+        <log4j.version>2.26.1</log4j.version>
     </properties>
 
     <modules>

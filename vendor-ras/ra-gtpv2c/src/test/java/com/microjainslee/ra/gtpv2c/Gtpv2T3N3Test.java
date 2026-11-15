@@ -120,7 +120,11 @@ class Gtpv2T3N3Test {
         ra.sendCommand(new GtpEchoCommand(peer));
         assertTrue(twoSends.await(2, TimeUnit.SECONDS));
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        while (ra.outstandingCount() > 0 && System.nanoTime() < deadline) {
+        // The RA drops the transaction first and records the peer verdict right after, so wait for
+        // both (a check between the two steps was a timing flake, seen 2026-11-15).
+        while ((ra.outstandingCount() > 0
+                || !ra.peer(peer).evidence().contains("t3-n3-exhausted"))
+                && System.nanoTime() < deadline) {
             Thread.sleep(10);
         }
         assertEquals(0, ra.outstandingCount());

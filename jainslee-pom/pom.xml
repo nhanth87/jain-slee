@@ -24,21 +24,21 @@
     <!-- ============================================================ -->
     <properties>
         <!-- Transaction layer (P1.1/P1.2 — Narayana JTA embedded) -->
-        <narayana.version>7.0.0.Final</narayana.version>
+        <narayana.version>7.3.4.Final</narayana.version>
 
         <!-- Distributed cache / cluster layer (P2 — placeholder, declared now) -->
-        <infinispan.version>15.0.0.Final</infinispan.version>
-        <jgroups.version>5.3.13.Final</jgroups.version>
+        <infinispan.version>15.2.6.Final</infinispan.version>
+        <jgroups.version>5.5.8.Final</jgroups.version>
 
         <!-- Bytecode generation (used by Infinispan / Narayana marshalling) -->
-        <javassist.version>3.30.0-GA</javassist.version>
+        <javassist.version>3.33.0-GA</javassist.version>
 
         <!-- Testing (junit-jupiter = JUnit 5, junit = legacy 4) -->
-        <junit-jupiter.version>5.11.4</junit-jupiter.version>
+        <junit-jupiter.version>5.14.4</junit-jupiter.version>
         <junit.version>4.13.2</junit.version>
 
         <!-- Structured JSON logging (P1.3) -->
-        <log4j.version>2.24.3</log4j.version>
+        <log4j.version>2.26.1</log4j.version>
     </properties>
 
     <!-- ============================================================ -->
@@ -46,6 +46,18 @@
     <!-- ============================================================ -->
     <dependencyManagement>
         <dependencies>
+            <!-- ============== JSON: one Jackson version for every module ============== -->
+            <!-- databind, core and annotations must match: a newer databind on an older core is a
+                 NoSuchMethodError at runtime. The BOM keeps every jackson-* artifact (including the
+                 ones jss7's ss7-config pulls in) on the same version. -->
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>2.23.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
             <!-- ============== JTA / transaction layer ============== -->
             <dependency>
                 <groupId>org.jboss.narayana.jta</groupId>

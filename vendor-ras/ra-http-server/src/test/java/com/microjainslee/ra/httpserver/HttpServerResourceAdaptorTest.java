@@ -145,6 +145,45 @@ public class HttpServerResourceAdaptorTest {
     }
 
     @Test
+    public void requestTheApplicationNeverAnswersGets504AfterTheDeadline() throws Exception {
+        ra.setResponseTimeoutMs(300);
+        long t0 = System.nanoTime();
+        HttpResponse<String> resp = http.send(
+                HttpRequest.newBuilder()
+                        .uri(URI.create("http://127.0.0.1:" + port + "/nobody-answers"))
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        long ms = (System.nanoTime() - t0) / 1_000_000;
+
+        assertEquals(504, resp.statusCode());
+        assertTrue("answered by the deadline, not after " + ms + " ms", ms < 5_000);
+        assertEquals(1, ra.timedOutCount());
+        assertEquals("nothing left waiting", 0, ra.pendingCount());
+    }
+
+    @Test
+    public void answeredRequestIsNotTimedOutLater() throws Exception {
+        ra.setResponseTimeoutMs(300);
+        java.util.concurrent.CompletableFuture<HttpResponse<String>> pending = http.sendAsync(
+                HttpRequest.newBuilder()
+                        .uri(URI.create("http://127.0.0.1:" + port + "/answered"))
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        awaitFireEvent();
+        HttpWebRequestEvent evt = (HttpWebRequestEvent) endpoint.lastEvent;
+        ra.sendHttpResponse(evt.getSessionId(), 200, "text/plain", "ok");
+
+        HttpResponse<String> resp = pending.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertEquals(200, resp.statusCode());
+        assertEquals("ok", resp.body());
+        Thread.sleep(600);   // past the deadline: the cancelled timer must not fire
+        assertEquals(0, ra.timedOutCount());
+        assertEquals(0, ra.pendingCount());
+    }
+
+    @Test
     public void healthReturnsOk() throws Exception {
         HttpResponse<String> resp = http.send(
                 HttpRequest.newBuilder()

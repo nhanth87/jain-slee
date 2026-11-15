@@ -40,7 +40,7 @@
     <!--
         No dependencyManagement import here on purpose — the harness is
         a leaf module that declares its own pinned versions of
-        junit-jupiter (5.11.4) and the micro-jainslee artefacts it
+        junit-jupiter (5.14.4) and the micro-jainslee artefacts it
         consumes. Versions are kept in sync with bom/pom.xml so the
         BOM-importing modules stay compatible.
     -->
@@ -66,7 +66,7 @@
         </dependency>
 
         <!--
-            JUnit 5 (Jupiter) — 5.11.4 matches the version pinned in
+            JUnit 5 (Jupiter) — 5.14.4 matches the version pinned in
             bom/pom.xml. Used for the TckRunner dynamic-test discovery.
 
             NOTE: scope is intentionally `compile` (not `test`) because
@@ -80,7 +80,7 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <version>5.11.4</version>
+            <version>5.14.4</version>
             <!--
                 BOM (bom/pom.xml) defaults junit-jupiter to scope=test.
                 The harness needs the compile-scope override because the

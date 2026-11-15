@@ -21,13 +21,13 @@
         <maven.compiler.target>25</maven.compiler.target>
         <maven.compiler.release>25</maven.compiler.release>
         <microjainslee.version>1.2.2-SNAPSHOT</microjainslee.version>
-        <grpc.version>1.82.1</grpc.version>
+        <grpc.version>1.85.1</grpc.version>
         <protobuf.version>4.35.1</protobuf.version>
         <protoc.version>4.35.1</protoc.version>
         <protoc_artifact>com.google.protobuf:protoc:${protoc.version}</protoc_artifact>
         <protoc_grpc_artifact>io.grpc:protoc-gen-grpc-java:${grpc.version}</protoc_grpc_artifact>
         <surefire.version>3.5.4</surefire.version>
-        <log4j.version>2.23.1</log4j.version>
+        <log4j.version>2.26.1</log4j.version>
         <disruptor.version>4.0.0</disruptor.version>
     </properties>
 
@@ -112,7 +112,7 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.18.2</version>
+            <version>2.23.0</version>
         </dependency>
 
         <dependency>

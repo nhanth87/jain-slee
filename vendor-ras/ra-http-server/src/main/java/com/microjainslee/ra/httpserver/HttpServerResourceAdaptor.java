@@ -80,9 +80,19 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
     private long bodyLimitBytes = 32L * 1024 * 1024;
     private int acceptBacklog = 0;      // 0 = Vert.x / OS default; lab 10k → 8192+
 
-    /** Maps sessionId → pending HttpServerResponse for async resolution. */
-    private final ConcurrentHashMap<String, HttpServerResponse> pendingResponses =
-            new ConcurrentHashMap<>();
+    /**
+     * Requests waiting for the application's answer: sessionId → the open response plus the
+     * timer that answers it if the application never does.
+     */
+    private final ConcurrentHashMap<String, Pending> pendingResponses = new ConcurrentHashMap<>();
+
+    /** An open request: its response, and the deadline timer (-1 when there is none). */
+    private record Pending(HttpServerResponse response, long timerId) {}
+
+    /** Default answer deadline: longer than any request an application parks on purpose. */
+    public static final long DEFAULT_RESPONSE_TIMEOUT_MS = 300_000L;
+    private long responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS;
+    private final java.util.concurrent.atomic.LongAdder timedOut = new java.util.concurrent.atomic.LongAdder();
 
     private volatile ClusterManager clusterManager;
     private volatile RaHaSupport haSupport;
@@ -155,6 +165,31 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
         if (bytes > 0) {
             this.bodyLimitBytes = bytes;
         }
+    }
+
+    /**
+     * How long a request may wait for the application's answer before the RA answers it with
+     * {@code 504} itself. Without a deadline, a request whose event was dropped (an SBB that
+     * threw before replying, a request that arrived while the application was still starting)
+     * kept the client waiting forever and its entry in memory for good. Set it above the longest
+     * time the application parks a request on purpose. {@code 0} disables the deadline.
+     */
+    public void setResponseTimeoutMs(long ms) {
+        this.responseTimeoutMs = Math.max(0L, ms);
+    }
+
+    public long responseTimeoutMs() {
+        return responseTimeoutMs;
+    }
+
+    /** Requests the RA had to answer itself because the application never did. */
+    public long timedOutCount() {
+        return timedOut.sum();
+    }
+
+    /** Requests currently waiting for the application's answer. */
+    public int pendingCount() {
+        return pendingResponses.size();
     }
 
     /** Actual bound port (after ephemeral bind when configured port is 0). */
@@ -297,7 +332,10 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
     private void handle(RoutingContext ctx) {
         HttpServerRequest req = ctx.request();
         String sessionId = UUID.randomUUID().toString();
-        pendingResponses.put(sessionId, ctx.response());
+        long timerId = responseTimeoutMs > 0
+                ? vertx.setTimer(responseTimeoutMs, id -> answerUnanswered(sessionId))
+                : -1L;
+        pendingResponses.put(sessionId, new Pending(ctx.response(), timerId));
         RaHaSupport ha = haSupport;
         if (ha != null) {
             ha.onOpened(sessionId, "PENDING", Map.of(
@@ -348,7 +386,7 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
             // still has the request event queued.
             if (res.failed()) {
                 LOG.error("HTTP fireEvent failed session={}", sessionId, res.cause());
-                HttpServerResponse response = pendingResponses.remove(sessionId);
+                HttpServerResponse response = takePending(sessionId);
                 if (response != null) {
                     writeJson(response, 500,
                             "{\"error\":\""
@@ -373,7 +411,7 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
      */
     public void sendHttpResponse(String sessionId, int statusCode, String contentType,
                                   String body) {
-        HttpServerResponse response = pendingResponses.remove(sessionId);
+        HttpServerResponse response = takePending(sessionId);
         if (response == null) {
             LOG.warn(() -> "No pending response for sessionId=" + sessionId
                     + " — may have already been sent or timed out");
@@ -413,7 +451,7 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
     public void sendHttpResponse(String sessionId, int statusCode, String contentType,
                                  String textBody, byte[] binaryBody,
                                  Map<String, String> headers) {
-        HttpServerResponse response = pendingResponses.remove(sessionId);
+        HttpServerResponse response = takePending(sessionId);
         if (response == null) {
             LOG.warn(() -> "No pending response for sessionId=" + sessionId
                     + " — may have already been sent or timed out");
@@ -453,7 +491,7 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
      */
     public void startStream(String sessionId, int statusCode, String contentType,
                             Map<String, String> headers) {
-        HttpServerResponse response = pendingResponses.remove(sessionId);
+        HttpServerResponse response = takePending(sessionId);
         if (response == null) {
             LOG.warn(() -> "startStream: no pending response for sessionId=" + sessionId);
             return;
@@ -531,6 +569,40 @@ public final class HttpServerResourceAdaptor extends AbstractResourceAdaptor {
                 LOG.debug(() -> "endActivity(" + sessionId + ") ignored: " + e.getMessage());
             }
         });
+    }
+
+    /** Remove an open request and cancel its deadline; null when it was already answered. */
+    private HttpServerResponse takePending(String sessionId) {
+        Pending p = pendingResponses.remove(sessionId);
+        if (p == null) {
+            return null;
+        }
+        Vertx v = this.vertx;
+        if (p.timerId() >= 0 && v != null) {
+            v.cancelTimer(p.timerId());
+        }
+        return p.response();
+    }
+
+    /** The deadline passed and the application never answered: answer 504 and clean up. */
+    private void answerUnanswered(String sessionId) {
+        Pending p = pendingResponses.remove(sessionId);
+        if (p == null) {
+            return;   // answered just in time
+        }
+        timedOut.increment();
+        LOG.warn("HTTP request session={} not answered by the application within {} ms — answered 504",
+                sessionId, responseTimeoutMs);
+        try {
+            writeJson(p.response(), 504, "{\"error\":\"no response from the application\"}");
+        } catch (IllegalStateException clientGone) {
+            // the client closed the connection already
+        }
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.onClosed(sessionId);
+        }
+        endRequestActivity(sessionId);
     }
 
     // ── helpers ─────────────────────────────────────────────────────

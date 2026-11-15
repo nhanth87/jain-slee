@@ -22,7 +22,7 @@
     <properties>
         <ss7.version>9.2.10-j25</ss7.version>
         <!-- local SCTP (ethiopia-working-dir/sctp) — must match jSS7 coral-valley / ss7-config -->
-        <sctp.version>2.27.32</sctp.version>
+        <sctp.version>2.27.33</sctp.version>
         <ss7.netty.version>4.2.11.Final</ss7.netty.version>
     </properties>
 

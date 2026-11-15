@@ -27,9 +27,9 @@
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
         <maven.compiler.release>25</maven.compiler.release>
-        <jakarta.ejb.api.version>4.0.0</jakarta.ejb.api.version>
+        <jakarta.ejb.api.version>4.0.1</jakarta.ejb.api.version>
         <jakarta.annotation.api.version>2.1.1</jakarta.annotation.api.version>
-        <log4j.version>2.24.3</log4j.version>
+        <log4j.version>2.26.1</log4j.version>
     </properties>
 
     <dependencies>

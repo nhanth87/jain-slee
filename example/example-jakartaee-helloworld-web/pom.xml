@@ -20,7 +20,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
         <microjainslee.version>1.2.2-SNAPSHOT</microjainslee.version>
-        <log4j.version>2.24.3</log4j.version>
+        <log4j.version>2.26.1</log4j.version>
     </properties>
 
     <dependencyManagement>
@@ -64,7 +64,7 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
-            <version>1.14.0</version>
+            <version>1.17.2</version>
         </dependency>
 
         <!-- EE APIs compile-only (adapter helpers); dist host uses HelloWorldMain -->

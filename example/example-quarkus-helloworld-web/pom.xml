@@ -18,7 +18,7 @@
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
         <maven.compiler.release>25</maven.compiler.release>
-        <quarkus.platform.version>3.37.3</quarkus.platform.version>
+        <quarkus.platform.version>3.40.1.2</quarkus.platform.version>
         <microjainslee.version>1.2.2-SNAPSHOT</microjainslee.version>
         <surefire.version>3.5.4</surefire.version>
         <quarkus.build.skip>true</quarkus.build.skip>
@@ -93,7 +93,7 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
-            <version>1.14.0</version>
+            <version>1.17.2</version>
         </dependency>
 
         <!-- ra-prometheus-exporter: Vert.x HTTP /metrics endpoint for Prometheus scraping -->

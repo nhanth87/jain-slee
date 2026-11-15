@@ -79,6 +79,22 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     public void setMaxRetries(int n) { this.maxRetries = Math.max(0, n); }
     public void setRetryBackoffMs(long ms) { this.retryBackoffMs = ms; }
     public void setMaxPoolSize(int n) { this.maxPoolSize = Math.max(1, n); }
+
+    // -- counters for status pages (LongAdder: no contention between event loops) ----------
+    private final java.util.concurrent.atomic.LongAdder postsSent = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder answered = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder failed = new java.util.concurrent.atomic.LongAdder();
+
+    /** POSTs accepted for sending (one per request, retries not counted again). */
+    public long postsSent() { return postsSent.sum(); }
+    /** Requests that got an HTTP answer below 500 (4xx included: the receiver answered). */
+    public long answeredCount() { return answered.sum(); }
+    /** Requests that ended without an answer: transport error, timeout, 5xx after retries. */
+    public long failedCount() { return failed.sum(); }
+    /** Requests sent and not finished yet. */
+    public long inFlight() { return Math.max(0L, postsSent.sum() - answered.sum() - failed.sum()); }
+    public int maxPoolSize() { return maxPoolSize; }
+    public int requestTimeoutMs() { return requestTimeoutMs; }
     /** Vert.x event-loop threads for this entity; 0 keeps the Vert.x default. */
     public void setEventLoopThreads(int n) { this.eventLoopThreads = Math.max(0, n); }
 
@@ -274,6 +290,7 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
             LOG.warn("HTTP client RA not configured — request for session {} dropped", sessionId);
             return;
         }
+        postsSent.increment();   // before validation: an invalid URL ends as failed, not "never sent"
         try {
             URI.create(url); // fail fast on malformed URL
         } catch (IllegalArgumentException e) {
@@ -352,6 +369,7 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     private void completeWithSuccess(String sessionId, int statusCode, String responseBody,
                                      Map<String, java.util.List<String>> responseHeaders) {
         sessionStore.complete(sessionId, statusCode, responseBody);
+        answered.increment();
         touchHaComplete(sessionId, statusCode >= 400 ? "ERROR" : "OK", statusCode);
         fireCompletedEvent(sessionId, statusCode, responseBody, null, responseHeaders);
     }
@@ -371,6 +389,7 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
 
     private void completeWithError(String sessionId, int statusCode, String errorMessage) {
         sessionStore.complete(sessionId, statusCode, null);
+        failed.increment();
         touchHaComplete(sessionId, "ERROR", statusCode);
         fireCompletedEvent(sessionId, statusCode, null, errorMessage, Map.of());
     }

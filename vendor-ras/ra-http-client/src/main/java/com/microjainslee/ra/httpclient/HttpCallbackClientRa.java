@@ -70,6 +70,7 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     private boolean keepAlive = true;
     private boolean followRedirects = true;
     private boolean trustAll = false;
+    private int eventLoopThreads = 0;
 
     // -- configuration setters ------------------------------------------
 
@@ -78,6 +79,20 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
     public void setMaxRetries(int n) { this.maxRetries = Math.max(0, n); }
     public void setRetryBackoffMs(long ms) { this.retryBackoffMs = ms; }
     public void setMaxPoolSize(int n) { this.maxPoolSize = Math.max(1, n); }
+    /** Vert.x event-loop threads for this entity; 0 keeps the Vert.x default. */
+    public void setEventLoopThreads(int n) { this.eventLoopThreads = Math.max(0, n); }
+
+    /** Forget a finished session: in-flight record and HA ownership (see EndSession). */
+    public void endSession(String sessionId) {
+        if (sessionId == null) {
+            return;
+        }
+        sessionStore.remove(sessionId);
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.onClosed(sessionId);
+        }
+    }
     public void setKeepAlive(boolean keepAlive) { this.keepAlive = keepAlive; }
     public void setFollowRedirects(boolean follow) { this.followRedirects = follow; }
     /** Trust all TLS certificates (dev only). */
@@ -106,7 +121,11 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
 
     @Override
     public void raConfigure() {
-        vertx = Vertx.vertx();
+        // Each RA entity owns its Vert.x instance. With several entities per node, give each a
+        // share of the event loops instead of the Vert.x default of 2 x CPU cores apiece.
+        vertx = eventLoopThreads > 0
+                ? Vertx.vertx(new io.vertx.core.VertxOptions().setEventLoopPoolSize(eventLoopThreads))
+                : Vertx.vertx();
         WebClientOptions options = new WebClientOptions()
                 .setConnectTimeout(connectTimeoutMs)
                 .setMaxPoolSize(maxPoolSize)
@@ -294,7 +313,7 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
                                     + "(receiver error, not retried)",
                                     callbackUrl, status, sessionId);
                         } else {
-                            LOG.info("HTTP client RA: POST {} -> {} for session {}",
+                            LOG.debug("HTTP client RA: POST {} -> {} for session {}",
                                     callbackUrl, status, sessionId);
                         }
                         completeWithSuccess(sessionId, status, responseBody, headersOf(res.headers()));
@@ -373,15 +392,25 @@ public final class HttpCallbackClientRa extends AbstractResourceAdaptor {
             LOG.debug("No bootstrap port — skipping HttpCallbackCompletedEvent for session {}", sessionId);
             return;
         }
+        HttpCallbackCompletedEvent event = new HttpCallbackCompletedEvent(
+                sessionId, statusCode, responseBody, errorMessage, responseHeaders);
+        // We are on a Vert.x event-loop thread here. Handing an event to the SLEE can block
+        // (a new SBB entity is created, and the event queue applies back-pressure when it is
+        // full). A blocked event loop stops every other HTTP request it serves, so the hand-off
+        // runs on its own virtual thread and the event loop goes straight back to I/O.
+        Thread.ofVirtual().name("http-client-deliver").start(() -> deliver(bp, sessionId, event));
+    }
+
+    /** Give the response to the SLEE, then end the activity that carried it. */
+    private static void deliver(RaBootstrapPort bp, String sessionId, HttpCallbackCompletedEvent event) {
         try {
             ActivityHandle handle = bp.createActivityHandle(sessionId);
-            bp.fireEvent(
-                    new HttpCallbackCompletedEvent(sessionId, statusCode, responseBody, errorMessage,
-                            responseHeaders),
-                    handle,
-                    null);
+            bp.fireEvent(event, handle, null);
+            // One request, one activity. Ending it (after the response event) lets the SLEE
+            // free the SBB entity and the activity name that were created for this request.
+            bp.endActivity(handle);
         } catch (RuntimeException e) {
-            LOG.warn("Failed to fire HttpCallbackCompletedEvent for session {}", sessionId, e);
+            LOG.warn("Failed to deliver HttpCallbackCompletedEvent for session {}", sessionId, e);
         }
     }
 

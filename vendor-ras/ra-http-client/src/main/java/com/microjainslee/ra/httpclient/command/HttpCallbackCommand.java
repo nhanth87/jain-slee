@@ -22,10 +22,21 @@ import com.microjainslee.api.OutboundCommand;
  * dispatch to the correct handler. Completion is always
  * {@link com.microjainslee.ra.httpclient.events.HttpCallbackCompletedEvent}.
  */
-public sealed interface HttpCallbackCommand extends OutboundCommand
+public sealed interface HttpCallbackCommand extends com.microjainslee.api.SessionKeyedCommand
         permits HttpCallbackCommand.CallbackRequest,
                 HttpCallbackCommand.JsonPostRequest,
-                HttpCallbackCommand.PostRequest {
+                HttpCallbackCommand.PostRequest,
+                HttpCallbackCommand.EndSession {
+
+    /** The HTTP exchange this command belongs to (the response comes back under this id). */
+    String sessionId();
+
+    /** Commands of one session stay on one RA entity of an entity group. */
+    @Override
+    default String sessionKey() {
+        return sessionId();
+    }
+
 
     /**
      * Fire-and-forget callback delivery: POST an <em>envelope</em>
@@ -77,5 +88,16 @@ public sealed interface HttpCallbackCommand extends OutboundCommand
         public PostRequest {
             headers = headers == null ? java.util.Map.of() : java.util.Map.copyOf(headers);
         }
+    }
+
+    /**
+     * The conversation is over: forget everything kept for it (in-flight record, HA ownership).
+     *
+     * <p>While a session is open, all its requests leave from the node — and therefore the IP —
+     * that sent the first one, so the server keeps its context and session cookie. Sending
+     * EndSession when the conversation ends releases that pin; without it the RA would remember
+     * every session forever.</p>
+     */
+    record EndSession(String sessionId) implements HttpCallbackCommand, OutboundCommand {
     }
 }

@@ -32,6 +32,10 @@ public interface HttpClientSessionStore {
     /** Return a point-in-time snapshot, or {@code null} if unknown. */
     SessionSnapshot get(String sessionId);
 
+    /** Forget a finished session. */
+    default void remove(String sessionId) {
+    }
+
     /** Immutable snapshot of a callback session state. */
     interface SessionSnapshot {
         String getCallbackUrl();
@@ -55,6 +59,11 @@ public interface HttpClientSessionStore {
         public void complete(String sessionId, int statusCode, String responseBody) {
             store.computeIfPresent(sessionId, (k, r) ->
                     new Record(r.callbackUrl, statusCode, responseBody));
+        }
+
+        @Override
+        public void remove(String sessionId) {
+            store.remove(sessionId);
         }
 
         @Override

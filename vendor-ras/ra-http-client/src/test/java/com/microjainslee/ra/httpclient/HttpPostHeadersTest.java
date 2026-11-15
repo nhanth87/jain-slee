@@ -104,4 +104,15 @@ public class HttpPostHeadersTest {
         assertNotNull(done);
         assertEquals(2, done.getHeaderValues("set-cookie").size());
     }
+
+    @Test
+    public void endSessionForgetsTheSession() throws Exception {
+        HttpCallbackRaEndpoint ep = new HttpCallbackRaEndpoint(ra);
+        ep.sendCommand(new HttpCallbackCommand.PostRequest("corr-9",
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/as", "<dialog/>", "text/xml", Map.of()));
+        assertNotNull(events.poll(10, TimeUnit.SECONDS));
+        assertTrue(ra.haSupport().lookupOwner("corr-9").isPresent());
+        ep.sendCommand(new HttpCallbackCommand.EndSession("corr-9"));
+        assertTrue(ra.haSupport().lookupOwner("corr-9").isEmpty());
+    }
 }

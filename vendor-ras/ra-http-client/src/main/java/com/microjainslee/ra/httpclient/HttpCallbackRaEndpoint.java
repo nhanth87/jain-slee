@@ -44,10 +44,20 @@ public final class HttpCallbackRaEndpoint implements RaEndpointPort, RaCommandPo
     private static final Logger LOG =
             LogManager.getLogger(HttpCallbackRaEndpoint.class);
 
+    /** Default entity / link name. */
+    public static final String NAME = "http-callback-ra";
+
+    private final String raName;
     private final HttpCallbackClientRa delegate;
     private RaBootstrapPort bootstrapPort;
 
     public HttpCallbackRaEndpoint(HttpCallbackClientRa delegate) {
+        this(NAME, delegate);
+    }
+
+    /** An entity with its own name, e.g. {@code http-callback-ra#2} inside an RA entity group. */
+    public HttpCallbackRaEndpoint(String raName, HttpCallbackClientRa delegate) {
+        this.raName = raName;
         this.delegate = delegate;
     }
 
@@ -55,7 +65,7 @@ public final class HttpCallbackRaEndpoint implements RaEndpointPort, RaCommandPo
 
     @Override
     public String getRaName() {
-        return "http-callback-ra";
+        return raName;
     }
 
     @Override
@@ -89,7 +99,9 @@ public final class HttpCallbackRaEndpoint implements RaEndpointPort, RaCommandPo
 
     @Override
     public void sendCommand(OutboundCommand command) {
-        if (command instanceof HttpCallbackCommand.PostRequest req) {
+        if (command instanceof HttpCallbackCommand.EndSession end) {
+            delegate.endSession(end.sessionId());
+        } else if (command instanceof HttpCallbackCommand.PostRequest req) {
             delegate.sendPost(req.sessionId(), req.url(), req.body(), req.contentType(), req.headers());
         } else if (command instanceof HttpCallbackCommand.JsonPostRequest req) {
             delegate.sendJsonPost(req.sessionId(), req.url(), req.body(), req.contentType());

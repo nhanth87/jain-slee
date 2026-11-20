@@ -47,6 +47,19 @@ public final class SleeTimerSchedulerBridge {
     private final ConcurrentHashMap<Long, TimerTarget> targetsByTimerId = new ConcurrentHashMap<Long, TimerTarget>();
     private final ConcurrentHashMap<SbbLocalObject, ActivityContextInterface> aciBySbb =
             new ConcurrentHashMap<SbbLocalObject, ActivityContextInterface>();
+    /**
+     * ADR 0007 D6 — replicated absolute deadlines. {@code null} = local-only
+     * (no cluster module bound); the local wheel is then the only truth.
+     */
+    private volatile TimerDeadlineStore deadlineStore;
+    /**
+     * ADR 0007 D6 — firing is guarded by the dialog lease. The predicate
+     * receives the activity-context name and must return {@code true} only
+     * when this incarnation still owns it ({@code RaDialogLeaseCaches::mayTransmit}
+     * on the cluster path). {@code null} = no guard (single node).
+     */
+    private volatile java.util.function.Predicate<String> transmitGuard;
+    private final java.util.concurrent.atomic.AtomicLong guardedFires = new java.util.concurrent.atomic.AtomicLong();
 
     public SleeTimerSchedulerBridge(EventRouter eventRouter, TimerScheduler scheduler) {
         this.eventRouter = eventRouter;
@@ -79,6 +92,21 @@ public final class SleeTimerSchedulerBridge {
         ownerIds.remove(sbbLocalObject);          // same lifetime as the ACI binding — no leak
     }
 
+    /** Bind the replicated deadline store (cluster path). {@code null} clears it. */
+    public void setDeadlineStore(TimerDeadlineStore deadlineStore) {
+        this.deadlineStore = deadlineStore;
+    }
+
+    /** Guard every fire by the dialog lease (cluster path). {@code null} clears it. */
+    public void setTransmitGuard(java.util.function.Predicate<String> transmitGuard) {
+        this.transmitGuard = transmitGuard;
+    }
+
+    /** Fires dropped because the lease guard refused them — non-zero on a zombie. */
+    public long guardedFires() {
+        return guardedFires.get();
+    }
+
     public long schedule(SbbLocalObject sbbLocalObject, long delayMillis) {
         ActivityContextInterface aci = resolveActivityContext(sbbLocalObject);
         long timerId = nextTimerId.getAndIncrement();
@@ -93,12 +121,22 @@ public final class SleeTimerSchedulerBridge {
                 1,
                 now);
         targetsByTimerId.put(timerId, new TimerTarget(sbbLocalObject, aci));
+        TimerDeadlineStore store = this.deadlineStore;
+        if (store != null) {
+            // Absolute epoch ms — never nanoTime (meaningless off-JVM, ADR 0007 Q/M2).
+            store.put(new TimerDeadlineStore.TimerDeadline(
+                    timerId, aci.getActivityContextName(), now + delayMillis, dialogId));
+        }
         scheduler.schedule(record, delayMillis, timerFireCallback);
         return timerId;
     }
 
     public void cancel(long timerId) {
         targetsByTimerId.remove(timerId);
+        TimerDeadlineStore store = this.deadlineStore;
+        if (store != null) {
+            store.remove(timerId);
+        }
         scheduler.cancel(timerId);
     }
 
@@ -110,6 +148,10 @@ public final class SleeTimerSchedulerBridge {
         for (java.util.Map.Entry<Long, TimerTarget> entry : targetsByTimerId.entrySet()) {
             if (entry.getValue().sbbLocalObject == sbbLocalObject) {
                 targetsByTimerId.remove(entry.getKey(), entry.getValue());
+                TimerDeadlineStore store = this.deadlineStore;
+                if (store != null) {
+                    store.remove(entry.getKey());
+                }
             }
         }
     }
@@ -129,7 +171,19 @@ public final class SleeTimerSchedulerBridge {
         @Override
         public void onTimerFire(TimerRecord record) {
             TimerTarget target = targetsByTimerId.remove(record.getTimerId());
+            TimerDeadlineStore store = deadlineStore;
+            if (store != null) {
+                store.remove(record.getTimerId());
+            }
             if (target == null) {
+                return;
+            }
+            // ADR 0007 D6 — firing is guarded by the dialog lease: a node that
+            // lost the dialog (or never owned it) arms the same local timer
+            // from the replicated deadline but must NOT deliver the event.
+            java.util.function.Predicate<String> guard = transmitGuard;
+            if (guard != null && !guard.test(target.activityContext.getActivityContextName())) {
+                guardedFires.incrementAndGet();
                 return;
             }
             TimerFiredEvent event = new TimerFiredEvent(record.getTimerId(), target.sbbLocalObject);

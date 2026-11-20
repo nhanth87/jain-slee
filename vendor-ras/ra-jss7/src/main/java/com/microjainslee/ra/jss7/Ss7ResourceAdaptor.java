@@ -94,6 +94,8 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
     private volatile com.microjainslee.ra.jss7.cluster.Ss7InboundDialogRouter inboundRouter;
     /** ADR 0007 D3/D12 — activity claims + per-dialog leases (the transmit fence); null when unclustered. */
     private volatile com.microjainslee.cluster.RaDialogLeaseCaches leases;
+    /** Pending-issues #3 — replicated app correlation id → OTID (multi-step MAP). */
+    private volatile com.microjainslee.cluster.MapAppCorrelationCaches appCorrelations;
     /** dialogId → OTID lease key claimed by this node; the heartbeat's liveness source. */
     private final Map<String, String> dialogLeaseKeys = new ConcurrentHashMap<>();
     /** The values of {@link #dialogLeaseKeys}, as a set: O(1) liveness per lease. */
@@ -369,6 +371,11 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         Ss7DialogClusterCaches caches = null;
         if (clusterManager != null) {
             caches = Ss7DialogClusterCaches.ensureCaches(clusterManager);
+            // Pending-issues #3 — replicated app correlation, read by otidOf
+            // when the node-local MAP helper maps miss (post-takeover survivor).
+            appCorrelations = new com.microjainslee.cluster.MapAppCorrelationCaches(clusterManager);
+        } else {
+            appCorrelations = null;
         }
         ownershipTracker = new Ss7DialogOwnershipTracker(nodeId, raName, opc, ssn, caches);
         stickyRouter = new StickyRaCommandRouter(ownershipTracker);
@@ -471,6 +478,19 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
             Long id = a.localDialogIdOf(dialogId);
             if (id != null && id > 0) {
                 return id;
+            }
+        }
+        // Pending-issues #3 — post-takeover survivor: the node-local MAP
+        // helper maps miss, the replicated correlation still names the OTID.
+        com.microjainslee.cluster.MapAppCorrelationCaches correlations = appCorrelations;
+        if (correlations != null) {
+            String otid = correlations.resolve(dialogId);
+            if (otid != null) {
+                try {
+                    return Long.parseLong(otid);
+                } catch (NumberFormatException e) {
+                    LOG.debug("[ra-jss7] ignoring corrupt app-correlation for {}", dialogId);
+                }
             }
         }
         return 0L;
@@ -646,6 +666,13 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     return st != null ? st.mapProvider() : null;
                 }));
         failoverPort = wired;
+        // Pending-issues #3 — after a successful takeover the survivor
+        // re-registers appCorrelationId → OTID so multi-step MAP flows keep
+        // publishing on the app id.
+        com.microjainslee.cluster.MapAppCorrelationCaches correlations = appCorrelations;
+        if (correlations != null) {
+            wired.setCorrelationRegistrar(correlations::register);
+        }
         try {
             if (s.tcapProvider() != null) {
                 s.tcapProvider().setMissingDialogResolver(wired);
@@ -694,6 +721,7 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
         stickyRouter = null;
         ownershipTracker = null;
         failoverPort = null;
+        appCorrelations = null;
         com.microjainslee.cluster.RaHaSupport ha = this.haSupport;
         this.haSupport = null;
         if (ha != null) {
@@ -884,7 +912,11 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
             return;
         }
         try {
-            port.exportAndStore(otid);
+            // Pending-issues #3 — carry the app correlation id when the dialog
+            // is app-named (gmlc-uuid, USSD menu id); null for plain-OTID
+            // inbound dialogs (single-op flows unchanged).
+            String appCorr = Long.toString(otid).equals(dialogId) ? null : dialogId;
+            port.exportAndStore(otid, appCorr);
         } catch (RuntimeException e) {
             LOG.debug("[ra-jss7] exportAndStore({}) failed: {}", otid, e.toString());
         }
@@ -1134,6 +1166,15 @@ public final class Ss7ResourceAdaptor implements AutoCloseable, Ss7EventPublishe
                     dialogLeases.release(otidKey);
                 }
                 dialogLeases.release(activityClaimKey(did));
+            }
+            // Pending-issues #3 — drop the replicated app correlation with the
+            // dialog (uuid keys are never reused, but USSD/app ids may be).
+            com.microjainslee.cluster.MapAppCorrelationCaches correlations = appCorrelations;
+            if (correlations != null && !Long.toString(otidOf(did)).equals(did)) {
+                long otid = otidOf(did);
+                if (otid > 0) {
+                    correlations.remove(did, otid);
+                }
             }
         }
         if (s != null) {

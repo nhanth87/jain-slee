@@ -50,10 +50,25 @@ public final class Jss7TcapDialogFailoverPort
     private final TcapFailoverMetrics metrics;
     private final MapDialogRehydrator mapRehydrator; // nullable
     /**
+     * Pending-issues #3 — re-register the app correlation after a successful
+     * takeover so multi-step MAP flows (ATI / sendRoamingNumber, USSD menus)
+     * keep publishing on the app id. Called as {@code (appCorrelationId, otid)}.
+     * {@code null} = single-op flows only (no correlation carried).
+     */
+    private volatile java.util.function.BiConsumer<String, Long> correlationRegistrar;
+    /**
      * ADR 0007 D3 — must win the dialog lease before importing. {@code null} =
      * unclustered / legacy: import unconditionally.
      */
     private volatile java.util.function.LongPredicate takeoverGuard;
+
+    /**
+     * Install the app-correlation registrar (writes into
+     * {@code MapAppCorrelationCaches} on the RA path). {@code null} clears it.
+     */
+    public void setCorrelationRegistrar(java.util.function.BiConsumer<String, Long> registrar) {
+        this.correlationRegistrar = registrar;
+    }
 
     public Jss7TcapDialogFailoverPort(
             Supplier<TCAPProvider> tcapProvider,
@@ -112,6 +127,15 @@ public final class Jss7TcapDialogFailoverPort
 
     @Override
     public Optional<TcapDialogSnapshotPayload> exportAndStore(long localOtid) {
+        return exportAndStore(localOtid, null);
+    }
+
+    /**
+     * Pending-issues #3 — export carrying the app correlation id, so the
+     * survivor re-registers {@code appCorrelationId → OTID} and multi-step MAP
+     * flows keep publishing on the app id. {@code null} = single-op flows.
+     */
+    public Optional<TcapDialogSnapshotPayload> exportAndStore(long localOtid, String appCorrelationId) {
         TCAPProvider provider = tcapProvider.get();
         if (provider == null) {
             metrics.exportFail();
@@ -129,7 +153,7 @@ public final class Jss7TcapDialogFailoverPort
             metrics.exportFail();
             return Optional.empty();
         }
-        TcapDialogSnapshotPayload payload = toPayload(String.valueOf(localOtid), snap);
+        TcapDialogSnapshotPayload payload = toPayload(String.valueOf(localOtid), snap, appCorrelationId);
         if (clusterCaches != null) {
             clusterCaches.putSnapshot(payload);
         }
@@ -174,9 +198,7 @@ public final class Jss7TcapDialogFailoverPort
             Dialog imported = provider.importDialog(snap);
             if (claimAndRehydrate) {
                 claimOwnershipAfterImport(payload.dialogKey(), payload.localOtid());
-                if (mapRehydrator != null) {
-                    mapRehydrator.rehydrate(imported);
-                }
+                afterSuccessfulImport(payload, imported);
             }
             if (countOk) {
                 metrics.importOk();
@@ -282,6 +304,10 @@ public final class Jss7TcapDialogFailoverPort
         try {
             TcapDialogSnapshot snap = toJss7Snapshot(payload, pf);
             claimOwnershipAfterImport(payload.dialogKey(), payload.localOtid());
+            // CONTINUE-miss path: jSS7 imports internally and MAPProviderImpl
+            // auto-rehydrates the MAP wrapper; re-register the app correlation
+            // so multi-step flows keep publishing on the app id.
+            reRegisterCorrelation(payload);
             LOG.info("[ra-jss7] CONTINUE miss: resolving snapshot for otid={} (ownership claimed, invokeId restored)",
                     localOtid);
             return snap;
@@ -289,6 +315,30 @@ public final class Jss7TcapDialogFailoverPort
             LOG.warn("[ra-jss7] CONTINUE miss resolve({}) failed: {}", localOtid, e.toString());
             metrics.continueResolveFail();
             return null;
+        }
+    }
+
+    /**
+     * Explicit-takeover import path: rebuild the MAP dialog wrapper for
+     * multi-step flows (ATI / sendRoamingNumber, USSD menus) on top of the
+     * imported TCAP dialog, then re-register the app correlation.
+     */
+    private void afterSuccessfulImport(TcapDialogSnapshotPayload payload, Dialog imported) {
+        if (mapRehydrator != null) {
+            mapRehydrator.rehydrate(imported);
+        }
+        reRegisterCorrelation(payload);
+    }
+
+    private void reRegisterCorrelation(TcapDialogSnapshotPayload payload) {
+        java.util.function.BiConsumer<String, Long> registrar = this.correlationRegistrar;
+        String corr = payload.appCorrelationId();
+        if (registrar != null && corr != null && !corr.isBlank()) {
+            try {
+                registrar.accept(corr, payload.localOtid());
+            } catch (RuntimeException e) {
+                LOG.warn("[ra-jss7] correlation re-register({}) failed: {}", corr, e.toString());
+            }
         }
     }
 
@@ -314,6 +364,12 @@ public final class Jss7TcapDialogFailoverPort
     }
 
     static TcapDialogSnapshotPayload toPayload(String dialogKey, TcapDialogSnapshot snap) {
+        return toPayload(dialogKey, snap, null);
+    }
+
+    /** Pending-issues #3 — snapshot carrying the app correlation id. */
+    static TcapDialogSnapshotPayload toPayload(String dialogKey, TcapDialogSnapshot snap,
+            String appCorrelationId) {
         return new TcapDialogSnapshotPayload(
                 dialogKey,
                 snap.getLocalOtid(),
@@ -332,7 +388,8 @@ public final class Jss7TcapDialogFailoverPort
                 System.currentTimeMillis(),
                 snap.getPreferredAspName(),
                 snap.getIdleDeadlineEpochMs(),
-                toPortable(snap.getPendingInvokes()));
+                toPortable(snap.getPendingInvokes()),
+                appCorrelationId);
     }
 
     /** ADR 0007 Q — carry jSS7 M1 pending invokes across the cluster. */

@@ -27,9 +27,12 @@ import java.util.Objects;
  */
 public final class TcapDialogSnapshotPayload implements Serializable {
 
-    private static final long serialVersionUID = 3L;
+    private static final long serialVersionUID = 4L;
 
     private final String dialogKey;
+    /** App-level correlation id (SLEE activity id, e.g. {@code gmlc-<uuid>}).
+     * {@code null} for inbound dialogs and legacy payloads — single-op flows. */
+    private final String appCorrelationId;
     private final long localOtid;
     private final byte[] remoteOtid;
     private final PortableSccpAddress localAddress;
@@ -117,6 +120,37 @@ public final class TcapDialogSnapshotPayload implements Serializable {
             String preferredAspName,
             long idleDeadlineEpochMs,
             PendingInvokeState[] pendingInvokes) {
+        this(dialogKey, localOtid, remoteOtid, localAddress, remoteAddress, trState, applicationContextOid,
+                idleDeadlineNanos, networkId, localSsn, remotePc, seqControl, dpSentInBegin, invokeIdTaken,
+                updatedAtEpochMs, preferredAspName, idleDeadlineEpochMs, pendingInvokes, null);
+    }
+
+    /**
+     * Pending-issues #3 — full snapshot plus the app correlation id, so a
+     * survivor publishes on the app id (not the OTID) and can rebuild MAP
+     * dialog state for multi-step flows (ATI / sendRoamingNumber, USSD menus).
+     * {@code null} keeps single-op flows working exactly as before.
+     */
+    public TcapDialogSnapshotPayload(
+            String dialogKey,
+            long localOtid,
+            byte[] remoteOtid,
+            PortableSccpAddress localAddress,
+            PortableSccpAddress remoteAddress,
+            String trState,
+            long[] applicationContextOid,
+            long idleDeadlineNanos,
+            int networkId,
+            int localSsn,
+            int remotePc,
+            int seqControl,
+            boolean dpSentInBegin,
+            boolean[] invokeIdTaken,
+            long updatedAtEpochMs,
+            String preferredAspName,
+            long idleDeadlineEpochMs,
+            PendingInvokeState[] pendingInvokes,
+            String appCorrelationId) {
         this.dialogKey = Objects.requireNonNull(dialogKey, "dialogKey");
         this.localOtid = localOtid;
         this.remoteOtid = remoteOtid == null ? null : remoteOtid.clone();
@@ -137,6 +171,17 @@ public final class TcapDialogSnapshotPayload implements Serializable {
         this.preferredAspName = preferredAspName;
         this.idleDeadlineEpochMs = idleDeadlineEpochMs;
         this.pendingInvokes = pendingInvokes == null ? null : pendingInvokes.clone();
+        this.appCorrelationId = appCorrelationId;
+    }
+
+    /**
+     * App-level correlation id (SLEE activity id); {@code null} for inbound
+     * dialogs and legacy payloads. A survivor re-registers this mapping so
+     * multi-step MAP flows (ATI / sendRoamingNumber, USSD menus) keep
+     * publishing on the app id after takeover.
+     */
+    public String appCorrelationId() {
+        return appCorrelationId;
     }
 
     /** Wall-clock idle deadline; 0 when the payload predates ADR 0007 Q. */
@@ -326,6 +371,7 @@ public final class TcapDialogSnapshotPayload implements Serializable {
                 && Arrays.equals(invokeIdTaken, that.invokeIdTaken)
                 && Objects.equals(preferredAspName, that.preferredAspName)
                 && idleDeadlineEpochMs == that.idleDeadlineEpochMs
+                && Objects.equals(appCorrelationId, that.appCorrelationId)
                 && Arrays.equals(pendingInvokes, that.pendingInvokes);
     }
 
@@ -333,7 +379,7 @@ public final class TcapDialogSnapshotPayload implements Serializable {
     public int hashCode() {
         int result = Objects.hash(dialogKey, localOtid, localAddress, remoteAddress, trState,
                 idleDeadlineNanos, networkId, localSsn, remotePc, seqControl, dpSentInBegin,
-                updatedAtEpochMs, preferredAspName, idleDeadlineEpochMs);
+                updatedAtEpochMs, preferredAspName, idleDeadlineEpochMs, appCorrelationId);
         result = 31 * result + Arrays.hashCode(remoteOtid);
         result = 31 * result + Arrays.hashCode(pendingInvokes);
         result = 31 * result + Arrays.hashCode(applicationContextOid);

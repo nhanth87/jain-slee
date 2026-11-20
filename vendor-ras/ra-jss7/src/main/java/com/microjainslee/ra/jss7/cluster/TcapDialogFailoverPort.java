@@ -29,6 +29,14 @@ public interface TcapDialogFailoverPort {
     Optional<TcapDialogSnapshotPayload> exportAndStore(long localOtid);
 
     /**
+     * Pending-issues #3 — export carrying the app correlation id.
+     * Default drops it (single-op behaviour); the wired port overrides.
+     */
+    default Optional<TcapDialogSnapshotPayload> exportAndStore(long localOtid, String appCorrelationId) {
+        return exportAndStore(localOtid);
+    }
+
+    /**
      * Import a portable payload into this node's TCAP {@code dialogs} map.
      *
      * @return {@code true} when import succeeded

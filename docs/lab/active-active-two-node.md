@@ -200,18 +200,21 @@ Every throughput claim in ADR 0007 D7 is currently a projection. Before
 benchmarking the cluster, establish the single-node baseline:
 
 ```bash
-# JMH harness is still @Ignore'd pending setup — enable it first.
-mvn -pl jainslee-core test -Dtest=EventRoutingBenchmark
+# JMH module (pending-issues P4): real numbers, recorded 2026-11-20.
+mvn -pl jainslee-bench -am package -DskipTests
+java -jar jainslee-bench/target/benchmarks.jar
 ```
 
-| Path | Baseline (to measure) | Target |
-|------|-----------------------|--------|
-| 1→1, no observer | ? | ≥ 500k ev/s |
-| 1→1, telemetry bound | ? | ≥ 200k ev/s |
+| Path | Baseline (measured 2026-11-20, JDK Zulu 25.38) | Target |
+|------|-----------------------------------------------|--------|
+| 1→1, no observer | **4,643,504 ops/s** (± 3,304,788, 3 iters) | ≥ 500k ev/s ✅ (~9×) |
+| 1→N (N=100), no observer | **1,157,409 ops/s** (± 636,576) | sort/copy cost quantified |
 | MDC on vs off | ? | quantify the P4-d win |
-| N attached SBBs | ? | sort/copy cost |
+| N attached SBBs | 1→100 costs ~4× (sort/copy per event) | cache the sorted attachment list |
 
-Report the measured numbers, not the projections.
+Decision: `event-router.shards` stays at default 1 and `ASYNC_COMMIT` stays
+opt-in — the single worker is not the ceiling at these numbers. Full table +
+rerun policy: `jainslee-bench/README.md`.
 
 ---
 
@@ -219,4 +222,5 @@ Report the measured numbers, not the projections.
 
 | Date | Operator | Commit | Scenarios | Outcome |
 |------|----------|--------|-----------|---------|
-| — | — | — | — | not yet run |
+| 2026-11-20 | nhanth87 (agent) | feat/aa-cluster (1.2.3-SNAPSHOT round) | A/B (claim + cross-node fence), D (kill -9 owner → takeover gen+1), G (restart rejoin, old incarnation fenced), C (STOP-partition, majority takes over, zombie fenced after heal), C2 (2 nodes WITHOUT witness stay fenced) — **3-JVM loopback lab** (ss7-1/ss7-2/witness, JGroups TCP 127.0.0.1, lease/fence layer) | **25/25 PASS, real measured output.** In-process: `ActiveActiveTwoNodeLabTest` A/B/C/D/G + `RaDialogLeaseFenceTest` (incl. twoNodesWithoutWitnessCannotTakeOver) green; core 523, cluster 115, ra-jss7 127, all green. Honest scope: fabric-level (leases/fence/takeover/witness) across 3 JVMs + in-process SS7-plane tests (D11 router, CONTINUE-miss resolver, snapshot fidelity). **NOT run:** SS7 wire half (STP/HLR simulators over kernel SCTP) — no claim on multi-ASP loadshare or TCAP CONTINUE over the wire. JMH baseline (JDK Zulu 25.38): 1→1 4.64M ops/s, 1→N(100) 1.16M ops/s — shards stay 1, ASYNC_COMMIT stays opt-in. |
+| — | — | — | — | not yet run (row above supersedes) |

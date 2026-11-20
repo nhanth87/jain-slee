@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.microjainslee</groupId>
     <artifactId>micro-jainslee</artifactId>
-    <version>1.2.2-SNAPSHOT</version>
+    <version>1.2.3-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>micro-jainslee</name>
@@ -62,6 +62,7 @@
         <module>jainslee-tx</module>
         <module>jainslee-codegen</module>
         <module>jainslee-cluster</module>
+        <module>jainslee-bench</module>
         <module>jainslee-profile-infinispan</module>
         <module>jainslee-ms</module>
         <module>jainslee-apt</module>
@@ -111,7 +112,7 @@
             <dependency>
                 <groupId>com.microjainslee</groupId>
                 <artifactId>jainslee-pom</artifactId>
-                <version>1.2.2-SNAPSHOT</version>
+                <version>1.2.3-SNAPSHOT</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

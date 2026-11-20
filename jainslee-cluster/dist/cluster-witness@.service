@@ -1,0 +1,24 @@
+[Unit]
+Description=micro-jainslee ClusterWitness (%i) — third vote for active/active lease caches (ADR 0007 D12)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# One directory per witness id; run.sh hardcodes configs/ + logs/ under it.
+WorkingDirectory=/opt/microjainslee/witness-%i
+ExecStart=/opt/microjainslee/witness-%i/run.sh
+Restart=on-failure
+RestartSec=5
+# Tune via EnvironmentFile, never by editing this unit:
+#   MICROJANSLEE_NODE_ID=witness-1
+#   MICROJANSLEE_STACK=tcp
+#   MICROJANSLEE_INITIAL_HOSTS=ss7-1[7800],ss7-2[7800],witness-1[7800]
+#   MICROJANSLEE_WITNESS_RA_NAMES=ra-jss7
+EnvironmentFile=-/opt/microjainslee/witness-%i/witness.env
+# JDK 25 guard lives in run.sh; still pin a sane default here.
+Environment=JAVA_HOME=/usr/lib/jvm/zulu-25
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

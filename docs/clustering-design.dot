@@ -1,0 +1,26 @@
+digraph clustering {
+    rankdir=TB;
+    node [shape=box, style=rounded];
+    Client [label="client (HTTP)"];
+    LB [label="LB (sticky-free)"];
+    N1 [label="node ss7-1\nra-http-server + ra-jss7\nOTID [1, 1e9]"];
+    N2 [label="node ss7-2\nra-http-server + ra-jss7\nOTID [1e9+1, 2e9]"];
+    W [label="witness-1\ncluster module only\nno RA / socket / dialog", style="rounded,dashed"];
+    STP1 [label="STP-1"];
+    STP2 [label="STP-2"];
+    subgraph cluster_SS7 {
+        label="SS7: ONE AS, 2 ASPs, SAME OPC/RC/SSN (loadshare)";
+        STP1; STP2;
+    }
+    Client -> LB;
+    LB -> N1;
+    LB -> N2;
+    N1 -> STP1 [label="SCTP A1"];
+    N1 -> STP2 [label="SCTP A2"];
+    N2 -> STP1 [label="SCTP B1"];
+    N2 -> STP2 [label="SCTP B2"];
+    N1 -> N2 [dir=both, style=dashed, label="snapshots+leases\nraw PDU by DTID"];
+    N1 -> W [dir=both, style=dotted, label="JGroups TCP 7800"];
+    N2 -> W [dir=both, style=dotted, label="JGroups TCP 7800"];
+    W -> N1 [style=dotted, label="DENY_READ_WRITES vote"];
+}

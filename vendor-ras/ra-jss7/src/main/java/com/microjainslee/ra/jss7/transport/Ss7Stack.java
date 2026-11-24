@@ -27,6 +27,9 @@ import org.restcomm.protocols.ss7.m3ua.As;
 import org.restcomm.protocols.ss7.m3ua.impl.M3UAManagementImpl;
 import org.restcomm.protocols.ss7.sccp.RemoteSignalingPointCode;
 import org.restcomm.protocols.ss7.sccp.impl.RemoteSignalingPointCodeImpl;
+import org.restcomm.protocols.ss7.sccp.LongMessageRule;
+import org.restcomm.protocols.ss7.sccp.LongMessageRuleType;
+import org.restcomm.protocols.ss7.sccp.Router;
 import org.restcomm.protocols.ss7.sccp.SccpResource;
 import org.restcomm.protocols.ss7.sccp.impl.SccpStackImpl;
 
@@ -570,7 +573,25 @@ public final class Ss7Stack {
         SccpStackImpl sccp = stack.sccpStack();
         if (flatCfg != null && sccp != null) {
             declarePeerSubsystem(sccp.getSccpResource(), flatCfg);
+            allowLongMessages(sccp.getRouter(), flatCfg);
         }
+    }
+
+    /**
+     * XUDT towards the peer DPC (ITU-T Q.714 §4.1.1 segmentation). Without a long-message rule
+     * jSS7 sends UDT only and drops anything larger ("message is too long"): a MAP
+     * SendAuthenticationInfo answer with 3 quintuplets never left the HLR. Idempotent.
+     */
+    static void allowLongMessages(Router router, Ss7RaConfig cfg) throws Exception {
+        int dpc = cfg.destinationPointCode();
+        for (LongMessageRule rule : router.getLongMessageRules().values()) {
+            if (rule.getFirstSpc() <= dpc && dpc <= rule.getLastSpc()) {
+                return;
+            }
+        }
+        int id = router.getLongMessageRules().keySet().stream().mapToInt(Integer::intValue).max().orElse(0) + 1;
+        router.addLongMessageRule(id, dpc, dpc, LongMessageRuleType.XUDT_ENABLED);
+        LOG.info("[ra-jss7] SCCP long messages (XUDT) enabled towards dpc={}", dpc);
     }
 
     /** Package-visible for unit tests. Idempotent: jSS7 may have reloaded the resource from disk. */

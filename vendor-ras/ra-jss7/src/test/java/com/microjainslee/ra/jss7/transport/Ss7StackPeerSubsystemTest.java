@@ -15,7 +15,10 @@ import java.util.List;
 import java.util.Map;
 
 import org.junit.Test;
+import org.restcomm.protocols.ss7.sccp.LongMessageRule;
+import org.restcomm.protocols.ss7.sccp.LongMessageRuleType;
 import org.restcomm.protocols.ss7.sccp.RemoteSubSystem;
+import org.restcomm.protocols.ss7.sccp.Router;
 import org.restcomm.protocols.ss7.sccp.SccpResource;
 
 import com.microjainslee.ra.jss7.Ss7RaConfig;
@@ -75,5 +78,35 @@ public class Ss7StackPeerSubsystemTest {
                     default -> m.getReturnType() == boolean.class ? false
                             : m.getReturnType() == int.class ? 0 : null;
                 });
+    }
+
+    /** No long-message rule = UDT only: a 3-quintuplet SAI answer was dropped ("message is too long"). */
+    @Test
+    public void xudtIsEnabledTowardsThePeerOnce() throws Exception {
+        Map<Integer, LongMessageRule> rules = new HashMap<>();
+        List<Object[]> added = new ArrayList<>();
+        Router router = (Router) Proxy.newProxyInstance(Router.class.getClassLoader(),
+                new Class<?>[] {Router.class}, (p, m, a) -> switch (m.getName()) {
+                    case "getLongMessageRules" -> rules;
+                    case "addLongMessageRule" -> {
+                        added.add(a);
+                        int first = (int) a[1], last = (int) a[2];
+                        rules.put((int) a[0], (LongMessageRule) Proxy.newProxyInstance(
+                                LongMessageRule.class.getClassLoader(), new Class<?>[] {LongMessageRule.class},
+                                (rp, rm, ra) -> switch (rm.getName()) {
+                                    case "getFirstSpc" -> first;
+                                    case "getLastSpc" -> last;
+                                    default -> null;
+                                }));
+                        yield null;
+                    }
+                    default -> null;
+                });
+        Ss7RaConfig cfg = new Ss7RaConfig().destinationPointCode(2);
+        Ss7Stack.allowLongMessages(router, cfg);
+        Ss7Stack.allowLongMessages(router, cfg);
+        assertEquals(1, added.size());
+        assertEquals(2, added.get(0)[1]);
+        assertEquals(LongMessageRuleType.XUDT_ENABLED, added.get(0)[3]);
     }
 }

@@ -46,4 +46,23 @@ public class Ss7StackConfigTranslationTest {
         assertEquals(Long.valueOf(flat.networkAppearance()), as.networkAppearance());
         assertEquals(flat.ipspClient() ? "ipsp" : "as", as.functionality());
     }
+
+    /**
+     * Every flat-config RA failed activation on jSS7 9.2.11-j25 ("unsupported gtType 'null'", then an
+     * NPE on the numbering plan): a programmatic Ss7Config skips Ss7ConfigLoader's GT defaults.
+     */
+    @Test
+    public void everyGlobalTitleRuleNamesItsType() {
+        Ss7Config cfg = Ss7Stack.toSs7Config(new Ss7RaConfig());
+        for (Ss7Config.Rule rule : cfg.sccp().routing()) {
+            for (Ss7Config.Addr a : new Ss7Config.Addr[] {rule.match(), rule.to(), rule.backup()}) {
+                if (a != null && a.gt() != null) {
+                    assertEquals("GT0100", a.gtType());
+                    assertNotNull("encoding", a.encoding());
+                    assertNotNull("numbering plan", a.plan());
+                    assertNotNull("nature of address", a.nature());
+                }
+            }
+        }
+    }
 }

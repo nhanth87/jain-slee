@@ -27,6 +27,7 @@ import org.restcomm.protocols.ss7.m3ua.As;
 import org.restcomm.protocols.ss7.m3ua.impl.M3UAManagementImpl;
 import org.restcomm.protocols.ss7.sccp.RemoteSignalingPointCode;
 import org.restcomm.protocols.ss7.sccp.impl.RemoteSignalingPointCodeImpl;
+import org.restcomm.protocols.ss7.sccp.SccpResource;
 import org.restcomm.protocols.ss7.sccp.impl.SccpStackImpl;
 
 import java.util.ArrayList;
@@ -542,6 +543,7 @@ public final class Ss7Stack {
                 fullCfg != null ? "Ss7Config stackName=" + built.stackName() : flatCfg);
         delegate = Ss7StackBuilder.build(built);
         applySccpCongestionPolicy(delegate);
+        declarePeerSubsystem(delegate);
         wireCongestionAdaptation(delegate);
         started = true;
         boolean map = built.protocols() != null && Boolean.TRUE.equals(built.protocols().map());
@@ -556,6 +558,31 @@ public final class Ss7Stack {
         congestionBridge = null;
         if (delegate != null) delegate.stop();
         LOG.info("[ra-jss7] jSS7 stack STOPPED");
+    }
+
+    /**
+     * Flat {@link Ss7RaConfig} path: the peer's SSN ({@link Ss7RaConfig#remoteSsn()}) as an SCCP
+     * remote subsystem on the destination point code. Ss7StackBuilder only derives remote SSNs
+     * from the local services, so a peer on another SSN (HLR 6 answering a VLR on 7) was dropped
+     * by SCCP: "no Remote SubSystem = 7 resource defined" — the request arrived, the answer never left.
+     */
+    private void declarePeerSubsystem(org.restcomm.protocols.ss7.config.Ss7Stack stack) throws Exception {
+        SccpStackImpl sccp = stack.sccpStack();
+        if (flatCfg != null && sccp != null) {
+            declarePeerSubsystem(sccp.getSccpResource(), flatCfg);
+        }
+    }
+
+    /** Package-visible for unit tests. Idempotent: jSS7 may have reloaded the resource from disk. */
+    static void declarePeerSubsystem(SccpResource resource, Ss7RaConfig cfg) throws Exception {
+        int dpc = cfg.destinationPointCode();
+        int ssn = cfg.remoteSsn();
+        if (ssn <= 0 || resource.getRemoteSsn(dpc, ssn) != null) {
+            return;
+        }
+        int id = resource.getRemoteSsns().keySet().stream().mapToInt(Integer::intValue).max().orElse(0) + 1;
+        resource.addRemoteSsn(id, dpc, ssn, 0, false);
+        LOG.info("[ra-jss7] SCCP remote subsystem declared: dpc={} ssn={}", dpc, ssn);
     }
 
     /**
@@ -669,7 +696,10 @@ public final class Ss7Stack {
                 networkIndicatorName(cfg.networkIndicator()),
                 0,
                 List.of(cfg.destinationPointCode()));
-        var wildcard = new Ss7Config.Addr(null, null, "*", null, null, null, null, null);
+        // GT fields explicit (Ss7ConfigLoader.normAddr defaults): the loader fills them for JSON,
+        // a programmatic Ss7Config is not normalised and Ss7StackBuilder refuses a GT without
+        // type / plan (jSS7 9.2.11-j25).
+        var wildcard = new Ss7Config.Addr(null, null, "*", "GT0100", "even", "isdn", "international", null);
         var toLocal = new Ss7Config.Addr(cfg.originatingPointCode(), null, null, null, null, null, null, null);
         var toRemote = new Ss7Config.Addr(cfg.destinationPointCode(), null, null, null, null, null, null, null);
         var ruleInbound = new Ss7Config.Rule("remote", 0, "K", wildcard, toLocal, null);

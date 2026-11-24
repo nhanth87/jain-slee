@@ -10,6 +10,7 @@ import com.microjainslee.ra.gtpv2c.command.GtpEchoCommand;
 import com.microjainslee.ra.gtpv2c.command.GtpOutboundCommand;
 import com.microjainslee.ra.gtpv2c.command.SendGtpv2Message;
 import com.microjainslee.ra.gtpv2c.event.GtpEchoEvent;
+import com.microjainslee.ra.gtpv2c.event.GtpProcedureTimeoutEvent;
 import com.microjainslee.ra.gtpv2c.event.Gtpv2MessageEvent;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -43,6 +44,13 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
     private static final Logger LOG = LogManager.getLogger(Gtpv2RaEndpoint.class);
 
     private final byte recovery;
+    /**
+     * Echo sequences come from the top half of the 24-bit space; SBB-built requests use the
+     * bottom half. Both started at 1, so an Echo Request and an S5-C Create Session Request
+     * could share (peer, sequence) and the peer replayed its cached Echo Response for the
+     * Create Session Request.
+     */
+    public static final int ECHO_SEQUENCE_BASE = 0x80_0000;
     private final AtomicInteger seq = new AtomicInteger(1);
     /** TS 29.274 §7.6 — replay the <em>response</em>, never drop the request silently. */
     private final Map<String, byte[]> responseCache = new ConcurrentHashMap<>();
@@ -84,6 +92,7 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
             @Override
             public void procedureExhausted(Gtpv2MessageType type, int sequence, InetSocketAddress peer) {
                 LOG.debug("gtpv2c-ra T3/N3 exhausted type={} seq={} peer={}", type, sequence, peer);
+                fireEvent(new GtpProcedureTimeoutEvent(type, sequence, peer), "gtp-tx-" + sequence);
             }
         });
     }
@@ -140,7 +149,7 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         }
         switch (gtp) {
             case GtpEchoCommand echo -> {
-                int s = seq.getAndIncrement() & 0xff_ffff;
+                int s = ECHO_SEQUENCE_BASE | (seq.getAndIncrement() & 0x7f_ffff);
                 Gtpv2Message req = Gtpv2Message.echoRequest(s, recovery);
                 byte[] wire = Gtpv2Codec.encode(req);
                 t3n3.track(echo.peer(), s, req.type(), wire);
@@ -150,9 +159,13 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
                 Gtpv2Message msg = send.message();
                 byte[] wire = Gtpv2Codec.encode(msg);
                 if (msg.type().isRequest()) {
+                    if (msg.sequence() >= ECHO_SEQUENCE_BASE) {
+                        LOG.warn("gtpv2c-ra {} seq=0x{} is in the Echo range; SBB requests use 0..0x7fffff",
+                                msg.type(), Integer.toHexString(msg.sequence()));
+                    }
                     t3n3.track(send.peer(), msg.sequence(), msg.type(), wire);
                 } else {
-                    cacheResponse(send.peer(), msg.sequence(), wire);
+                    cacheResponse(send.peer(), msg.sequence(), procedure(msg.type()), wire);
                 }
                 emit(wire, send.peer());
             }
@@ -188,7 +201,7 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
             LOG.debug("gtpv2c-ra ignore {}", msg.type());
             return;
         }
-        String txKey = txKey(peer, msg.sequence());
+        String txKey = txKey(peer, msg.sequence(), procedure(msg.type()));
         byte[] cached = responseCache.get(txKey);
         if (cached != null) {
             emit(cached, peer);
@@ -196,7 +209,7 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         }
         if (msg.type() == Gtpv2MessageType.ECHO_REQUEST) {
             byte[] rsp = Gtpv2Codec.encode(Gtpv2Message.echoResponse(msg.sequence(), recovery));
-            cacheResponse(peer, msg.sequence(), rsp);
+            cacheResponse(peer, msg.sequence(), Gtpv2MessageType.ECHO_REQUEST.code, rsp);
             emit(rsp, peer);
             return;
         }
@@ -240,14 +253,20 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         return t3n3.size();
     }
 
-    private void cacheResponse(InetSocketAddress peer, int sequence, byte[] wire) {
-        String key = txKey(peer, sequence);
+    private void cacheResponse(InetSocketAddress peer, int sequence, int procedure, byte[] wire) {
+        String key = txKey(peer, sequence, procedure);
         responseCache.put(key, wire);
         inFlight.remove(key);
     }
 
-    private static String txKey(InetSocketAddress peer, int sequence) {
-        return peer + "/" + sequence;
+    /** One transaction = peer + sequence + procedure (request code), TS 29.274 §7.6. */
+    private static String txKey(InetSocketAddress peer, int sequence, int procedure) {
+        return peer + "/" + sequence + "/" + procedure;
+    }
+
+    /** The request code of a procedure: a GTPv2-C response code is its request's + 1. */
+    static int procedure(Gtpv2MessageType type) {
+        return type.isResponse() ? type.code - 1 : type.code;
     }
 
     private void emit(byte[] bytes, InetSocketAddress peer) {

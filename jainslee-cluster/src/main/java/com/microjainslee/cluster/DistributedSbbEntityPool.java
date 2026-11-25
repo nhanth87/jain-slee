@@ -94,7 +94,7 @@ public final class DistributedSbbEntityPool implements SbbEntityPoolContract {
 
     private static final Logger LOG = LogManager.getLogger(DistributedSbbEntityPool.class);
 
-    private final VirtualThreadSbbEntityPool delegate;
+    private volatile VirtualThreadSbbEntityPool delegate;
     private final Cache<String, SbbEntitySnapshot> stateCache;
     private final ClusterManager clusterManager;
     private final SbbCheckpointConfig checkpointConfig;
@@ -145,6 +145,27 @@ public final class DistributedSbbEntityPool implements SbbEntityPoolContract {
                 clusterMgr.getNodeId(),
                 this.checkpointConfig.persistOnRelease(),
                 this.checkpointConfig.debounceMs());
+    }
+
+    /**
+     * Use the container's own local pool as the delegate. Bound by
+     * {@code MicroSleeContainer#bindDistributedSbbPool}: the container acquires entities into its
+     * local pool, so a separate delegate here meant the router (rebound to this pool) never found
+     * them — every event became MISSING_ENTITY and ran on an orphan thread, without the per-entity
+     * ordering. The private delegate is shut down when it held nothing.
+     */
+    public synchronized void adoptDelegate(VirtualThreadSbbEntityPool local) {
+        Objects.requireNonNull(local, "local");
+        VirtualThreadSbbEntityPool previous = this.delegate;
+        if (previous == local) {
+            return;
+        }
+        this.delegate = local;
+        if (previous != null && previous.size() == 0) {
+            previous.shutdown();
+        }
+        LOG.info("DistributedSbbEntityPool now delegates to the container's local pool (node={})",
+                clusterManager.getNodeId());
     }
 
     /** @return the cluster manager that owns the {@code sbb-entity-state} cache. */

@@ -563,6 +563,12 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
      * @param pool a {@code DistributedSbbEntityPool} instance, or
      *             {@code null} to clear the binding
      */
+    /** The pool the router delivers through: the bound cluster pool, else the local one. */
+    private SbbEntityPoolContract entityPool() {
+        Object d = this.distributedSbbEventPoolSwap;
+        return d instanceof SbbEntityPoolContract c ? c : this.sbbEntityPool;
+    }
+
     public synchronized void bindDistributedSbbPool(Object pool) {
         Class<?> poolClass;
         try {
@@ -595,6 +601,19 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
         Object previous = this.distributedSbbEventPoolSwap;
         Object previousPool = this.distributedSbbEntityPool;
         this.distributedSbbEntityPool = pool;
+        if (pool != null && this.sbbEntityPool != null) {
+            // One set of entities: the cluster pool wraps the pool this container acquires into,
+            // else the router (rebound below) never finds them — MISSING_ENTITY on every event.
+            try {
+                pool.getClass().getMethod("adoptDelegate", VirtualThreadSbbEntityPool.class)
+                        .invoke(pool, this.sbbEntityPool);
+            } catch (NoSuchMethodException old) {
+                LOG.warn("Distributed pool {} cannot adopt the local pool — events will miss their entities",
+                        pool.getClass().getName());
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException("adoptDelegate failed", e);
+            }
+        }
         // ADR 0007 D4 — REBIND THE ROUTER. Previously this method only recorded
         // the reference, so EventRouter kept using the local pool and the
         // Infinispan `sbb-entity-state` cache was written by nobody and read by
@@ -1414,7 +1433,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
         final boolean pooledReuse = typePool.isPooledReuse(sbb);
         final long entityId = entityIdAllocator.allocate();
         final VirtualThreadSbbEntityPool.SbbEntity entity =
-                sbbEntityPool.acquire(id, entityId, sbb);
+                entityPool().acquire(id, entityId, sbb);
         final SbbID sbbID = new SbbID(id);
         final SimpleSbbLocalObject localObject = buildLocalObject(
                 id, sbbID, sbb, entity, type, true, effectiveMask, serviceID);
@@ -1459,7 +1478,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
     private SimpleSbbLocalObject registerLegacySbb(String id, Sbb sbb, EventMask mask,
             ServiceID serviceID) {
         final EventMask effectiveMask = mask != null ? mask : EventMask.ACCEPT_ALL;
-        final VirtualThreadSbbEntityPool.SbbEntity entity = sbbEntityPool.acquire(id, () -> sbb);
+        final VirtualThreadSbbEntityPool.SbbEntity entity = entityPool().acquire(id, () -> sbb);
         final SbbID sbbID = new SbbID(id);
         final SimpleSbbLocalObject localObject = buildLocalObject(
                 id, sbbID, entity.getSbb(), entity, null, false, effectiveMask, serviceID);
@@ -1500,7 +1519,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                     sbbLifecycleManager.removeEntity(sbbInstance);
                     sbbs.remove(id);
                     sbbRegistrationOrder.remove(id);
-                    sbbEntityPool.release(entity);
+                    entityPool().release(entity);
                     cmpFieldStore.remove(id);
                     throw new RuntimeException(ce);
                 } catch (RuntimeException re) {
@@ -2048,7 +2067,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
      */
     private void afterActivityEnded(SbbLocalObject attached, InMemoryActivityContext activity) {
         VirtualThreadSbbEntityPool.SbbEntity entity = attached.getSbbID() == null
-                ? null : sbbEntityPool.findEntity(attached.getSbbID().getId());
+                ? null : entityPool().findEntity(attached.getSbbID().getId());
         if (entity == null) {
             activity.detachImmediate(attached);
             return;
@@ -2075,7 +2094,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
             }
         };
         VirtualThreadSbbEntityPool.SbbEntity entity = root.getSbbID() == null
-                ? null : sbbEntityPool.findEntity(root.getSbbID().getId());
+                ? null : entityPool().findEntity(root.getSbbID().getId());
         if (entity == null) {
             removal.run();
             return;
@@ -3368,7 +3387,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                                 id, convergenceKey, reason, System.currentTimeMillis()));
                         entityRemovalCounter.incrementAndGet();
                         // Release pool AFTER bus so subscribers can still read CMP.
-                        sbbEntityPool.release(entity);
+                        entityPool().release(entity);
                         cmpFieldStore.remove(id);
                     }
                 },
@@ -3412,7 +3431,7 @@ public final class MicroSleeContainer implements SessionRecoveryService.Rehydrat
                     sbbs.remove(id);
                     sbbRegistrationOrder.remove(id);
                     entityTypesById.remove(id);
-                    sbbEntityPool.release(entity);
+                    entityPool().release(entity);
                     cmpFieldStore.remove(id);
                     throw new RuntimeException(ce);
                 } catch (RuntimeException re) {

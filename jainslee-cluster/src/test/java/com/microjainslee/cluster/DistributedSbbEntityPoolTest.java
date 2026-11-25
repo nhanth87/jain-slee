@@ -504,6 +504,54 @@ class DistributedSbbEntityPoolTest {
         }
     }
 
+    /**
+     * Seen on epc-cluster and elisa-cluster: with the cluster pool bound, every event logged
+     * MISSING_ENTITY and ran on an orphan thread — the container acquired entities into its local
+     * pool while the router looked them up in the cluster pool's own delegate.
+     */
+    @Test
+    @DisplayName("events reach their entity through the bound cluster pool (no MISSING_ENTITY)")
+    void boundClusterPoolSeesTheContainersEntities() throws Exception {
+        com.microjainslee.core.MicroSleeContainer container =
+                new com.microjainslee.core.MicroSleeContainer();
+        DistributedSbbEntityPool pool = newPool(manager);
+        try {
+            container.start();
+            container.bindDistributedSbbPool(pool);
+            container.registerSbbType(EchoSbb.class, EchoSbb::new);
+            com.microjainslee.core.SimpleSbbLocalObject obj = container.acquireEntity("e1", EchoSbb.class);
+            assertThat(obj.awaitReady(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            com.microjainslee.core.InMemoryActivityContext aci = container.createActivityContext("ac1");
+            container.attach("ac1", obj);
+            for (int i = 0; i < 3; i++) {
+                container.routeEvent(new PingEvent(), aci);
+            }
+            EchoSbb sbb = (EchoSbb) obj.getSbb();
+            long deadline = System.currentTimeMillis() + 5_000;
+            while (sbb.deliveries.get() < 3 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            assertThat(sbb.deliveries.get()).isEqualTo(3);
+            assertThat(container.getEventRouter().getMissingEntityCount()).isZero();
+            assertThat(pool.findEntity("e1")).isNotNull();
+        } finally {
+            container.stop();
+            pool.shutdown();
+        }
+    }
+
+    static final class EchoSbb implements com.microjainslee.api.Sbb, com.microjainslee.api.SleeEventHandler {
+        final java.util.concurrent.atomic.AtomicInteger deliveries = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public void onEvent(com.microjainslee.api.SleeEvent event, com.microjainslee.api.ActivityContextInterface aci) {
+            deliveries.incrementAndGet();
+        }
+    }
+
+    static final class PingEvent implements com.microjainslee.api.SleeEvent {
+    }
+
     @Test
     @DisplayName("bindDistributedSbbPool rejects a foreign pool class")
     void bindDistributedSbbPoolRejectsForeignClass() {

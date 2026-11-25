@@ -94,6 +94,56 @@ public class CorsacRequestAnswerTest {
         }
     }
 
+    /**
+     * Each Corsac inbound message waits on a worker's local queue until that worker's blocking poll of the
+     * shared queue returns: with the mobius default (100 ms) a request/answer round trip on loopback took
+     * ≈ 100 ms (≈ 50 ms per direction — seen as Gx CCR→CCA ≈ 52 ms in the PCRF on the EPC wire).
+     */
+    @Test
+    public void requestAnswerRoundTripIsNotHeldByTheWorkerPoll() throws Exception {
+        int port;
+        try (ServerSocket probe = new ServerSocket(0)) {
+            port = probe.getLocalPort();
+        }
+        Events hssEvents = new Events();
+        Events cscfEvents = new Events();
+        DiameterRaConfig hssCfg = config("hss.rtt.test", port);
+        hssCfg.setPeers(List.of(new DiameterRaConfig.Peer("127.0.0.1", 0, "server", "icscf.rtt.test", "ra.test", Set.of(CX))));
+        DiameterRaConfig cscfCfg = config("icscf.rtt.test", 0);
+        cscfCfg.setPeers(List.of(new DiameterRaConfig.Peer("127.0.0.1", port, "client", "hss.rtt.test", "ra.test", Set.of(CX))));
+        CorsacDiameterTransport hss = new CorsacDiameterTransport(hssCfg, new Callbacks());
+        CorsacDiameterTransport cscf = new CorsacDiameterTransport(cscfCfg, new Callbacks());
+        hss.setBootstrap(hssEvents);
+        cscf.setBootstrap(cscfEvents);
+        try {
+            hss.start();
+            cscf.start();
+            long deadline = System.currentTimeMillis() + 15_000;
+            while (System.currentTimeMillis() < deadline && !(cscf.linkUp() && hss.linkUp())) {
+                Thread.sleep(100);
+            }
+            assertTrue("link OPEN both sides", cscf.linkUp() && hss.linkUp());
+            long[] rtt = new long[30];
+            for (int i = 0; i < rtt.length; i++) {
+                long t0 = System.nanoTime();
+                cscf.send(new SendDiameterRequest("rtt-" + i, CX, 300, "hss.rtt.test", "ra.test",
+                        Map.of(1, "alice@ra.test")));
+                DiameterRequestEvent uar = (DiameterRequestEvent) hssEvents.take();
+                hss.send(new SendDiameterAnswer("rtt-" + i, CX, 300, 2001L, uar.hopByHopId(), uar.endToEndId(),
+                        Map.of(), List.of()));
+                assertNotNull((DiameterAnswerEvent) cscfEvents.take());
+                rtt[i] = (System.nanoTime() - t0) / 1_000_000L;
+            }
+            long[] warm = java.util.Arrays.copyOfRange(rtt, 10, rtt.length);
+            java.util.Arrays.sort(warm);
+            long p50 = warm[warm.length / 2];
+            assertTrue("loopback request/answer p50 " + p50 + " ms (worker poll would make it ~100)", p50 < 20);
+        } finally {
+            cscf.stop();
+            hss.stop();
+        }
+    }
+
     private static DiameterRaConfig config(String origin, int port) {
         DiameterRaConfig cfg = new DiameterRaConfig();
         cfg.setHost("127.0.0.1");

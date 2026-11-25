@@ -138,7 +138,7 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
             return;
         }
         try {
-            workerPool = new WorkerPool("diameter-ra");
+            workerPool = new WorkerPool("diameter-ra", config.workerPollMs());
             workerPool.start(4);
             stack = new DiameterStackImpl(
                     getClass().getClassLoader(),

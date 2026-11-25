@@ -57,6 +57,13 @@ public final class DiameterRaConfig {
     private long watchdogTimeoutMs = 30_000L;
     /** Tx timer for outbound requests (RFC 6733 §7 / RFC 4006 Tx); 0 = no timeout event. */
     private long requestTimeoutMs = 0L;
+    /**
+     * Corsac WorkerPool poll interval. Corsac queues every inbound message on a per-session worker's
+     * local queue, which the worker only checks between blocking polls of the shared queue — the
+     * mobius default of 100 ms held each Diameter message ≈ 50 ms on average (Gx CCR in the PCRF,
+     * CCA in the PGW-C). 1 ms keeps per-session FIFO and costs one wake-up per worker per ms.
+     */
+    private long workerPollMs = 1L;
     /** Several peers (one link each); empty = the single legacy peer below. */
     private List<Peer> peers = List.of();
 
@@ -93,6 +100,8 @@ public final class DiameterRaConfig {
     public void setWatchdogTimeoutMs(long v) { watchdogTimeoutMs = v; }
     public long requestTimeoutMs() { return requestTimeoutMs; }
     public void setRequestTimeoutMs(long v) { requestTimeoutMs = Math.max(0L, v); }
+    public long workerPollMs() { return workerPollMs; }
+    public void setWorkerPollMs(long v) { workerPollMs = Math.max(1L, v); }
     public List<Peer> peers() { return peers; }
     public void setPeers(List<Peer> v) { peers = v == null ? List.of() : List.copyOf(v); }
 

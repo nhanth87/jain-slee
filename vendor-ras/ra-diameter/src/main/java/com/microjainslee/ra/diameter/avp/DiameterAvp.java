@@ -37,13 +37,30 @@ public final class DiameterAvp implements Serializable {
     private final Type type;
     private final Object value; // String | byte[] | Long | Integer | List<DiameterAvp>
     private final boolean mandatory;
+    /** The received value octets (inbound leaves only; null when built by an application). */
+    private final byte[] raw;
 
     private DiameterAvp(int code, long vendorId, Type type, Object value, boolean mandatory) {
+        this(code, vendorId, type, value, mandatory, null);
+    }
+
+    private DiameterAvp(int code, long vendorId, Type type, Object value, boolean mandatory, byte[] raw) {
         this.code = code;
         this.vendorId = vendorId;
         this.type = Objects.requireNonNull(type);
         this.value = value;
         this.mandatory = mandatory;
+        this.raw = raw;
+    }
+
+    /**
+     * An inbound leaf AVP: a best-effort typed {@code value} plus the received octets, so a
+     * reader that knows the real type (from its own dictionary) can still decode it:
+     * {@link #asOctets()}, {@link #asUnsigned32()} and {@link #asUtf8()} fall back to the raw value.
+     */
+    public static DiameterAvp received(int code, long vendorId, boolean mandatory, Type type, Object value,
+                                       byte[] raw) {
+        return new DiameterAvp(code, vendorId, type, value, mandatory, raw == null ? null : raw.clone());
     }
 
     // ---- factories (default vendor 0 = no V bit, mandatory false) ----
@@ -70,6 +87,11 @@ public final class DiameterAvp implements Serializable {
 
     public static DiameterAvp u32(int code, long vendorId, long value, boolean mandatory) {
         return new DiameterAvp(code, vendorId, Type.UNSIGNED32, value, mandatory);
+    }
+
+    /** Unsigned64 (RFC 6733 §4.2), e.g. CC-Total-Octets (RFC 4006 §8.14). */
+    public static DiameterAvp u64(int code, long value) {
+        return new DiameterAvp(code, 0L, Type.UNSIGNED64, value, true);
     }
 
     public static DiameterAvp i32(int code, long value) {
@@ -116,16 +138,33 @@ public final class DiameterAvp implements Serializable {
     public Object value() { return value; }
 
     public String asUtf8() {
-        return value instanceof String s ? s : null;
+        if (value instanceof String s) {
+            return s;
+        }
+        return raw == null ? null : new String(raw, java.nio.charset.StandardCharsets.UTF_8);
     }
 
     public byte[] asOctets() {
-        return value instanceof byte[] b ? b : null;
+        if (value instanceof byte[] b) {
+            return b;
+        }
+        return raw == null ? null : raw.clone();
     }
 
+    /** Unsigned32 / Integer32 / Enumerated value; a received 4-octet leaf decodes big-endian. */
     public long asUnsigned32() {
         if (value instanceof Long l) return l;
         if (value instanceof Integer i) return i.longValue();
+        if (raw != null && raw.length == 4) {
+            return ((raw[0] & 0xffL) << 24) | ((raw[1] & 0xffL) << 16) | ((raw[2] & 0xffL) << 8) | (raw[3] & 0xffL);
+        }
+        if (raw != null && raw.length == 8) {
+            long v = 0;
+            for (byte x : raw) {
+                v = (v << 8) | (x & 0xffL);
+            }
+            return v;
+        }
         return 0L;
     }
 

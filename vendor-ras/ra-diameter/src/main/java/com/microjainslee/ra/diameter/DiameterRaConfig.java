@@ -55,6 +55,8 @@ public final class DiameterRaConfig {
     private String peerRole = "server";
     /** Tw-style silence limit for peer-ready (0 = no expiry after CER/CEA). Default 30s. */
     private long watchdogTimeoutMs = 30_000L;
+    /** Tx timer for outbound requests (RFC 6733 §7 / RFC 4006 Tx); 0 = no timeout event. */
+    private long requestTimeoutMs = 0L;
     /** Several peers (one link each); empty = the single legacy peer below. */
     private List<Peer> peers = List.of();
 
@@ -89,6 +91,8 @@ public final class DiameterRaConfig {
     public void setPeerRole(String v) { peerRole = v; }
     public long watchdogTimeoutMs() { return watchdogTimeoutMs; }
     public void setWatchdogTimeoutMs(long v) { watchdogTimeoutMs = v; }
+    public long requestTimeoutMs() { return requestTimeoutMs; }
+    public void setRequestTimeoutMs(long v) { requestTimeoutMs = Math.max(0L, v); }
     public List<Peer> peers() { return peers; }
     public void setPeers(List<Peer> v) { peers = v == null ? List.of() : List.copyOf(v); }
 

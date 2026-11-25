@@ -10,7 +10,7 @@ import com.microjainslee.api.SleeEvent;
 
 /** Sealed hierarchy root for all Diameter SLEE events. */
 public sealed interface DiameterEvent extends SleeEvent
-        permits DiameterRequestEvent, DiameterAnswerEvent {
+        permits DiameterRequestEvent, DiameterAnswerEvent, DiameterTimeoutEvent {
     String sessionId();
     long applicationId();
 }

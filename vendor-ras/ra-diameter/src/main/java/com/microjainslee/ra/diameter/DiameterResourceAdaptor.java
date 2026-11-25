@@ -18,6 +18,7 @@ import com.microjainslee.ra.diameter.collab.DiameterOutboundSender;
 import com.microjainslee.ra.diameter.collab.DiameterPeerTracker;
 import com.microjainslee.ra.diameter.collab.DiameterPeerTracker.BaseAction;
 import com.microjainslee.ra.diameter.command.DiameterCommand;
+import com.microjainslee.ra.diameter.events.DiameterAnswerEvent;
 import com.microjainslee.ra.diameter.events.DiameterEvent;
 import com.microjainslee.ra.diameter.transport.CorsacDiameterTransport;
 import com.microjainslee.ra.diameter.transport.DiameterTransport;
@@ -68,6 +69,9 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
     private volatile RaHaSupport haSupport;
     private volatile Object pendingCheckpointContainer;
     private volatile CorsacDiameterTransport corsac;
+    /** Outbound requests awaiting an answer (Session-Id + command) → Tx timer. */
+    private final Map<String, java.util.concurrent.ScheduledFuture<?>> awaiting = new ConcurrentHashMap<>();
+    private volatile java.util.concurrent.ScheduledExecutorService txTimer;
 
     // ---- collaborator injection ----
 
@@ -152,7 +156,7 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
         if (!active.compareAndSet(false, true)) return;
         if (config.sctpEnabled() || config.tcpEnabled()) {
             CorsacDiameterTransport c = new CorsacDiameterTransport(config, this);
-            c.setBootstrap(bootstrapPort);
+            c.setBootstrap(answerTracking(bootstrapPort));
             corsac = c;
             setOutboundSender(c);
             transports.add(c);
@@ -169,6 +173,12 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
 
     public void raInactive() {
         if (!active.compareAndSet(true, false)) return;
+        java.util.concurrent.ScheduledExecutorService t = txTimer;
+        txTimer = null;
+        if (t != null) {
+            t.shutdownNow();
+        }
+        awaiting.clear();
         teardownHa();
         transports.forEach(DiameterTransport::stop);
         transports.clear();
@@ -269,12 +279,104 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
             ha.onOpened(sessionId, "Active", Map.of("cmd", cmd.getClass().getSimpleName()));
             ha.checkpointSbb(sessionId);
         }
+        if (cmd instanceof com.microjainslee.ra.diameter.command.SendDiameterRequest req) {
+            armTx(req);
+        }
         if (outboundSender != null) {
             outboundSender.send(cmd);
         } else {
             LOG.warn("[ra-diameter] No outbound sender, dropping {}",
                     cmd.getClass().getSimpleName());
         }
+    }
+
+    // ---- Tx timer (outbound request → answer or DiameterTimeoutEvent) ----
+
+    private static String txKey(String sessionId, int commandCode) {
+        return sessionId + "|" + commandCode;
+    }
+
+    private void armTx(com.microjainslee.ra.diameter.command.SendDiameterRequest req) {
+        long ms = config.requestTimeoutMs();
+        String sid = req.sessionId();
+        if (ms <= 0 || sid == null || sid.isBlank()) {
+            return;
+        }
+        java.util.concurrent.ScheduledExecutorService t = txTimer;
+        if (t == null) {
+            synchronized (this) {
+                t = txTimer;
+                if (t == null) {
+                    t = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
+                            Thread.ofPlatform().daemon().name("diameter-tx").factory());
+                    txTimer = t;
+                }
+            }
+        }
+        String key = txKey(sid, req.commandCode());
+        java.util.concurrent.ScheduledFuture<?> f = t.schedule(() -> {
+            if (awaiting.remove(key) != null) {
+                fireTimeout(new com.microjainslee.ra.diameter.events.DiameterTimeoutEvent(
+                        sid, req.applicationId(), req.commandCode()));
+            }
+        }, ms, java.util.concurrent.TimeUnit.MILLISECONDS);
+        java.util.concurrent.ScheduledFuture<?> old = awaiting.put(key, f);
+        if (old != null) {
+            old.cancel(false);
+        }
+    }
+
+    private void disarmTx(String sessionId, int commandCode) {
+        if (sessionId == null) {
+            return;
+        }
+        java.util.concurrent.ScheduledFuture<?> f = awaiting.remove(txKey(sessionId, commandCode));
+        if (f != null) {
+            f.cancel(false);
+        }
+    }
+
+    private void fireTimeout(com.microjainslee.ra.diameter.events.DiameterTimeoutEvent ev) {
+        RaBootstrapPort bp = bootstrapPort;
+        if (bp == null) {
+            return;
+        }
+        LOG.warn("[ra-diameter] no answer to cmd={} app={} session={} within {} ms",
+                ev.commandCode(), ev.applicationId(), ev.sessionId(), config.requestTimeoutMs());
+        ActivityHandle handle = sessions.computeIfAbsent(ev.sessionId(), bp::createActivityHandle);
+        bp.fireEvent(ev, handle, null);
+    }
+
+    /** Requests in flight under the Tx timer (status / tests). */
+    public int awaitingAnswers() {
+        return awaiting.size();
+    }
+
+    /** The bootstrap port handed to a transport that fires events itself: answers stop their Tx timer. */
+    private RaBootstrapPort answerTracking(RaBootstrapPort delegate) {
+        if (delegate == null) {
+            return null;
+        }
+        return new RaBootstrapPort() {
+            @Override
+            public ActivityHandle createActivityHandle(String activityId) {
+                return delegate.createActivityHandle(activityId);
+            }
+
+            @Override
+            public void fireEvent(com.microjainslee.api.SleeEvent event, ActivityHandle handle,
+                                  com.microjainslee.api.Address address) {
+                if (event instanceof DiameterAnswerEvent ans) {
+                    disarmTx(ans.sessionId(), ans.commandCode());
+                }
+                delegate.fireEvent(event, handle, address);
+            }
+
+            @Override
+            public void endActivity(ActivityHandle handle) {
+                delegate.endActivity(handle);
+            }
+        };
     }
 
     // ---- transport callbacks (wire → peer tracker → SLEE) ----
@@ -339,6 +441,9 @@ public final class DiameterResourceAdaptor implements DiameterTransportCallbacks
 
         DiameterEvent event = classifier.classify(msg);
         if (event != null) {
+            if (event instanceof DiameterAnswerEvent ans) {
+                disarmTx(ans.sessionId(), ans.commandCode());
+            }
             bootstrapPort.fireEvent(event, handle, null);
         }
     }

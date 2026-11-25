@@ -72,7 +72,11 @@ public final class CorsacEventBridge {
         if (wire != null) {
             flatten(wire, avps);
         }
-        List<DiameterAvp> structured = extractStructured(msg);
+        // The whole message as a typed tree (Corsac keeps the AVPs its dictionary knows in typed
+        // fields, so its optional-AVP list missed e.g. Gx Subscription-Id / Charging-Rule-Install).
+        List<DiameterAvp> structured = wire != null
+                ? com.microjainslee.ra.diameter.collab.DiameterEventClassifier.structuredOf(wire)
+                : extractStructured(msg);
 
         if (msg instanceof DiameterRequest req) {
             String destHost = nullToEmpty(req.getDestinationHost());
@@ -146,12 +150,14 @@ public final class CorsacEventBridge {
 
     /** AVPs whose value is an Unsigned32 / Integer32 / Enumerated (rendered in decimal). */
     private static final java.util.Set<Integer> NUMERIC = java.util.Set.of(
-            258, 259, 266, 268, 270, 277, 278, 298, 415, 416, 607, 614, 616, 624, 633,
-            1028, 1032, 1046, 1047, 1407, 1417, 1418, 1419, 513, 511, 512, 1027);
+            258, 259, 266, 268, 270, 277, 278, 298, 415, 416, 450, 607, 614, 616, 624, 633,
+            1028, 1032, 1046, 1047, 1048, 1407, 1417, 1418, 1419, 513, 511, 512, 1027,
+            // Gx (TS 29.212): Precedence, Online/Offline, bit rates, APN-AMBR, Flow-Direction.
+            1010, 1008, 1009, 515, 516, 1025, 1026, 1040, 1041, 1080, 432, 439);
 
     /** Grouped AVPs that are walked into (their members land in the flat map). */
     private static final java.util.Set<Integer> GROUPED = java.util.Set.of(
-            260, 297, 603, 612, 615, 628, 1400, 1413, 1414, 1415, 1416,
+            260, 297, 443, 603, 612, 615, 628, 1400, 1413, 1414, 1415, 1416,
             1001, 1003, 1016, 1034, 1049, 517, 519, 1058);
 
     /**

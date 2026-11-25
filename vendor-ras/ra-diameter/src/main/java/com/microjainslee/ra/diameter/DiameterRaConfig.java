@@ -64,6 +64,12 @@ public final class DiameterRaConfig {
      * CCA in the PGW-C). 1 ms keeps per-session FIFO and costs one wake-up per worker per ms.
      */
     private long workerPollMs = 1L;
+    /**
+     * Re-resolve peers configured by DNS name every this many ms while their link is not OPEN; 0 = never.
+     * Corsac resolves a peer once: a server-role link only accepts the configured client IP, a client link
+     * keeps dialling the old one. On Kubernetes a pod gets a new IP on every restart.
+     */
+    private long peerRefreshMs = 10_000L;
     /** Several peers (one link each); empty = the single legacy peer below. */
     private List<Peer> peers = List.of();
 
@@ -102,6 +108,8 @@ public final class DiameterRaConfig {
     public void setRequestTimeoutMs(long v) { requestTimeoutMs = Math.max(0L, v); }
     public long workerPollMs() { return workerPollMs; }
     public void setWorkerPollMs(long v) { workerPollMs = Math.max(1L, v); }
+    public long peerRefreshMs() { return peerRefreshMs; }
+    public void setPeerRefreshMs(long v) { peerRefreshMs = Math.max(0L, v); }
     public List<Peer> peers() { return peers; }
     public void setPeers(List<Peer> v) { peers = v == null ? List.of() : List.copyOf(v); }
 

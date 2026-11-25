@@ -84,9 +84,25 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
     /** A configured peer and the Corsac link that serves it. */
     record Route(String linkId, DiameterRaConfig.Peer peer) {}
 
+    /** Peer host → address; {@link InetAddress#getByName} outside tests. */
+    @FunctionalInterface
+    interface Resolver {
+        InetAddress resolve(String host) throws java.net.UnknownHostException;
+    }
+
+    private final Resolver resolver;
+    /** Address each link was created with. */
+    private final java.util.Map<String, InetAddress> linkRemotes = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile java.util.concurrent.ScheduledExecutorService peerRefresher;
+
     public CorsacDiameterTransport(DiameterRaConfig config, DiameterTransportCallbacks callbacks) {
+        this(config, callbacks, InetAddress::getByName);
+    }
+
+    CorsacDiameterTransport(DiameterRaConfig config, DiameterTransportCallbacks callbacks, Resolver resolver) {
         this.config = Objects.requireNonNull(config);
         this.callbacks = Objects.requireNonNull(callbacks);
+        this.resolver = Objects.requireNonNull(resolver);
     }
 
     public void setBootstrap(RaBootstrapPort bootstrap) {
@@ -169,6 +185,7 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
                 built.add(new Route(linkId, peer));
             }
             routes = List.copyOf(built);
+            schedulePeerRefresh();
         } catch (Exception e) {
             started.set(false);
             throw new IllegalStateException("corsac Diameter stack failed to start", e);
@@ -176,8 +193,9 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
     }
 
     private void startLink(String linkId, DiameterRaConfig.Peer peer) throws Exception {
-        InetAddress remote = InetAddress.getByName(
+        InetAddress remote = resolver.resolve(
                 peer.host() == null || peer.host().isBlank() ? "127.0.0.1" : peer.host());
+        linkRemotes.put(linkId, remote);
         boolean sctp = config.sctpEnabled();
         boolean server = peer.server();
         InetAddress local = localBindAddress(config.host(), server, remote);
@@ -239,9 +257,70 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
                 peer.applicationIds());
     }
 
+    private void schedulePeerRefresh() {
+        long every = config.peerRefreshMs();
+        if (every <= 0 || routes.stream().noneMatch(r -> byName(r.peer()))) {
+            return;
+        }
+        java.util.concurrent.ScheduledExecutorService ex =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                    Thread t = new Thread(r, "diameter-ra-peer-dns");
+                    t.setDaemon(true);
+                    return t;
+                });
+        ex.scheduleWithFixedDelay(this::refreshPeers, every, every, java.util.concurrent.TimeUnit.MILLISECONDS);
+        peerRefresher = ex;
+    }
+
+    /**
+     * Re-create the link of a peer configured by name whose address changed while the link is not OPEN
+     * (a restarted pod / VM with a new IP). An OPEN link is never touched.
+     */
+    void refreshPeers() {
+        DiameterStack s = stack;
+        if (s == null || !started.get()) {
+            return;
+        }
+        for (Route r : routes) {
+            if (!byName(r.peer()) || linkUp(r.linkId())) {
+                continue;
+            }
+            InetAddress now;
+            try {
+                now = resolver.resolve(r.peer().host());
+            } catch (Exception e) {
+                LOG.debug("[diameter-ra] peer {} does not resolve: {}", r.peer().host(), e.toString());
+                continue;
+            }
+            InetAddress was = linkRemotes.get(r.linkId());
+            if (now.equals(was)) {
+                continue;
+            }
+            LOG.info("[diameter-ra] peer {} moved {} → {} — re-creating link {}", r.peer().host(),
+                    was == null ? "?" : was.getHostAddress(), now.getHostAddress(), r.linkId());
+            try {
+                s.getNetworkManager().removeLink(r.linkId());
+                startLink(r.linkId(), r.peer());
+            } catch (Exception e) {
+                LOG.warn("[diameter-ra] re-creating link {} failed: {}", r.linkId(), e.toString());
+            }
+        }
+    }
+
+    /** Peer given as a DNS name (not an IP literal), so its address may change. */
+    static boolean byName(DiameterRaConfig.Peer peer) {
+        String h = peer.host();
+        return h != null && !h.isBlank() && !h.contains(":") && !h.matches("\\d{1,3}(\\.\\d{1,3}){3}");
+    }
+
     @Override
     public void stop() {
         started.set(false);
+        java.util.concurrent.ScheduledExecutorService ex = peerRefresher;
+        if (ex != null) {
+            ex.shutdownNow();
+            peerRefresher = null;
+        }
         if (stack != null) {
             stack.stop();
             stack = null;

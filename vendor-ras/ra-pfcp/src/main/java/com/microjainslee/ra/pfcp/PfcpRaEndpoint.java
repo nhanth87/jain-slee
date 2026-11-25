@@ -122,6 +122,12 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
         return haSupport;
     }
 
+    /** The link activity is this node's own (see ra-gtpv2c): node id appended when clustered. */
+    private String nodeScoped(String id) {
+        RaHaSupport ha = haSupport;
+        return ha != null && ha.isClustered() ? id + "@" + ha.localNodeId() : id;
+    }
+
     /** Session activity key for HA ownership: the CP SEID. */
     public static String sessionKey(long cpSeid) {
         return "seid-" + Long.toHexString(cpSeid);
@@ -303,7 +309,7 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
         PfcpPeer p = peers.computeIfAbsent(peer.toString(), k -> new PfcpPeer(peer));
         p.associated = false;
         p.evidence = "heartbeat-timeout";
-        fire(new PfcpHeartbeatEvent(peer, false), "pfcp-link");
+        fire(new PfcpHeartbeatEvent(peer, false), nodeScoped("pfcp-link"));
         reAssociate(peer);
     }
 
@@ -459,7 +465,7 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
             p.peerRecovery = recovery;
         }
         pendingAssoc.entrySet().removeIf(e -> e.getValue().equals(peer));
-        fire(new PfcpAssociationEvent(peer, true), "pfcp-link");
+        fire(new PfcpAssociationEvent(peer, true), nodeScoped("pfcp-link"));
         PfcpHeartbeatDriver hb = heartbeats;
         if (hb != null) {
             hb.associate(peer);
@@ -478,14 +484,14 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
         if (recovery != -1) {
             if (p.peerRecovery != -1 && p.peerRecovery != recovery) {
                 p.peerRecovery = recovery;
-                fire(new PfcpHeartbeatEvent(peer, true), "pfcp-link");
+                fire(new PfcpHeartbeatEvent(peer, true), nodeScoped("pfcp-link"));
                 LOG.info("pfcp-ra recovery timestamp change peer={}", peer);
                 reAssociate(peer);
                 return;
             }
             p.peerRecovery = recovery;
         }
-        fire(new PfcpHeartbeatEvent(peer, true), "pfcp-link");
+        fire(new PfcpHeartbeatEvent(peer, true), nodeScoped("pfcp-link"));
     }
 
     private int nextSequence() {

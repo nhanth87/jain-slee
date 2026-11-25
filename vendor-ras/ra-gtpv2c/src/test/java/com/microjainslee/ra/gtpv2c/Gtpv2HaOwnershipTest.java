@@ -56,6 +56,29 @@ class Gtpv2HaOwnershipTest {
         assertFalse(ra.haSupport().lookupOwner(key).isPresent());
     }
 
+    /** Clustered: a transaction activity is node-scoped (MISSING_ENTITY on every event otherwise). */
+    @Test
+    void clusteredActivitiesAreNodeScoped() throws Exception {
+        com.microjainslee.cluster.ClusterManager cm = new com.microjainslee.cluster.ClusterManager(
+                com.microjainslee.core.MicroSleeConfiguration.builder().clusterEnabled(false).nodeId("sgwc-7").build(),
+                null);
+        cm.start();
+        try {
+            List<String> activities = new java.util.ArrayList<>();
+            ra = new Gtpv2RaEndpoint();
+            ra.setClusterManager(cm);
+            ra.activate(new RaBootstrapPort() {
+                @Override public ActivityHandle createActivityHandle(String id) { return () -> id; }
+                @Override public void fireEvent(SleeEvent e, ActivityHandle h, Address a) { activities.add(h.getId()); }
+            });
+            ra.receive(Gtpv2Codec.encode(new Gtpv2Message(Gtpv2MessageType.MODIFY_BEARER_REQUEST, 7, 2, (byte) 1,
+                    List.of())), MME);
+            assertEquals(List.of("gtp-tx-2@sgwc-7"), activities);
+        } finally {
+            cm.stop();
+        }
+    }
+
     @Test
     void rejectedCreateOpensNothing() throws Exception {
         ra = new Gtpv2RaEndpoint();

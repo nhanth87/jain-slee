@@ -107,7 +107,7 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
             @Override
             public void procedureExhausted(Gtpv2MessageType type, int sequence, InetSocketAddress peer) {
                 LOG.debug("gtpv2c-ra T3/N3 exhausted type={} seq={} peer={}", type, sequence, peer);
-                fireEvent(new GtpProcedureTimeoutEvent(type, sequence, peer), "gtp-tx-" + sequence);
+                fireEvent(new GtpProcedureTimeoutEvent(type, sequence, peer), nodeScoped("gtp-tx-" + sequence));
             }
         });
     }
@@ -141,6 +141,16 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
 
     public RaHaSupport haSupport() {
         return haSupport;
+    }
+
+    /**
+     * Activities that only exist on this node (the link, one transaction keyed by a sequence that
+     * every node reuses) carry the node id when clustered: with a distributed SBB pool the same id
+     * on two nodes is one entity owned elsewhere, and every event on it became MISSING_ENTITY.
+     */
+    private String nodeScoped(String id) {
+        RaHaSupport ha = haSupport;
+        return ha != null && ha.isClustered() ? id + "@" + ha.localNodeId() : id;
     }
 
     /** Session activity key for HA ownership: our control-plane TEID. */
@@ -271,14 +281,14 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         }
         if (msg.type() == Gtpv2MessageType.ECHO_RESPONSE) {
             peers.put(peer.toString(), PeerState.up("gtp:" + peer, "echo-response recovery=" + (msg.recovery() & 0xff)));
-            fire(new GtpEchoEvent(peer, msg.recovery(), true), "gtp-link");
+            fire(new GtpEchoEvent(peer, msg.recovery(), true), nodeScoped("gtp-link"));
             return;
         }
         if (!inFlight.add(txKey)) {
             return;
         }
         claimInbound(msg, peer);
-        fire(new Gtpv2MessageEvent(msg, peer), "gtp-tx-" + msg.sequence());
+        fire(new Gtpv2MessageEvent(msg, peer), nodeScoped("gtp-tx-" + msg.sequence()));
     }
 
     public void markPeerDown(InetSocketAddress peer, String why) {

@@ -1,6 +1,8 @@
 package com.microjainslee.ra.gtpv2c;
 
 import com.microjainslee.api.ActivityHandle;
+import com.microjainslee.cluster.ClusterManager;
+import com.microjainslee.cluster.RaHaSupport;
 import com.microjainslee.api.Address;
 import com.microjainslee.api.OutboundCommand;
 import com.microjainslee.api.RaBootstrapPort;
@@ -43,7 +45,17 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
     public static final int DEFAULT_N3 = Gtpv2T3N3.DEFAULT_N3;
     private static final Logger LOG = LogManager.getLogger(Gtpv2RaEndpoint.class);
 
-    private final byte recovery;
+    /**
+     * Restart counter (TS 29.274 §8.5, TS 23.007 §18): a peer that sees it change deletes every
+     * PDN connection with this node. In a cluster it belongs to the service address, not to a
+     * JVM — set it from shared state before {@link #activate} ({@link #setRecovery}).
+     */
+    private volatile byte recovery;
+    private volatile ClusterManager clusterManager;
+    private volatile RaHaSupport haSupport;
+    private volatile Object pendingCheckpointContainer;
+    /** (peer, sequence) of an inbound Delete Session Request → the session's activity key. */
+    private final Map<String, String> closing = new ConcurrentHashMap<>();
     /**
      * Echo sequences come from the top half of the 24-bit space; SBB-built requests use the
      * bottom half. Both started at 1, so an Echo Request and an S5-C Create Session Request
@@ -53,7 +65,10 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
     public static final int ECHO_SEQUENCE_BASE = 0x80_0000;
     private final AtomicInteger seq = new AtomicInteger(1);
     /** TS 29.274 §7.6 — replay the <em>response</em>, never drop the request silently. */
-    private final Map<String, byte[]> responseCache = new ConcurrentHashMap<>();
+    private final Map<String, CachedResponse> responseCache = new ConcurrentHashMap<>();
+    /** A sent response, replayed for a retransmitted request until {@code expiresAtMs}. */
+    private record CachedResponse(byte[] wire, long expiresAtMs) {}
+    private final java.util.concurrent.atomic.AtomicInteger cachePuts = new java.util.concurrent.atomic.AtomicInteger();
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
     private final Map<String, PeerState> peers = new ConcurrentHashMap<>();
     private final Gtpv2T3N3 t3n3;
@@ -106,11 +121,45 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         return RA_NAME;
     }
 
+    /** The cluster-wide restart counter of this GTP-C service address; call before {@link #activate}. */
+    public void setRecovery(byte recovery) {
+        this.recovery = recovery;
+    }
+
+    /** Session ownership in {@code ra-gtpv2c-owner} (ADR 0002); null = single node. */
+    public void setClusterManager(ClusterManager clusterManager) {
+        this.clusterManager = clusterManager;
+    }
+
+    public void setMicroSleeContainer(Object container) {
+        pendingCheckpointContainer = container;
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.checkpointBridge().bindContainer(container);
+        }
+    }
+
+    public RaHaSupport haSupport() {
+        return haSupport;
+    }
+
+    /** Session activity key for HA ownership: our control-plane TEID. */
+    public static String sessionKey(int teid) {
+        return "teid-" + Integer.toHexString(teid);
+    }
+
     @Override
     public void activate(RaBootstrapPort bootstrap) {
         this.bootstrap = Objects.requireNonNull(bootstrap);
+        ClusterManager cm = clusterManager;
+        RaHaSupport ha = cm != null ? RaHaSupport.create(cm, "gtpv2c") : RaHaSupport.localOnly("gtpv2c", "local-gtpv2c");
+        if (pendingCheckpointContainer != null) {
+            ha.checkpointBridge().bindContainer(pendingCheckpointContainer);
+        }
+        haSupport = ha;
         this.listening = true;
-        LOG.info("gtpv2c-ra ACTIVE localListen=true live=false");
+        LOG.info("gtpv2c-ra ACTIVE localListen=true live=false recovery={} clustered={}",
+                recovery & 0xff, ha.isClustered());
     }
 
     /** Optional UDP bind. Tests inject {@link #receive}; runtime binds :2123. */
@@ -137,7 +186,13 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         peers.clear();
         responseCache.clear();
         inFlight.clear();
+        closing.clear();
         t3n3.cancelAll();
+        RaHaSupport ha = haSupport;
+        haSupport = null;
+        if (ha != null) {
+            ha.stopStickyBus();
+        }
         LOG.info("gtpv2c-ra INACTIVE");
     }
 
@@ -167,6 +222,7 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
                 } else {
                     cacheResponse(send.peer(), msg.sequence(), procedure(msg.type()), wire);
                 }
+                trackOwnership(msg, send.peer());
                 emit(wire, send.peer());
             }
         }
@@ -202,7 +258,7 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
             return;
         }
         String txKey = txKey(peer, msg.sequence(), procedure(msg.type()));
-        byte[] cached = responseCache.get(txKey);
+        byte[] cached = cachedResponse(txKey);
         if (cached != null) {
             emit(cached, peer);
             return;
@@ -221,6 +277,7 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         if (!inFlight.add(txKey)) {
             return;
         }
+        claimInbound(msg, peer);
         fire(new Gtpv2MessageEvent(msg, peer), "gtp-tx-" + msg.sequence());
     }
 
@@ -241,6 +298,32 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         return recovery;
     }
 
+    /**
+     * TS 29.274 §7.6: a response is kept only while the peer may still retransmit its request,
+     * T3 × (N3 + 1). Kept forever it grew without bound and answered a new request that reused
+     * a (peer, sequence) — e.g. a restarted MME — with the old response.
+     */
+    long responseLifetimeMs() {
+        return t3n3.t3Millis() * (t3n3.n3() + 1L);
+    }
+
+    private byte[] cachedResponse(String key) {
+        CachedResponse c = responseCache.get(key);
+        if (c == null) {
+            return null;
+        }
+        if (c.expiresAtMs() <= System.currentTimeMillis()) {
+            responseCache.remove(key, c);
+            return null;
+        }
+        return c.wire();
+    }
+
+    /** Cached responses (status / tests). */
+    public int cachedResponses() {
+        return responseCache.size();
+    }
+
     public long t3Millis() {
         return t3n3.t3Millis();
     }
@@ -253,9 +336,67 @@ public final class Gtpv2RaEndpoint implements RaEndpointPort, RaCommandPort {
         return t3n3.size();
     }
 
+    /**
+     * Inbound message on an existing session (header TEID = ours): own it here, or take it over
+     * when the owning node has left (the peer's service address moved to this node).
+     */
+    private void claimInbound(Gtpv2Message msg, InetSocketAddress peer) {
+        RaHaSupport ha = haSupport;
+        if (ha == null || msg.teid() == 0) {
+            return;
+        }
+        String key = sessionKey(msg.teid());
+        ha.claimOnInbound(key, msg.type().name(), Map.of("peer", peer.toString()));
+        if (msg.type() == Gtpv2MessageType.DELETE_SESSION_REQUEST) {
+            closing.put(peer + "/" + msg.sequence(), key);
+        }
+    }
+
+    /**
+     * Outbound: a Create Session Request / accepted Response opens our session under the TEID of
+     * its Sender F-TEID (instance 0); the Delete Session Response we send closes it.
+     */
+    private void trackOwnership(Gtpv2Message msg, InetSocketAddress peer) {
+        RaHaSupport ha = haSupport;
+        if (ha == null) {
+            return;
+        }
+        switch (msg.type()) {
+            case CREATE_SESSION_REQUEST, CREATE_SESSION_RESPONSE -> {
+                Gtpv2Ie cause = msg.first(Gtpv2Ie.CAUSE);
+                if (msg.type() == Gtpv2MessageType.CREATE_SESSION_RESPONSE
+                        && (cause == null || cause.value().length == 0
+                        || (cause.value()[0] & 0xff) != Gtpv2Ies.CAUSE_REQUEST_ACCEPTED)) {
+                    return;
+                }
+                GtpFteid sender = null;
+                for (Gtpv2Ie ie : msg.ies()) {
+                    if (ie.type() == Gtpv2Ie.FTEID && ie.instance() == 0) {
+                        sender = Gtpv2Ies.decodeFteid(ie.value());
+                        break;
+                    }
+                }
+                if (sender != null && sender.teid() != 0) {
+                    ha.onOpened(sessionKey(sender.teid()), "Active", Map.of("peer", peer.toString()));
+                }
+            }
+            case DELETE_SESSION_RESPONSE -> {
+                String key = closing.remove(peer + "/" + msg.sequence());
+                if (key != null) {
+                    ha.onClosed(key);
+                }
+            }
+            default -> { }
+        }
+    }
+
     private void cacheResponse(InetSocketAddress peer, int sequence, int procedure, byte[] wire) {
         String key = txKey(peer, sequence, procedure);
-        responseCache.put(key, wire);
+        long now = System.currentTimeMillis();
+        responseCache.put(key, new CachedResponse(wire, now + responseLifetimeMs()));
+        if ((cachePuts.incrementAndGet() & 0xff) == 0) {
+            responseCache.values().removeIf(c -> c.expiresAtMs() <= now);
+        }
         inFlight.remove(key);
     }
 

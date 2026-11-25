@@ -66,6 +66,30 @@ class Gtpv2TransactionKeyTest {
         assertTrue(seq >= Gtpv2RaEndpoint.ECHO_SEQUENCE_BASE, "echo seq 0x" + Integer.toHexString(seq));
     }
 
+    /** §7.6: the response is replayed only within T3 × (N3 + 1); a later reuse of the sequence is new. */
+    @Test
+    void cachedResponseExpiresAfterTheRetransmissionWindow() throws Exception {
+        ra = new Gtpv2RaEndpoint((byte) 1, 20L, 1);   // window = 40 ms
+        List<byte[]> sent = Collections.synchronizedList(new ArrayList<>());
+        List<SleeEvent> fired = Collections.synchronizedList(new ArrayList<>());
+        ra.setSink((bytes, peer) -> sent.add(bytes));
+        ra.activate(new RaBootstrapPort() {
+            @Override public ActivityHandle createActivityHandle(String id) { return () -> id; }
+            @Override public void fireEvent(SleeEvent e, ActivityHandle h, Address a) { fired.add(e); }
+        });
+        Gtpv2Message csr = new Gtpv2Message(Gtpv2MessageType.CREATE_SESSION_REQUEST, 0, 3, (byte) 1,
+                List.of(new Gtpv2Ie(Gtpv2Ie.IMSI, 0, Gtpv2Ies.tbcd("001010000000009"))));
+        ra.receive(Gtpv2Codec.encode(csr), SGWC);
+        ra.sendCommand(new com.microjainslee.ra.gtpv2c.command.SendGtpv2Message(new Gtpv2Message(
+                Gtpv2MessageType.CREATE_SESSION_RESPONSE, 0, 3, (byte) 1, List.of(Gtpv2Ies.cause(16))), SGWC));
+        ra.receive(Gtpv2Codec.encode(csr), SGWC);           // retransmission → replay, no event
+        assertEquals(1, fired.size());
+        assertEquals(2, sent.size());
+        Thread.sleep(80);
+        ra.receive(Gtpv2Codec.encode(csr), SGWC);           // past the window → a new transaction
+        assertEquals(2, fired.size());
+    }
+
     /** An unanswered procedure ends as an event, so the SBB that started it can answer its own peer. */
     @Test
     void anUnansweredRequestFiresAProcedureTimeout() throws Exception {

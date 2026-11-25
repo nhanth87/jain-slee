@@ -1,5 +1,6 @@
 package com.microjainslee.ra.sipservlet.collab;
 
+import gov.nist.javax.sip.header.To;
 import gov.nist.javax.sip.message.SIPRequest;
 import gov.nist.javax.sip.message.SIPResponse;
 import io.netty.util.HashedWheelTimer;
@@ -27,6 +28,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * A timeout is reported to the RA, which hands the TU a locally generated 408 (§8.1.3.1).
  * ACK is not a transaction and is never tracked. Matching (§17.1.3): top Via branch +
  * CSeq method.
+ *
+ * <p>INVITE final non-2xx (§17.1.1.3): the transaction itself ACKs it — same top Via branch,
+ * Request-URI and Route set as the INVITE, To from the response — and stays Completed for
+ * Timer D (32 s over UDP, 0 over a reliable transport), re-sending that ACK for every
+ * retransmission of the final response. Without it the UAS (FreeSWITCH 407/486/…) retransmits
+ * the final response on Timer G until Timer H. INVITEs over reliable transports are tracked
+ * for this ACK only (no retransmission timers).
  */
 public final class ClientTransactions {
 
@@ -38,6 +46,8 @@ public final class ClientTransactions {
     public static final long TIMEOUT_MILLIS = 64 * T1_MILLIS;
     /** INVITE answered provisionally but never finally: forget it after Timer C (§16.6). */
     public static final long PROCEEDING_LINGER_MILLIS = 180_000L;
+    /** Timer D for UDP (§17.1.1.2: at least 32 s). */
+    public static final long TIMER_D_MILLIS = 32_000L;
 
     /** Re-sends recorded bytes. */
     @FunctionalInterface
@@ -58,6 +68,8 @@ public final class ClientTransactions {
         final boolean invite;
         volatile boolean proceeding;
         volatile boolean done;
+        /** §17.1.1.3 ACK for a final non-2xx, re-sent on each retransmission of that response. */
+        volatile DialogRegistry.SentMessage errorAck;
         volatile long interval = t1;
         volatile Timeout retransmitTimer;
         volatile Timeout timeoutTimer;
@@ -87,6 +99,7 @@ public final class ClientTransactions {
     private final HashedWheelTimer timer;
     private final AtomicLong retransmissions = new AtomicLong();
     private final AtomicLong timeouts = new AtomicLong();
+    private final AtomicLong errorAcks = new AtomicLong();
     private final long t1;
     private final long t2;
     private final long timeoutMillis;
@@ -118,7 +131,11 @@ public final class ClientTransactions {
     /** Track {@code request} just put on the wire as {@code sent}. */
     public void start(SIPRequest request, DialogRegistry.SentMessage sent) {
         if (request == null || sent == null || Request.ACK.equals(request.getMethod())
-                || !"UDP".equalsIgnoreCase(sent.transport()) || request.getTopmostVia() == null) {
+                || request.getTopmostVia() == null) {
+            return;
+        }
+        boolean udp = "UDP".equalsIgnoreCase(sent.transport());
+        if (!udp && !Request.INVITE.equals(request.getMethod())) {
             return;
         }
         String key = key(request.getTopmostVia().getBranch(), request.getMethod());
@@ -127,6 +144,12 @@ public final class ClientTransactions {
         if (previous != null) {
             previous.done = true;
             previous.cancelTimers();
+        }
+        if (!udp) {
+            // Reliable transport: no Timer A/B; kept only to ACK a final non-2xx (§17.1.1.3).
+            tx.timeoutTimer = timer.newTimeout(t -> transactions.remove(tx.key, tx),
+                    PROCEEDING_LINGER_MILLIS, TimeUnit.MILLISECONDS);
+            return;
         }
         tx.retransmitTimer = timer.newTimeout(t -> retransmit(tx), t1, TimeUnit.MILLISECONDS);
         tx.timeoutTimer = timer.newTimeout(t -> timedOut(tx), timeoutMillis, TimeUnit.MILLISECONDS);
@@ -142,7 +165,12 @@ public final class ClientTransactions {
         if (tx == null) {
             return;
         }
-        if (response.getStatusCode() >= 200) {
+        int status = response.getStatusCode();
+        if (tx.invite && status >= 300) {
+            ackFinalNon2xx(tx, response);
+            return;
+        }
+        if (status >= 200) {
             if (transactions.remove(key, tx)) {
                 tx.done = true;
                 tx.cancelTimers();
@@ -162,6 +190,45 @@ public final class ClientTransactions {
                 }
             }, PROCEEDING_LINGER_MILLIS, TimeUnit.MILLISECONDS);
         }
+    }
+
+    /** §17.1.1.3: ACK the final non-2xx (first copy or a retransmission), then Timer D. */
+    private void ackFinalNon2xx(Tx tx, SIPResponse response) {
+        DialogRegistry.SentMessage ack = tx.errorAck;
+        if (ack == null) {
+            synchronized (tx) {
+                ack = tx.errorAck;
+                if (ack == null) {
+                    tx.done = true;
+                    tx.cancelTimers();
+                    try {
+                        SIPRequest errorAck = tx.request.createErrorAck((To) response.getTo());
+                        ack = new DialogRegistry.SentMessage(
+                                errorAck.encodeAsBytes(tx.sent.transport()), tx.sent.peer(), tx.sent.transport());
+                    } catch (Exception ex) {
+                        LOG.warn("[sip-client-tx] cannot build ACK for {} {}: {}",
+                                response.getStatusCode(), tx.key, ex.toString());
+                        transactions.remove(tx.key, tx);
+                        return;
+                    }
+                    tx.errorAck = ack;
+                    boolean udp = "UDP".equalsIgnoreCase(tx.sent.transport());
+                    tx.timeoutTimer = timer.newTimeout(t -> transactions.remove(tx.key, tx),
+                            udp ? TIMER_D_MILLIS : 0L, TimeUnit.MILLISECONDS);
+                }
+            }
+        }
+        try {
+            retransmitter.retransmit(ack);
+            errorAcks.incrementAndGet();
+        } catch (RuntimeException ex) {
+            LOG.warn("[sip-client-tx] ACK send failed {}: {}", tx.key, ex.toString());
+        }
+    }
+
+    /** ACKs sent for final non-2xx responses to INVITE (first copies and retransmissions). */
+    public long errorAcks() {
+        return errorAcks.get();
     }
 
     private void retransmit(Tx tx) {

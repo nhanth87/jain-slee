@@ -128,6 +128,22 @@ public class NettySipOutboundSenderTest {
         assertEquals(PEER, transport.targets.get(0));
     }
 
+    /** A BYE from the UA (in a dialog or matching none) is never echoed back as our own BYE. */
+    @Test
+    public void byeIsNotEchoedBackToThePeerThatSentIt() throws Exception {
+        String bye = INVITE.replace("INVITE sip:gw@127.0.0.1:5060", "BYE sip:gw@127.0.0.1:5060")
+                .replace("CSeq: 1 INVITE", "CSeq: 2 BYE").replace("z9hG4bKtest1", "z9hG4bKtest2")
+                .replace("To: <sip:gw@example.com>", "To: <sip:gw@example.com>;tag=totag1");
+        SIPMessage msg = new StringMsgParser().parseSIPMessage(bye.getBytes(StandardCharsets.UTF_8), true, false, null);
+        registry.recordInbound(CALL_ID, () -> CALL_ID, msg, PEER, "UDP");
+
+        sender.send(new SendBye(CALL_ID));
+        sender.send(new SendResponse(CALL_ID, 481, "Call/Transaction Does Not Exist"));
+
+        assertEquals("only the answer to the BYE goes out", 1, transport.sentMessages.size());
+        assertTrue(transport.sentMessages.get(0).startsWith("SIP/2.0 481"));
+    }
+
     @Test
     public void normalizeSipUriStripsFromHeaderPrefix() {
         assertEquals("sip:alice@example.com",

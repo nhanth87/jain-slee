@@ -23,9 +23,10 @@ public class ClientTransactionsTest {
     static final long TIMEOUT = 64 * T1;
 
     final AtomicInteger resent = new AtomicInteger();
+    final List<DialogRegistry.SentMessage> wire = new CopyOnWriteArrayList<>();
     final List<SIPRequest> timedOut = new CopyOnWriteArrayList<>();
     final ClientTransactions ctx = new ClientTransactions(
-            sent -> resent.incrementAndGet(), (req, sent) -> timedOut.add(req), T1, T2, TIMEOUT);
+            sent -> { resent.incrementAndGet(); wire.add(sent); }, (req, sent) -> timedOut.add(req), T1, T2, TIMEOUT);
 
     @After
     public void stop() {
@@ -83,12 +84,38 @@ public class ClientTransactionsTest {
     }
 
     @Test
-    public void ackAndReliableTransportsAreNotTracked() throws Exception {
+    public void ackIsNotTrackedAndReliableTransportsAreNotRetransmitted() throws Exception {
         ctx.start(request("ACK", "z9hG4bK-e"), sent("UDP"));
-        ctx.start(request("INVITE", "z9hG4bK-f"), sent("TCP"));
+        ctx.start(request("BYE", "z9hG4bK-e2"), sent("TCP"));
         assertEquals(0, ctx.size());
+        ctx.start(request("INVITE", "z9hG4bK-f"), sent("TCP"));
+        assertEquals("reliable INVITE kept only to ACK a final non-2xx", 1, ctx.size());
         Thread.sleep(T1 * 4);
         assertEquals(0, resent.get());
+    }
+
+    /** §17.1.1.3, seen on the N–N wire: FreeSWITCH 407 to the S-CSCF INVITE was never ACKed (Timer G 30 s). */
+    @Test
+    public void finalNon2xxToInviteIsAckedAndTheAckIsResentForEachRetransmission() throws Exception {
+        SIPRequest invite = request("INVITE", "z9hG4bK-h");
+        ctx.start(invite, sent("UDP"));
+        SIPResponse challenge = response(invite, 407);
+        challenge.getTo().setTag("fs-tag");
+
+        ctx.onResponse(challenge);
+        ctx.onResponse(challenge);   // Timer G retransmission from the UAS
+
+        assertEquals(2, ctx.errorAcks());
+        String ack = new String(wire.get(wire.size() - 1).wire(), StandardCharsets.US_ASCII);
+        assertTrue(ack, ack.startsWith("ACK sip:1000@127.0.0.1:5062 SIP/2.0"));
+        assertTrue("same top Via branch as the INVITE", ack.contains("branch=z9hG4bK-h"));
+        assertTrue("To tag from the response", ack.contains("tag=fs-tag"));
+        assertTrue(ack, ack.contains("CSeq: 1 ACK"));
+        assertEquals(new InetSocketAddress("127.0.0.1", 5062), wire.get(wire.size() - 1).peer());
+        int after = resent.get();
+        Thread.sleep(T1 * 6);
+        assertEquals("no INVITE retransmission after the final response", after, resent.get());
+        assertTrue(timedOut.isEmpty());
     }
 
     @Test
@@ -99,7 +126,7 @@ public class ClientTransactionsTest {
         ctx.onResponse(response(request("CANCEL", "z9hG4bK-g"), 200));
         assertEquals(1, ctx.size());
         ctx.onResponse(response(invite, 486));
-        assertEquals(0, ctx.size());
+        assertEquals("486 ACKed by the transaction", 1, ctx.errorAcks());
     }
 
     static DialogRegistry.SentMessage sent(String transport) {

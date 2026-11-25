@@ -202,6 +202,13 @@ public final class NettySipOutboundSender implements SipOutboundSender {
             target = dialog.remotePeer();
             transport = dialog.remoteTransport();
         } else if (dialog.lastRequest() != null) {
+            if (Request.BYE.equals(method) && Request.BYE.equals(dialog.lastRequest().getMethod())) {
+                // RFC 3261 §15.1.2: the peer's BYE ended its side of the dialog. A BYE built by reversing
+                // that BYE goes back to the UA that hung up (or that sent a BYE matching no dialog) and is
+                // retransmitted on Timer E — the "BYE ping-pong". The SBB answers the BYE; it never echoes it.
+                LOG.debug("[sip-out] callId={} — peer already sent BYE, not echoing one back", callId);
+                return;
+            }
             // UAS toward UA: reverse inbound request.
             request = buildReversedRequest(dialog, method);
             target = dialog.peer();

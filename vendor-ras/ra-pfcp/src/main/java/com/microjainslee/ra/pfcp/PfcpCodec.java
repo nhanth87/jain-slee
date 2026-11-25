@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Minimal PFCP codec (TS 29.244 header). S flag set when SEID != 0. */
+/** PFCP message and IE codec (TS 29.244 §7.2.2 and §8.1.1). */
 public final class PfcpCodec {
 
     private static final byte RULE_VERSION = 2;
@@ -18,52 +18,61 @@ public final class PfcpCodec {
 
     private PfcpCodec() {}
 
+    /** TS 29.244 §7.2.2: session messages carry SEID even when its value is zero. */
     public static byte[] encode(PfcpMessage msg) {
-        boolean s = msg.seid() != 0;
-        int header = s ? 16 : 8;
-        ByteBuffer buf = ByteBuffer.allocate(header + msg.payload().length).order(ByteOrder.BIG_ENDIAN);
-        int flags = 0x20; // version 1
-        if (s) {
-            flags |= 0x01;
+        boolean s = msg.type().seidInHeader();
+        int headerLength = s ? 16 : 8;
+        int messageLength = headerLength - 4 + msg.payload().length;
+        if (messageLength > 65_535) {
+            throw new IllegalArgumentException("PFCP message exceeds the 16-bit length");
         }
-        buf.put((byte) flags);
+        ByteBuffer buf = ByteBuffer.allocate(headerLength + msg.payload().length).order(ByteOrder.BIG_ENDIAN);
+        buf.put((byte) (0x20 | (s ? 0x01 : 0))); // Version=1, spare/FO/MP=0, S by message class.
         buf.put((byte) msg.type().code);
-        buf.putShort((short) (header - 4 + msg.payload().length));
+        buf.putShort((short) messageLength);
         if (s) {
             buf.putLong(msg.seid());
         }
-        buf.put((byte) ((msg.sequence() >> 16) & 0xff));
-        buf.put((byte) ((msg.sequence() >> 8) & 0xff));
-        buf.put((byte) (msg.sequence() & 0xff));
-        buf.put((byte) 0);
+        buf.put((byte) (msg.sequence() >>> 16));
+        buf.put((byte) (msg.sequence() >>> 8));
+        buf.put((byte) msg.sequence());
+        buf.put((byte) 0); // Message priority is absent (MP=0); spare bits are zero.
         buf.put(msg.payload());
         return buf.array();
     }
 
+    /** Inverse of {@link #encode(PfcpMessage)}, including the §7.2.2 length checks. */
     public static PfcpMessage decode(byte[] wire) {
         if (wire == null || wire.length < 8) {
             throw new IllegalArgumentException("truncated PFCP");
         }
         ByteBuffer buf = ByteBuffer.wrap(wire).order(ByteOrder.BIG_ENDIAN);
         int flags = buf.get() & 0xff;
-        if (((flags >> 5) & 0x07) != 1) {
+        if (((flags >>> 5) & 0x07) != 1) {
             throw new IllegalArgumentException("not PFCP v1");
         }
         boolean s = (flags & 0x01) != 0;
         PfcpMessageType type = PfcpMessageType.of(buf.get() & 0xff);
-        buf.getShort();
+        int messageLength = buf.getShort() & 0xffff;
+        int headerLength = s ? 16 : 8;
+        if (messageLength != wire.length - 4 || messageLength < headerLength - 4) {
+            throw new IllegalArgumentException("PFCP message length does not match the datagram");
+        }
+        if (type != PfcpMessageType.UNKNOWN && type.seidInHeader() != s) {
+            throw new IllegalArgumentException("PFCP S flag does not match the message type");
+        }
         long seid = s ? buf.getLong() : 0L;
         int seq = ((buf.get() & 0xff) << 16) | ((buf.get() & 0xff) << 8) | (buf.get() & 0xff);
-        buf.get();
-        byte[] payload = new byte[buf.remaining()];
+        buf.get(); // Message priority/spare.
+        byte[] payload = new byte[messageLength - (headerLength - 4)];
         buf.get(payload);
         return new PfcpMessage(type, seid, seq, payload);
     }
 
     /**
-     * Encodes forwarding rules plus the optional UE IPv4 into a session-request
-     * payload (version 2, per-rule optional URR). Lossless so PDR/FAR/QER/URR
-     * rule data actually crosses the Sxa/Sxb wire instead of a bare rule count.
+     * Legacy private rule payload (version 2, per-rule optional URR). Not TS 29.244 —
+     * kept only so older peers' payloads still decode; {@code pfcp-ra} now sends
+     * {@link PfcpIes#fromRules} IEs on the wire.
      */
     public static byte[] encodeRules(List<PfcpRule> rules, InetAddress ueIpv4) {
         List<PfcpRule> list = rules == null ? List.of() : rules;
@@ -99,10 +108,32 @@ public final class PfcpCodec {
     }
 
     /**
+     * Session rules carried by a Session Establishment / Modification Request. The
+     * TS 29.244 IE form (Create PDR / FAR / QER / URR, see {@link PfcpIes#toRules}) is
+     * what {@code pfcp-ra} sends; the legacy private payload of {@link #encodeRules}
+     * (first octet 1 or 2) is still accepted. IE payloads start with a two-octet IE
+     * type whose first octet is 0 for every IE used here.
+     */
+    public static PfcpRules decodeRules(long seid, byte[] payload) {
+        if (payload == null || payload.length == 0) {
+            return PfcpRules.empty();
+        }
+        if (payload[0] == 0) {
+            return PfcpIes.toRules(seid, decodeIes(payload));
+        }
+        return decodeLegacyRules(payload);
+    }
+
+    /** {@link #decodeRules(long, byte[])} with SEID 0 for the IE form. */
+    public static PfcpRules decodeRules(byte[] payload) {
+        return decodeRules(0L, payload);
+    }
+
+    /**
      * Inverse of {@link #encodeRules}. Accepts version 1 payloads (rules without
      * URRs); unknown versions return an empty payload.
      */
-    public static PfcpRules decodeRules(byte[] payload) {
+    private static PfcpRules decodeLegacyRules(byte[] payload) {
         if (payload == null || payload.length < 2) {
             return PfcpRules.empty();
         }
@@ -186,29 +217,39 @@ public final class PfcpCodec {
     }
 
     /**
-     * Encodes usage reports as grouped Usage Report (SRR) IEs (TS 29.244 §8.2.39):
-     * URR ID u32, Usage Report Trigger u32, Volume Measurement with UL u64 + DL u64,
-     * and Duration Measurement u32 seconds. The result is a TLV payload ready for a
-     * PFCP Session Report Request.
+     * Encodes a Session Report Request payload (TS 29.244 §7.5.8.1): mandatory
+     * Report Type(USAR) followed by Usage Report(SRR) grouped IEs.
      */
     public static byte[] encodeUsageReports(List<PfcpUsageReport> reports) {
+        return encodeUsageReports(reports, PfcpIe.USAGE_REPORT_SRR);
+    }
+
+    /**
+     * Encodes Usage Report(SRR/SMR/SDR) groups (TS 29.244 §7.5.8.3, §7.5.5.2,
+     * §7.5.7.2). Report Type is message-level and is therefore added only for SRR.
+     */
+    public static byte[] encodeUsageReports(List<PfcpUsageReport> reports, int usageReportType) {
+        if (usageReportType != PfcpIe.USAGE_REPORT_SRR && usageReportType != PfcpIe.USAGE_REPORT_SMR
+                && usageReportType != PfcpIe.USAGE_REPORT_SDR) {
+            throw new IllegalArgumentException("not a PFCP Usage Report group type: " + usageReportType);
+        }
         List<PfcpUsageReport> list = reports == null ? List.of() : reports;
         List<PfcpIe> out = new ArrayList<>();
+        if (usageReportType == PfcpIe.USAGE_REPORT_SRR) {
+            out.add(PfcpIes.reportType(PfcpIe.REPORT_TYPE_USAR));
+        }
         for (PfcpUsageReport r : list) {
-            out.add(new PfcpIe(PfcpIe.USAGE_REPORT_SRR, encodeIes(List.of(
-                    new PfcpIe(PfcpIe.URR_ID, u32(r.urrId())),
-                    new PfcpIe(PfcpIe.USAGE_REPORT_TRIGGER, u32(r.usageReportTrigger())),
-                    volumeMeasurement(r.uplinkVolume(), r.downlinkVolume()),
-                    new PfcpIe(PfcpIe.DURATION_MEASUREMENT, u32(r.durationSeconds()))))));
+            out.add(PfcpIes.usageReport(usageReportType, r));
         }
         return encodeIes(out);
     }
 
-    /** Inverse of {@link #encodeUsageReports}; also accepts Usage Report (SMR) groups. */
+    /** Inverse of {@link #encodeUsageReports}; accepts SRR, SMR and SDR groups. */
     public static List<PfcpUsageReport> decodeUsageReports(byte[] payload) {
         List<PfcpUsageReport> out = new ArrayList<>();
         for (PfcpIe ie : decodeIes(payload)) {
-            if (ie.type() == PfcpIe.USAGE_REPORT_SRR || ie.type() == PfcpIe.USAGE_REPORT_SMR) {
+            if (ie.type() == PfcpIe.USAGE_REPORT_SRR || ie.type() == PfcpIe.USAGE_REPORT_SMR
+                    || ie.type() == PfcpIe.USAGE_REPORT_SDR) {
                 out.add(parseUsageReport(ie));
             }
         }
@@ -217,6 +258,9 @@ public final class PfcpCodec {
 
     /** True when the payload carries a Query URR IE (TS 29.244 §8.2.75). */
     public static boolean hasQueryUrr(byte[] payload) {
+        if (payload == null || payload.length == 0 || payload[0] != 0) {
+            return false; // empty or legacy private payload
+        }
         for (PfcpIe ie : decodeIes(payload)) {
             if (ie.type() == PfcpIe.QUERY_URR) {
                 return true;
@@ -239,11 +283,7 @@ public final class PfcpCodec {
                         urrId = (int) getU32(v, 0);
                     }
                 }
-                case PfcpIe.USAGE_REPORT_TRIGGER -> {
-                    if (v.length >= 4) {
-                        trigger = (int) getU32(v, 0);
-                    }
-                }
+                case PfcpIe.USAGE_REPORT_TRIGGER -> trigger = PfcpIes.flags(v);
                 case PfcpIe.VOLUME_MEASUREMENT -> {
                     int flags = v.length > 0 ? v[0] & 0xff : 0;
                     int off = 1;
@@ -269,43 +309,37 @@ public final class PfcpCodec {
         return new PfcpUsageReport(urrId, trigger, uplink, downlink, duration);
     }
 
-    /** Volume Measurement (TS 29.244 §8.2.45): ULVOL|DLVOL flags + UL u64 + DL u64. */
-    private static PfcpIe volumeMeasurement(long uplink, long downlink) {
-        byte[] v = new byte[17];
-        v[0] = (byte) (PfcpIe.VM_ULVOL | PfcpIe.VM_DLVOL);
-        putU64(v, 1, uplink);
-        putU64(v, 9, downlink);
-        return new PfcpIe(PfcpIe.VOLUME_MEASUREMENT, v);
-    }
-
-    /** TS 29.244 TLV framing: type (1 octet) + length (2 octets, big-endian) + value. */
+    /** TS 29.244 §8.1.1: two-octet type + two-octet length + value. */
     public static byte[] encodeIes(List<PfcpIe> ies) {
         List<PfcpIe> list = ies == null ? List.of() : ies;
         int n = 0;
         for (PfcpIe ie : list) {
-            n += 3 + ie.value().length;
+            n += 4 + ie.value().length;
         }
         ByteBuffer buf = ByteBuffer.allocate(n).order(ByteOrder.BIG_ENDIAN);
         for (PfcpIe ie : list) {
-            buf.put((byte) ie.type());
+            buf.putShort((short) ie.type());
             buf.putShort((short) ie.value().length);
             buf.put(ie.value());
         }
         return buf.array();
     }
 
-    /** Inverse of {@link #encodeIes}; malformed trailing bytes are ignored. */
+    /** Inverse of {@link #encodeIes}; truncated or trailing non-TLV bytes are rejected. */
     public static List<PfcpIe> decodeIes(byte[] raw) {
         if (raw == null || raw.length == 0) {
             return List.of();
         }
         List<PfcpIe> out = new ArrayList<>();
         ByteBuffer buf = ByteBuffer.wrap(raw).order(ByteOrder.BIG_ENDIAN);
-        while (buf.remaining() >= 3) {
-            int type = buf.get() & 0xff;
+        while (buf.hasRemaining()) {
+            if (buf.remaining() < 4) {
+                throw new IllegalArgumentException("truncated PFCP IE header");
+            }
+            int type = buf.getShort() & 0xffff;
             int len = buf.getShort() & 0xffff;
             if (buf.remaining() < len) {
-                break;
+                throw new IllegalArgumentException("truncated PFCP IE value");
             }
             byte[] v = new byte[len];
             buf.get(v);
@@ -322,19 +356,9 @@ public final class PfcpCodec {
         }
     }
 
-    private static byte[] u32(int v) {
-        return new byte[] {(byte) (v >>> 24), (byte) (v >>> 16), (byte) (v >>> 8), (byte) v};
-    }
-
     private static long getU32(byte[] v, int off) {
         return ((long) (v[off] & 0xff) << 24) | ((v[off + 1] & 0xff) << 16)
                 | ((v[off + 2] & 0xff) << 8) | (v[off + 3] & 0xff);
-    }
-
-    private static void putU64(byte[] v, int off, long x) {
-        for (int i = 0; i < 8; i++) {
-            v[off + i] = (byte) (x >>> (56 - 8 * i));
-        }
     }
 
     private static long getU64(byte[] v, int off) {

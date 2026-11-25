@@ -7,10 +7,13 @@ import com.microjainslee.api.RaBootstrapPort;
 import com.microjainslee.api.RaCommandPort;
 import com.microjainslee.api.RaEndpointPort;
 import com.microjainslee.api.SleeEvent;
+import com.microjainslee.cluster.ClusterManager;
+import com.microjainslee.cluster.RaHaSupport;
 import com.microjainslee.ra.pfcp.command.PfcpAssociateCommand;
 import com.microjainslee.ra.pfcp.command.PfcpHeartbeatCommand;
 import com.microjainslee.ra.pfcp.command.PfcpOutboundCommand;
 import com.microjainslee.ra.pfcp.command.PfcpProgramSession;
+import com.microjainslee.ra.pfcp.command.PfcpSessionAnswer;
 import com.microjainslee.ra.pfcp.command.PfcpSessionDeletion;
 import com.microjainslee.ra.pfcp.command.PfcpSessionEstablishment;
 import com.microjainslee.ra.pfcp.command.PfcpSessionModification;
@@ -23,6 +26,7 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -44,22 +48,35 @@ import org.apache.logging.log4j.Logger;
 public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
 
     public static final String RA_NAME = "pfcp-ra";
+    /** Seconds from 1900-01-01 (NTP) to 1970-01-01 (Unix). */
+    static final long NTP_UNIX_OFFSET = 2_208_988_800L;
     private static final Logger LOG = LogManager.getLogger(PfcpRaEndpoint.class);
 
     private final AtomicInteger seq = new AtomicInteger(1);
     private final Map<String, PfcpPeer> peers = new ConcurrentHashMap<>();
-    private final Map<Long, PfcpProgramSession> sessions = new ConcurrentHashMap<>();
+    /** CP SEIDs this RA has established (either command form). */
+    private final Map<Long, PfcpOutboundCommand> sessions = new ConcurrentHashMap<>();
     private final Map<Integer, InetSocketAddress> pendingAssoc = new ConcurrentHashMap<>();
+    /**
+     * CP SEID → the UP's SEID from its Establishment Response F-SEID (TS 29.244 §7.2.2.4.2:
+     * requests carry the receiver's SEID). SBBs keep using their own CP SEID; the RA
+     * translates on Modification / Deletion.
+     */
+    private final Map<Long, Long> upSeids = new ConcurrentHashMap<>();
     private volatile RaBootstrapPort bootstrap;
     private volatile boolean listening;
     private volatile OutboundSink sink = OutboundSink.NOOP;
     private volatile DatagramSocket socket;
 
     private volatile PfcpNodeId nodeId = PfcpNodeId.of(InetAddress.getLoopbackAddress());
-    private volatile int recoverySeconds = (int) (System.currentTimeMillis() / 1000L);
+    /** §8.2.65: NTP seconds (epoch 1900). */
+    private volatile int recoverySeconds = (int) (System.currentTimeMillis() / 1000L + NTP_UNIX_OFFSET);
     private volatile long heartbeatIntervalMs = PfcpHeartbeatDriver.DEFAULT_INTERVAL_MS;
     private volatile long heartbeatTimeoutMs = PfcpHeartbeatDriver.DEFAULT_TIMEOUT_MS;
     private volatile PfcpHeartbeatDriver heartbeats;
+    private volatile ClusterManager clusterManager;
+    private volatile RaHaSupport haSupport;
+    private volatile Object pendingCheckpointContainer;
 
     public void setSink(OutboundSink sink) {
         this.sink = Objects.requireNonNull(sink);
@@ -88,6 +105,28 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
         return nodeId;
     }
 
+    /** Session ownership in {@code ra-pfcp-owner} (ADR 0002); null = single node. */
+    public void setClusterManager(ClusterManager clusterManager) {
+        this.clusterManager = clusterManager;
+    }
+
+    public void setMicroSleeContainer(Object container) {
+        pendingCheckpointContainer = container;
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.checkpointBridge().bindContainer(container);
+        }
+    }
+
+    public RaHaSupport haSupport() {
+        return haSupport;
+    }
+
+    /** Session activity key for HA ownership: the CP SEID. */
+    public static String sessionKey(long cpSeid) {
+        return "seid-" + Long.toHexString(cpSeid);
+    }
+
     public int recoverySeconds() {
         return recoverySeconds;
     }
@@ -100,6 +139,12 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
     @Override
     public void activate(RaBootstrapPort bootstrap) {
         this.bootstrap = Objects.requireNonNull(bootstrap);
+        ClusterManager cm = clusterManager;
+        RaHaSupport ha = cm != null ? RaHaSupport.create(cm, "pfcp") : RaHaSupport.localOnly("pfcp", "local-pfcp");
+        if (pendingCheckpointContainer != null) {
+            ha.checkpointBridge().bindContainer(pendingCheckpointContainer);
+        }
+        haSupport = ha;
         this.listening = true;
         this.heartbeats = new PfcpHeartbeatDriver(heartbeatIntervalMs, heartbeatTimeoutMs,
                 new PfcpHeartbeatDriver.Handler() {
@@ -144,7 +189,13 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
         }
         peers.clear();
         sessions.clear();
+        upSeids.clear();
         pendingAssoc.clear();
+        RaHaSupport ha = haSupport;
+        haSupport = null;
+        if (ha != null) {
+            ha.stopStickyBus();
+        }
         LOG.info("pfcp-ra INACTIVE");
     }
 
@@ -157,22 +208,41 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
         switch (pfcp) {
             case PfcpAssociateCommand assoc -> associate(assoc.upf());
             case PfcpHeartbeatCommand hb -> doSendHeartbeat(hb.upf());
-            case PfcpSessionEstablishment est -> sendSession(
-                    PfcpMessageType.SESSION_ESTABLISHMENT_REQUEST, est.upf(), est.seid(), est.ies());
+            case PfcpSessionEstablishment est -> {
+                // §7.5.2.1: Node ID and CP F-SEID are mandatory; header SEID 0 (§7.2.2.4.2).
+                List<PfcpIe> ies = new ArrayList<>();
+                if (PfcpIes.find(est.ies(), PfcpIe.NODE_ID) == null) {
+                    ies.add(PfcpIes.nodeId(nodeId));
+                }
+                if (PfcpIes.find(est.ies(), PfcpIe.F_SEID) == null) {
+                    ies.add(PfcpIes.fSeid(est.seid(), signallingAddress()));
+                }
+                ies.addAll(est.ies());
+                sessions.put(est.seid(), est);
+                openSession(est.seid(), Map.of("upf", est.upf().toString()));
+                sendSession(PfcpMessageType.SESSION_ESTABLISHMENT_REQUEST, est.upf(), 0L, ies);
+            }
             case PfcpSessionModification mod -> sendSession(
-                    PfcpMessageType.SESSION_MODIFICATION_REQUEST, mod.upf(), mod.seid(), mod.ies());
-            case PfcpSessionDeletion del -> sendSession(
-                    PfcpMessageType.SESSION_DELETION_REQUEST, del.upf(), del.seid(), del.ies());
+                    PfcpMessageType.SESSION_MODIFICATION_REQUEST, mod.upf(), upSeid(mod.seid()), mod.ies());
+            case PfcpSessionDeletion del -> {
+                sendSession(PfcpMessageType.SESSION_DELETION_REQUEST, del.upf(), upSeid(del.seid()), del.ies());
+                upSeids.remove(del.seid());
+                sessions.remove(del.seid());
+                closeSession(del.seid());
+            }
             case PfcpSessionReport rep -> sendSession(
                     PfcpMessageType.SESSION_REPORT_REQUEST, rep.upf(), rep.seid(), rep.ies());
             case PfcpProgramSession program -> {
-                // Backward-compatible alias (legacy PfcpRule bundle).
+                // §7.5.2.1: Node ID, CP F-SEID, Create PDR / FAR (+ QER / URR) from the rule bundle.
                 sessions.put(program.seid(), program);
-                int s = nextSequence();
-                emit(PfcpCodec.encode(new PfcpMessage(
-                        PfcpMessageType.SESSION_ESTABLISHMENT_REQUEST, program.seid(), s,
-                        PfcpCodec.encodeRules(program.rules(), program.ueIpv4()))), program.upf());
+                openSession(program.seid(), Map.of("upf", program.upf().toString()));
+                List<PfcpIe> ies = new ArrayList<>();
+                ies.add(PfcpIes.nodeId(nodeId));
+                ies.add(PfcpIes.fSeid(program.seid(), signallingAddress()));
+                ies.addAll(PfcpIes.fromRules(program.rules(), program.ueIpv4()));
+                sendSession(PfcpMessageType.SESSION_ESTABLISHMENT_REQUEST, program.upf(), 0L, ies);
             }
+            case PfcpSessionAnswer answer -> answer(answer);
             case SendPfcpMessage send -> emit(PfcpCodec.encode(send.message()), send.peer());
         }
     }
@@ -198,8 +268,16 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
                     PfcpMessage.associationSetupResponse(msg.sequence(), nodeId,
                             recoverySeconds, PfcpIe.CAUSE_REQUEST_ACCEPTED)), peer);
             case ASSOCIATION_SETUP_RESPONSE -> onAssociationResponse(peer, msg);
-            default -> fire(new PfcpMessageEvent(msg, peer),
+            case SESSION_ESTABLISHMENT_RESPONSE -> {
+                rememberUpSeid(msg);
+                claimSession(msg, peer);
+                fire(new PfcpMessageEvent(msg, peer), "pfcp-se-" + Long.toUnsignedString(msg.seid()));
+            }
+            default -> {
+                claimSession(msg, peer);
+                fire(new PfcpMessageEvent(msg, peer),
                     "pfcp-se-" + Long.toUnsignedString(msg.seid()));
+            }
         }
     }
 
@@ -258,6 +336,118 @@ public final class PfcpRaEndpoint implements RaEndpointPort, RaCommandPort {
             default -> throw new IllegalArgumentException("not a session request: " + type);
         };
         emit(PfcpCodec.encode(msg), upf);
+    }
+
+    /** The SEID to put in a request header for this CP SEID: the UP's, once its F-SEID is known. */
+    private long upSeid(long cpSeid) {
+        Long up = upSeids.get(cpSeid);
+        if (up == null) {
+            // Another node set the session up: its UP SEID rides in the replicated session meta.
+            RaHaSupport ha = haSupport;
+            String fromMeta = ha == null ? null : ha.lookupMeta(sessionKey(cpSeid))
+                    .map(m -> m.attr("upSeid")).orElse(null);
+            if (fromMeta != null) {
+                up = Long.parseUnsignedLong(fromMeta, 16);
+                upSeids.put(cpSeid, up);
+            }
+        }
+        return up == null ? cpSeid : up;
+    }
+
+    private void openSession(long cpSeid, Map<String, String> attrs) {
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.onOpened(sessionKey(cpSeid), "Establishing", attrs);
+        }
+    }
+
+    private void closeSession(long cpSeid) {
+        RaHaSupport ha = haSupport;
+        if (ha != null) {
+            ha.onClosed(sessionKey(cpSeid));
+        }
+    }
+
+    /** Inbound session message: own (or take over) the session; a Deletion closes it. */
+    private void claimSession(PfcpMessage msg, InetSocketAddress peer) {
+        RaHaSupport ha = haSupport;
+        if (ha == null || !msg.type().seidInHeader()) {
+            return;
+        }
+        long cp;
+        try {
+            cp = msg.sessionSeid();
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (msg.type() == PfcpMessageType.SESSION_DELETION_REQUEST
+                || msg.type() == PfcpMessageType.SESSION_DELETION_RESPONSE) {
+            ha.onClosed(sessionKey(cp));
+            return;
+        }
+        Map<String, String> attrs = new java.util.HashMap<>();
+        attrs.put("peer", peer.toString());
+        Long up = upSeids.get(cp);
+        if (up != null) {
+            attrs.put("upSeid", Long.toHexString(up));
+        }
+        ha.claimOnInbound(sessionKey(cp), msg.type().name(), attrs);
+    }
+
+    private void rememberUpSeid(PfcpMessage resp) {
+        try {
+            PfcpIe fseid = resp.first(PfcpIe.F_SEID);
+            if (fseid != null && resp.seid() != 0) {
+                upSeids.put(resp.seid(), PfcpIes.parseFSeid(fseid).seid());
+            }
+            // claimSession (fired right after) copies upSeid into the replicated meta.
+        } catch (RuntimeException e) {
+            LOG.debug("pfcp-ra establishment response F-SEID {}", e.toString());
+        }
+    }
+
+    /**
+     * UP-side response (§7.5.3.1 / §7.5.5.1 / §7.5.7.1). The UP SEID equals the CP SEID
+     * the request announced (this RA's UP allocates no SEID space of its own), so the
+     * response header and the UP F-SEID both carry the CP's SEID.
+     */
+    private void answer(PfcpSessionAnswer a) {
+        PfcpMessage req = a.request();
+        long cpSeid = req.seid();
+        PfcpIe cpFseid = req.first(PfcpIe.F_SEID);
+        if (cpFseid != null) {
+            cpSeid = PfcpIes.parseFSeid(cpFseid).seid();
+        }
+        PfcpMessageType type = switch (req.type()) {
+            case SESSION_ESTABLISHMENT_REQUEST -> PfcpMessageType.SESSION_ESTABLISHMENT_RESPONSE;
+            case SESSION_MODIFICATION_REQUEST -> PfcpMessageType.SESSION_MODIFICATION_RESPONSE;
+            case SESSION_DELETION_REQUEST -> PfcpMessageType.SESSION_DELETION_RESPONSE;
+            default -> throw new IllegalArgumentException("not a session request: " + req.type());
+        };
+        List<PfcpIe> ies = new ArrayList<>();
+        if (type == PfcpMessageType.SESSION_ESTABLISHMENT_RESPONSE) {
+            ies.add(PfcpIes.nodeId(nodeId));
+        }
+        ies.add(PfcpIes.cause(a.cause()));
+        if (type == PfcpMessageType.SESSION_ESTABLISHMENT_RESPONSE
+                && a.cause() == PfcpIe.CAUSE_REQUEST_ACCEPTED) {
+            ies.add(PfcpIes.fSeid(cpSeid, signallingAddress()));
+        }
+        ies.addAll(a.ies());
+        emit(PfcpCodec.encode(new PfcpMessage(type, cpSeid, req.sequence(), PfcpCodec.encodeIes(ies))), a.peer());
+    }
+
+    /** IPv4 for F-SEIDs: the Node ID address, else the bound UDP address, else loopback. */
+    private InetAddress signallingAddress() {
+        InetAddress v4 = PfcpIes.ipv4Of(nodeId);
+        if (v4 != null) {
+            return v4;
+        }
+        DatagramSocket s = socket;
+        if (s != null && s.getLocalAddress() != null && !s.getLocalAddress().isAnyLocalAddress()) {
+            return s.getLocalAddress();
+        }
+        return InetAddress.getLoopbackAddress();
     }
 
     private void onAssociationResponse(InetSocketAddress peer, PfcpMessage msg) {

@@ -31,6 +31,23 @@ public record PfcpMessage(PfcpMessageType type, long seid, int sequence, byte[] 
                 | (ie.value()[2] & 0xff) << 8 | (ie.value()[3] & 0xff);
     }
 
+    /**
+     * The session this message belongs to, as the CP numbers it: the CP F-SEID's SEID on a
+     * Session Establishment Request (whose header SEID is 0, TS 29.244 §7.2.2.4.2), else the
+     * header SEID.
+     */
+    public long sessionSeid() {
+        if (type != PfcpMessageType.SESSION_ESTABLISHMENT_REQUEST || payload.length == 0 || payload[0] != 0) {
+            return seid; // not an Establishment, or a legacy private payload without IEs
+        }
+        try {
+            PfcpIe f = first(PfcpIe.F_SEID);
+            return f == null ? seid : PfcpIes.parseFSeid(f).seid();
+        } catch (IllegalArgumentException malformed) {
+            return seid;
+        }
+    }
+
     public PfcpNodeId nodeId() {
         PfcpIe ie = first(PfcpIe.NODE_ID);
         return ie == null ? null : PfcpIes.parseNodeId(ie);

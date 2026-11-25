@@ -1,6 +1,7 @@
 package com.microjainslee.ra.pfcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -42,8 +43,13 @@ class PfcpRaEndpointWireTest {
         assertEquals(1, wire.size());
         PfcpMessage msg = PfcpCodec.decode(wire.get(0));
         assertEquals(PfcpMessageType.SESSION_ESTABLISHMENT_REQUEST, msg.type());
-        PfcpRules decoded = PfcpCodec.decodeRules(msg.payload());
-        assertEquals(List.of(r), decoded.rules());
+        // §7.2.2.4.2: SEID 0 in the header until the UP has answered; the CP SEID rides in F-SEID.
+        assertEquals(0L, msg.seid());
+        assertEquals(9L, msg.sessionSeid());
+        assertNotNull(msg.nodeId(), "§7.5.2.1 Node ID is mandatory");
+        PfcpRules decoded = PfcpCodec.decodeRules(msg.sessionSeid(), msg.payload());
+        // TS 29.244 IEs: PDR ID 1 / QER ID 1 come back as "pdr-1" / "qer-1".
+        assertEquals(List.of(new PfcpRule(9L, "pdr-1", r.local(), r.remote(), "qer-1", true)), decoded.rules());
         assertEquals("10.64.0.2", decoded.ueIpv4().getHostAddress());
     }
 

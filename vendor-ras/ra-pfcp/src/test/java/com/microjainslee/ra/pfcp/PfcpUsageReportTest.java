@@ -1,5 +1,6 @@
 package com.microjainslee.ra.pfcp;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -33,17 +34,24 @@ class PfcpUsageReportTest {
                 new PfcpUsageReport(1, PfcpIe.UT_VOLTH, 1L, 2L, 3)));
 
         List<PfcpIe> outer = PfcpCodec.decodeIes(payload);
-        assertEquals(1, outer.size());
-        assertEquals(PfcpIe.USAGE_REPORT_SRR, outer.get(0).type());
+        // §7.5.8.1: Report Type (USAR) is mandatory in a Session Report Request.
+        assertEquals(2, outer.size());
+        assertEquals(PfcpIe.REPORT_TYPE, outer.get(0).type());
+        assertArrayEquals(new byte[] {PfcpIe.REPORT_TYPE_USAR}, outer.get(0).value());
+        assertEquals(PfcpIe.USAGE_REPORT_SRR, outer.get(1).type());
 
-        List<PfcpIe> group = PfcpIes.children(outer.get(0));
-        assertEquals(4, group.size());
+        // §7.5.8.3: URR ID, UR-SEQN, Usage Report Trigger (M), then measurements.
+        List<PfcpIe> group = PfcpIes.children(outer.get(1));
+        assertEquals(5, group.size());
         assertEquals(PfcpIe.URR_ID, group.get(0).type());
-        assertEquals(PfcpIe.USAGE_REPORT_TRIGGER, group.get(1).type());
-        assertEquals(PfcpIe.VOLUME_MEASUREMENT, group.get(2).type());
-        assertEquals(PfcpIe.DURATION_MEASUREMENT, group.get(3).type());
+        assertEquals(PfcpIe.UR_SEQN, group.get(1).type());
+        assertEquals(PfcpIe.USAGE_REPORT_TRIGGER, group.get(2).type());
+        // §8.2.41: octet 5 bit 2 = VOLTH.
+        assertArrayEquals(new byte[] {0x02, 0x00, 0x00}, group.get(2).value());
+        assertEquals(PfcpIe.VOLUME_MEASUREMENT, group.get(3).type());
+        assertEquals(PfcpIe.DURATION_MEASUREMENT, group.get(4).type());
 
-        byte[] volume = group.get(2).value();
+        byte[] volume = group.get(3).value();
         assertEquals((byte) (PfcpIe.VM_ULVOL | PfcpIe.VM_DLVOL), volume[0], "ULVOL|DLVOL flags");
         assertEquals(17, volume.length, "flags + UL u64 + DL u64");
     }

@@ -16,6 +16,11 @@
     <dependencies>
         <dependency>
             <groupId>com.microjainslee</groupId>
+            <artifactId>jainslee-cluster</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microjainslee</groupId>
             <artifactId>jainslee-api</artifactId>
             <version>${project.version}</version>
         </dependency>

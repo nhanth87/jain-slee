@@ -147,6 +147,23 @@ public final class RaOwnershipTracker {
         }
     }
 
+    /**
+     * Record an owner entry this node has just won by CAS (see
+     * {@link RaHaSupport#claimOnInbound}) as local, plus fresh meta.
+     */
+    void adoptClaimed(RaDialogOwner owner, String status, Map<String, String> attrs) {
+        long now = System.currentTimeMillis();
+        localOwners.put(owner.dialogId(), owner);
+        RaSessionMeta meta = new RaSessionMeta(owner.dialogId(), raName,
+                status == null ? "Active" : status, attrs == null ? Map.of() : attrs, now);
+        localMeta.put(owner.dialogId(), meta);
+        if (caches != null) {
+            caches.putSessionMeta(meta);
+        }
+        metrics.ownerClaim();
+        metrics.metaPut();
+    }
+
     public Optional<RaDialogOwner> lookupOwner(String activityId) {
         if (activityId == null || activityId.isBlank()) {
             return Optional.empty();

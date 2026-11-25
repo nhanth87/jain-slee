@@ -164,6 +164,46 @@ public final class RaHaSupport {
         tracker.onClosed(activityId);
     }
 
+    /** Outcome of {@link #claimOnInbound}. */
+    public enum InboundClaim {
+        /** Unowned or already ours: this node owns the activity. */
+        LOCAL,
+        /** The owner left the cluster view; ownership moved here (generation + 1). */
+        TAKEN_OVER,
+        /** A live node owns it; handled here without moving ownership. */
+        REMOTE_LIVE
+    }
+
+    /**
+     * Connectionless RAs (GTP-C, PFCP over UDP): the peer addresses a service address that
+     * moves between nodes (VIP / anycast), so a request for an activity can arrive at a node
+     * that does not own it, and it can only be answered from there. Unowned or local → own /
+     * refresh it here; owner no longer in the view → CAS takeover; owner alive → keep its
+     * ownership and only refresh meta (the caller still answers from shared state).
+     */
+    public InboundClaim claimOnInbound(String activityId, String status, Map<String, String> attrs) {
+        if (activityId == null || activityId.isBlank()) {
+            return InboundClaim.LOCAL;
+        }
+        Optional<RaDialogOwner> owner = tracker.lookupOwner(activityId);
+        if (owner.isEmpty() || localNodeId.equals(owner.get().ownerNodeId())) {
+            tracker.onTouched(activityId, status, attrs);
+            return InboundClaim.LOCAL;
+        }
+        RaDialogOwner o = owner.get();
+        boolean present = clusterManager != null && clusterManager.isNodePresent(o.ownerNodeId());
+        if (!present && caches != null
+                && caches.tryClaimOwnership(o, localNodeId, raName, System.currentTimeMillis())) {
+            RaDialogOwner claimed = caches.getOwner(activityId);
+            tracker.adoptClaimed(claimed != null ? claimed
+                    : o.withOwner(localNodeId, raName, o.generation() + 1, System.currentTimeMillis()),
+                    status, attrs);
+            LOG.info("[{}] activity {} taken over from departed node={}", raName, activityId, o.ownerNodeId());
+            return InboundClaim.TAKEN_OVER;
+        }
+        return InboundClaim.REMOTE_LIVE;
+    }
+
     /**
      * Sync-path default: if owner is remote and sticky forward is off, rewrite
      * {@link RaStickyRouter.Action#FORWARD_REMOTE} → {@link RaStickyRouter.Action#REJECT}

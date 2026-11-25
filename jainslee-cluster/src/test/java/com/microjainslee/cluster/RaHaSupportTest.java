@@ -115,6 +115,27 @@ class RaHaSupportTest {
         }
     }
 
+    /** GTP-C / PFCP after a VIP move: the departed owner's session is claimed on first inbound. */
+    @Test
+    void inboundClaimTakesOverFromADepartedNodeOnly() {
+        RaHaSupport ha = RaHaSupport.create(manager, "gtpv2c");
+        assertThat(ha.claimOnInbound("teid-1", "Active", Map.of()))
+                .isEqualTo(RaHaSupport.InboundClaim.LOCAL);
+        assertThat(ha.isLocalOwner("teid-1")).isTrue();
+
+        RaActivityOwnerCaches caches = RaActivityOwnerCaches.ensureCaches(manager, "gtpv2c");
+        caches.putOwner(new RaDialogOwner("teid-2", "departed-node", "gtpv2c", 4L, 1L));
+        assertThat(ha.claimOnInbound("teid-2", "Active", Map.of("peer", "192.0.2.1:2123")))
+                .isEqualTo(RaHaSupport.InboundClaim.TAKEN_OVER);
+        assertThat(ha.isLocalOwner("teid-2")).isTrue();
+        assertThat(caches.getOwner("teid-2").ownerNodeId()).isEqualTo(manager.getNodeId());
+        assertThat(caches.getOwner("teid-2").generation()).isEqualTo(5L);
+        // Now local: a second inbound is plain LOCAL.
+        assertThat(ha.claimOnInbound("teid-2", "Active", Map.of()))
+                .isEqualTo(RaHaSupport.InboundClaim.LOCAL);
+        ha.stopStickyBus();
+    }
+
     @Test
     void staleOwnerCasFails() {
         RaActivityOwnerCaches caches = RaActivityOwnerCaches.ensureCaches(manager, "diameter");

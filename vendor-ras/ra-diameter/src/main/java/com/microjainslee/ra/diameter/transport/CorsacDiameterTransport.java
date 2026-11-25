@@ -441,11 +441,14 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
         return any;
     }
 
-    private IMessage toJdiameter(DiameterCommand cmd) {
+    // package-private for the wire-shape test
+    IMessage toJdiameter(DiameterCommand cmd) {
         if (cmd instanceof SendDiameterRequest req) {
             IMessage msg = parser.createEmptyMessage(req.commandCode(), req.applicationId());
             msg.setRequest(true);
-            addAvps(msg, req.sessionId(), req.avps());
+            addAvps(msg, req.sessionId(), java.util.Map.of());
+            addOrigin(msg);
+            addAvps(msg, null, req.avps());
             encodeStructured(msg.getAvps(), req.avpsStructured());
             if (req.destinationHost() != null) {
                 msg.getAvps().addAvp(Avp.DESTINATION_HOST, req.destinationHost(), true, false, true);
@@ -460,11 +463,16 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
             msg.setRequest(false);
             msg.setHopByHopIdentifier(ans.hopByHopId());
             msg.setEndToEndIdentifier(ans.endToEndId());
+            // RFC 6733 §8.8: <Session-Id> is the fixed head of every session message — first, before
+            // Result-Code (freeDiameter rejects the answer otherwise: "FIXED_HEAD AVP … position").
+            addAvps(msg, ans.sessionId(), java.util.Map.of());
+            // RFC 6733 §6.2: every answer carries Origin-Host / Origin-Realm (M).
+            addOrigin(msg);
             // 0 is no Diameter result: the outcome travels as Experimental-Result (3GPP apps).
             if (ans.resultCode() > 0) {
                 msg.getAvps().addAvp(Avp.RESULT_CODE, ans.resultCode(), true);
             }
-            addAvps(msg, ans.sessionId(), ans.avps());
+            addAvps(msg, null, ans.avps());
             encodeStructured(msg.getAvps(), ans.avpsStructured());
             return msg;
         }
@@ -476,6 +484,17 @@ public final class CorsacDiameterTransport implements DiameterTransport, Diamete
             return;
         }
         DiameterAvpEncoder.encode(avps, set);
+    }
+
+    /** Origin-Host / Origin-Realm of this node, unless the caller put its own (RFC 6733 §6.3 / §6.4). */
+    private void addOrigin(IMessage msg) {
+        if (msg.getAvps().getAvp(Avp.ORIGIN_HOST) == null && config.originHost() != null
+                && !config.originHost().isBlank()) {
+            msg.getAvps().addAvp(Avp.ORIGIN_HOST, config.originHost(), true, false, true);
+        }
+        if (msg.getAvps().getAvp(Avp.ORIGIN_REALM) == null && config.realm() != null && !config.realm().isBlank()) {
+            msg.getAvps().addAvp(Avp.ORIGIN_REALM, config.realm(), true, false, true);
+        }
     }
 
     private static void addAvps(IMessage msg, String sessionId, java.util.Map<Integer, String> avps) {
